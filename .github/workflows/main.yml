@@ -28,8 +28,10 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      # Override kotlin.compiler.execution.strategy (gradle.properties uses
+      # 'in-process', which breaks KSP2 on CI runners).
       - name: Build kosherbridge (debug APK)
-        run: gradle :kosherbridge:assembleDebug --no-daemon --stacktrace
+        run: gradle :kosherbridge:assembleDebug --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
 
       - name: Upload kosherbridge APK
         uses: actions/upload-artifact@v4
