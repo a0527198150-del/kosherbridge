@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,11 +21,12 @@ class MainActivity : ComponentActivity() {
   private val permissionLauncher =
     registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { /* handled per feature */ }
 
+  private var serviceStartScheduled = false
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     ServiceLocator.init(applicationContext)
     requestNeededPermissions()
-    BridgeService.start(this)
 
     setContent {
       KosherBridgeTheme {
@@ -31,6 +34,20 @@ class MainActivity : ComponentActivity() {
           MainScreen()
         }
       }
+    }
+  }
+
+  override fun onResume() {
+    super.onResume()
+    // Start the foreground service only once the activity is actually visible.
+    // Starting it from onCreate can be killed on Android 8-9 when the app is
+    // still considered "idle" (fresh install / stopped state).
+    if (!serviceStartScheduled) {
+      serviceStartScheduled = true
+      Handler(Looper.getMainLooper()).postDelayed(
+        { runCatching { BridgeService.start(this) } },
+        1500,
+      )
     }
   }
 
