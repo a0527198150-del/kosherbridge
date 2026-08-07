@@ -1,0 +1,299 @@
+package com.example.kosherbridge.bluetooth
+
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Proxy
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+/**
+ * Owns the HFP client (hands-free) profile. Exposes flows for UI/service and
+ * commands to connect, dial, answer, reject, hang up and control call audio.
+ *
+ * Call state is delivered two ways:
+ *  1. the hidden [android.bluetooth.BluetoothHeadsetClient.Callback] (API 30+), when
+ *     reflection is permitted;
+ *  2. a lightweight poll of getCurrentCalls() that works everywhere the profile does.
+ */
+class HfpClientManager(private val context: Context, private val scope: CoroutineScope) {
+
+  private val adapter: BluetoothAdapter? =
+    (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+
+  val profileReady = MutableStateFlow(false)
+  val connectionState = MutableStateFlow(BluetoothProfile.STATE_DISCONNECTED)
+  val audioState = MutableStateFlow(0)
+  val device = MutableStateFlow<BluetoothDevice?>(null)
+  val call = MutableStateFlow<CallInfo?>(null)
+  val lastError = MutableStateFlow<String?>(null)
+
+  private var client: Any? = null
+  private var callbackProxy: Any? = null
+  private var pollJob: Job? = null
+  private var stateReceiver: BroadcastReceiver? = null
+
+  /** Short window after an explicit disconnect where the poll ignores re-detection. */
+  private var ignorePollUntil = 0L
+
+  val adapterOn: Boolean get() = adapter?.isEnabled == true
+
+  fun bondedDevices(): List<PairedDeviceInfo> =
+    adapter?.bondedDevices?.map { PairedDeviceInfo(it.name ?: it.address, it.address) }
+      ?: emptyList()
+
+  /** Binds the HFP client profile proxy. */
+  fun register() {
+    HiddenHfp.init()
+    if (!HiddenHfp.isAvailable) {
+      profileReady.value = false
+      lastError.value =
+        "המכשיר אינו חושף את פרופיל הדיבורית (HFP Client). נדרש נגן/קופסה עם תמיכת דיבורית (מכשירי רכב, נגני אנדרואיד)."
+      return
+    }
+    if (client != null) {
+      profileReady.value = true
+      return
+    }
+    val a = adapter
+    if (a == null) {
+      lastError.value = "בלוטוס לא זמין במכשיר"
+      return
+    }
+    if (!a.isEnabled) {
+      lastError.value = "הבלוטוס כבוי - הדלק אותו והתחבר שוב"
+      return
+    }
+    val listener = object : BluetoothProfile.ServiceListener {
+      override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+        if (profile != HiddenHfp.PROFILE_ID) return
+        client = HiddenHfp.castClient(proxy)
+        profileReady.value = client != null
+        if (client == null) {
+          lastError.value = "פרופיל הדיבורית אינו זמין במכשיר זה"
+        } else {
+          registerCallback()
+          registerStateReceiver()
+          startPolling()
+        }
+      }
+
+      override fun onServiceDisconnected(profile: Int) {
+        if (profile != HiddenHfp.PROFILE_ID) return
+        client = null
+        profileReady.value = false
+        connectionState.value = BluetoothProfile.STATE_DISCONNECTED
+        device.value = null
+        call.value = null
+      }
+    }
+    val ok = runCatching { a.getProfileProxy(context, listener, HiddenHfp.PROFILE_ID) }.getOrDefault(false)
+    if (!ok) {
+      lastError.value = "לא ניתן לגשת לפרופיל הדיבורית במכשיר זה"
+    }
+  }
+
+  fun connect(target: BluetoothDevice) {
+    val c = client ?: return
+    device.value = target
+    if (!HiddenHfp.connect(c, target)) {
+      lastError.value = "החיבור נכשל - נסה שוב"
+    }
+  }
+
+  fun disconnect() {
+    val c = client ?: return
+    val d = device.value ?: return
+    HiddenHfp.disconnect(c, d)
+    ignorePollUntil = System.currentTimeMillis() + 3000
+    device.value = null
+    connectionState.value = BluetoothProfile.STATE_DISCONNECTED
+    call.value = null
+  }
+
+  fun dial(number: String): Boolean {
+    val c = client ?: return false
+    if (connectionState.value != BluetoothProfile.STATE_CONNECTED) {
+      lastError.value = "לא מחובר לטלפון הכשר"
+      return false
+    }
+    if (number.isBlank()) return false
+    return HiddenHfp.dial(c, number)
+  }
+
+  fun redial(): Boolean = HiddenHfp.redial(client)
+
+  fun answer(): Boolean {
+    val ok = HiddenHfp.accept(client)
+    if (ok) {
+      // Give the AG a moment to move the call to ACTIVE before requesting SCO.
+      scope.launch {
+        delay(350)
+        connectAudio()
+      }
+    }
+    return ok
+  }
+
+  fun reject(): Boolean = HiddenHfp.reject(client)
+  fun hangup(): Boolean = HiddenHfp.hangup(client)
+  fun connectAudio() { HiddenHfp.connectAudio(client) }
+
+  fun toggleAudio(): Boolean =
+    if (audioState.value == 2) HiddenHfp.disconnectAudio(client)
+    else HiddenHfp.connectAudio(client)
+
+  fun shutdown() {
+    pollJob?.cancel()
+    stateReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }
+    stateReceiver = null
+    callbackProxy?.let { HiddenHfp.unregisterCallback(client, it) }
+    callbackProxy = null
+    client?.let { c ->
+      runCatching { adapter?.closeProfileProxy(HiddenHfp.PROFILE_ID, c as BluetoothProfile) }
+    }
+    client = null
+  }
+
+  // ------------------------------------------------------------------ callbacks
+
+  private fun registerCallback() {
+    val cbClass = HiddenHfp.callbackClass ?: return
+    val c = client ?: return
+    val handler = InvocationHandler { _, method, args ->
+      when (method.name) {
+        "onCallChanged" -> args?.getOrNull(0)?.let { parseAndEmit(it) }
+        "onConnectionStateChanged" ->
+          args?.getOrNull(1)?.let { connectionState.value = it as? Int ?: BluetoothProfile.STATE_DISCONNECTED }
+        "onAudioStateChanged" -> args?.getOrNull(1)?.let { audioState.value = it as? Int ?: 0 }
+      }
+      null // all Callback methods are void
+    }
+    callbackProxy = runCatching {
+      Proxy.newProxyInstance(cbClass.classLoader, arrayOf(cbClass), handler)
+    }.getOrNull()
+    if (callbackProxy != null) HiddenHfp.registerCallback(c, callbackProxy)
+  }
+
+  private fun registerStateReceiver() {
+    val filter = IntentFilter().apply {
+      addAction("android.bluetooth.headsetclient.profile.action.CONNECTION_STATE_CHANGED")
+      addAction("android.bluetooth.headsetclient.profile.action.AUDIO_STATE_CHANGED")
+    }
+    stateReceiver = object : BroadcastReceiver() {
+      override fun onReceive(ctx: Context, intent: Intent) {
+        val state = intent.getIntExtra("android.bluetooth.profile.extra.STATE", -1)
+        val dev = if (Build.VERSION.SDK_INT >= 33)
+          intent.getParcelableExtra("android.bluetooth.device.extra.DEVICE", BluetoothDevice::class.java)
+        else
+          @Suppress("DEPRECATION")
+          intent.getParcelableExtra("android.bluetooth.device.extra.DEVICE")
+        when (intent.action) {
+          "android.bluetooth.headsetclient.profile.action.CONNECTION_STATE_CHANGED" -> {
+            connectionState.value = state
+            if (state == BluetoothProfile.STATE_CONNECTED) {
+              device.value = dev ?: device.value
+            } else if (state == BluetoothProfile.STATE_DISCONNECTED) {
+              device.value = null
+              call.value = null
+            }
+          }
+          "android.bluetooth.headsetclient.profile.action.AUDIO_STATE_CHANGED" -> audioState.value = state
+        }
+      }
+    }
+    runCatching {
+      if (Build.VERSION.SDK_INT >= 33) {
+        context.registerReceiver(stateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+      } else {
+        @Suppress("DEPRECATION")
+        context.registerReceiver(stateReceiver, filter)
+      }
+    }
+  }
+
+  private fun startPolling() {
+    pollJob?.cancel()
+    pollJob = scope.launch {
+      var lastKey: String? = null
+      while (isActive) {
+        if (System.currentTimeMillis() < ignorePollUntil) {
+          delay(700)
+          continue
+        }
+        val c = client
+        if (c != null) {
+          val d = device.value ?: (HiddenHfp.connectedDevices(c).firstOrNull() as? BluetoothDevice)
+          if (d != null) {
+            device.value = d
+            connectionState.value = HiddenHfp.connectionState(c, d)
+            audioState.value = HiddenHfp.audioState(c, d)
+            if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
+              val calls = HiddenHfp.currentCalls(c)
+              val key = callKey(calls)
+              if (key != lastKey) {
+                lastKey = key
+                call.value = primaryCall(calls)
+              }
+            } else {
+              call.value = null
+            }
+          }
+        }
+        delay(700)
+      }
+    }
+  }
+
+  private fun parseAndEmit(callObj: Any) {
+    val info = runCatching { parse(callObj) }.getOrNull() ?: return
+    if (call.value != info) call.value = info
+  }
+
+  private fun parse(callObj: Any): CallInfo = CallInfo(
+    state = mapState(HiddenHfp.callState(callObj)),
+    number = HiddenHfp.callNumber(callObj),
+    direction = mapDirection(HiddenHfp.callDirection(callObj)),
+  )
+
+  private fun primaryCall(calls: List<*>): CallInfo? {
+    if (calls.isEmpty()) return null
+    val parsed = calls.mapNotNull { c -> if (c == null) null else runCatching { parse(c) }.getOrNull() }
+    if (parsed.isEmpty()) return null
+    val rank = listOf(CallState.ACTIVE, CallState.INCOMING, CallState.WAITING, CallState.ALERTING, CallState.DIALING, CallState.HELD)
+    return parsed.minByOrNull { rank.indexOf(it.state).let { i -> if (i < 0) Int.MAX_VALUE else i } }
+  }
+
+  private fun callKey(calls: List<*>): String {
+    val parts = calls.mapNotNull { c ->
+      if (c == null) null
+      else runCatching { "${HiddenHfp.callState(c)}:${HiddenHfp.callNumber(c)}" }.getOrNull()
+    }
+    return parts.sorted().joinToString("|")
+  }
+
+  private fun mapState(s: Int): CallState = when (s) {
+    HiddenHfp.callStateActive -> CallState.ACTIVE
+    HiddenHfp.callStateHeld -> CallState.HELD
+    HiddenHfp.callStateDialing -> CallState.DIALING
+    HiddenHfp.callStateAlerting -> CallState.ALERTING
+    HiddenHfp.callStateIncoming -> CallState.INCOMING
+    HiddenHfp.callStateWaiting -> CallState.WAITING
+    HiddenHfp.callStateTerminated -> CallState.TERMINATED
+    else -> CallState.IDLE
+  }
+
+  private fun mapDirection(d: Int): CallDirection =
+    if (d == HiddenHfp.callDirectionOutgoing) CallDirection.OUTGOING else CallDirection.INCOMING
+}

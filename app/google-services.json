@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "1008115688519",
+    "project_id": "hebrewbudgetsync",
+    "storage_bucket": "hebrewbudgetsync.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1008115688519:android:96a067daf38b687c82fd62",
+        "android_client_info": {
+          "package_name": "com.aistudio.kosherbudget.zrwpxm"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1008115688519-kil172i5k0kjsdd74bpapo7n575n8nv9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.kosherbudget.zrwpxm",
+            "certificate_hash": "27241e2fec514824f332260e88101d54978f0a63"
+          }
+        },
+        {
+          "client_id": "1008115688519-n073lq1vmsrkmgj798j6ig306n6eo21r.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCFTEzI-UHMzt3d4rhzngSzK60VAM8ePaY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1008115688519-n073lq1vmsrkmgj798j6ig306n6eo21r.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

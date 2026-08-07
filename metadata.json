@@ -1,0 +1,6 @@
+{
+  "name": "תקציב עברי",
+  "description": "אפליקציה למעקב אחר הוצאות והכנסות לפי החודש העברי המבוססת על בינה מלאכותית (Gemini) וסיווג אוטומטי",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

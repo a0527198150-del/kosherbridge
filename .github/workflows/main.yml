@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Build kosherbridge (debug APK)
+        run: gradle :kosherbridge:assembleDebug --no-daemon --stacktrace
+
+      - name: Upload kosherbridge APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kosherbridge-apk
+          path: kosherbridge/build/outputs/apk/debug/*.apk
+
+      # Optional: the "תקציב עברי" app module. Runs only when the
+      # DEBUG_KEYSTORE_BASE64 secret exists in this repository.
+      - name: Restore stable debug keystore (app module)
+        if: ${{ secrets.DEBUG_KEYSTORE_BASE64 != '' }}
+        run: echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+
+      - name: Build app module (release, optional)
+        if: ${{ secrets.DEBUG_KEYSTORE_BASE64 != '' }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Upload app APK
+        if: ${{ secrets.DEBUG_KEYSTORE_BASE64 != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: app/build/outputs/apk/release/*.apk
