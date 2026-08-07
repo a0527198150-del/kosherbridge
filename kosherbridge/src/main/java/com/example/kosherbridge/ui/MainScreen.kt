@@ -67,7 +67,7 @@ fun MainScreen() {
     snackbarHost = { SnackbarHost(snackbarHostState) },
   ) { padding ->
     Box(Modifier.fillMaxSize().padding(padding)) {
-      val snack = { msg: String -> scope.launch { snackbarHostState.showSnackbar(msg) } }
+      val snack: (String) -> Unit = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
       when (tab) {
         0 -> HomeScreen(state, onGoToDialer = { tab = 1 })
         1 -> DialerScreen(onSnackbar = snack)

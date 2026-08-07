@@ -3,6 +3,7 @@ package com.example.kosherbridge
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.example.kosherbridge.data.ServiceLocator
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 

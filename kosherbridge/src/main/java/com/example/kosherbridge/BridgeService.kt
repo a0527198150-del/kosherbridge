@@ -116,9 +116,7 @@ class BridgeService : Service() {
     }
   }
 
-  fun dial(number: String) {
-    manager.dial(number)
-  }
+  fun dial(number: String): Boolean = manager.dial(number)
 
   fun disconnect() {
     lastManualDisconnectAt = System.currentTimeMillis()
@@ -154,6 +152,18 @@ class BridgeService : Service() {
       else -> if (s.deviceName != null) "מנותק" else "לא מחובר למכשיר"
     }
     return conn + if (s.audioState == 2) " · שמע פעיל" else ""
+  }
+
+  private fun maybeAutoConnect() {
+    scope.launch {
+      val settings = ServiceLocator.settings
+      val dev = settings.lastDevice.first() ?: return@launch
+      if (!settings.autoConnect.first()) return@launch
+      delay(400)
+      runCatching { adapter()?.getRemoteDevice(dev.address) }?.getOrNull()?.let {
+        manager.connect(it)
+      }
+    }
   }
 
   private fun observeSettings() {

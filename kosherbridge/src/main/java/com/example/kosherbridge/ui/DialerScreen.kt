@@ -1,8 +1,9 @@
 package com.example.kosherbridge.ui
 
 import android.bluetooth.BluetoothProfile
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -107,6 +108,7 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
   }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DialKey(label: String, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
   Box(
@@ -114,7 +116,7 @@ private fun DialKey(label: String, onLongClick: (() -> Unit)? = null, onClick: (
       .size(72.dp)
       .clip(CircleShape)
       .background(MaterialTheme.colorScheme.surfaceVariant)
-      .clickable(onClick = onClick, onLongClick = onLongClick),
+      .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     contentAlignment = Alignment.Center,
   ) {
     Text(
