@@ -44,12 +44,16 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var pollJob: Job? = null
   private var stateReceiver: BroadcastReceiver? = null
   private var shizuku: ShizukuBridge? = null
+  private var raw: RawHfpClient? = null
 
   /** Short window after an explicit disconnect where the poll ignores re-detection. */
   private var ignorePollUntil = 0L
 
   /** When the privileged Shizuku bridge is bound, every operation goes through it. */
   private val useShizuku: Boolean get() = shizuku?.isBound == true
+
+  /** Raw RFCOMM mode, opted-in from Settings ("חיבור ישיר"). */
+  private val rawActive: Boolean get() = raw?.isConnected?.value == true
 
   val adapterOn: Boolean get() = adapter?.isEnabled == true
 
@@ -162,12 +166,41 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     return true
   }
 
+  /**
+   * Direct HFP over RFCOMM - no hidden API and no privileged permission.
+   * Call control and caller ID work on every player; call audio (SCO) only on
+   * stacks that cooperate. Opt-in from Settings ("חיבור ישיר").
+   */
+  fun connectRaw(target: BluetoothDevice) {
+    device.value = target
+    val r = raw ?: RawHfpClient(scope).also { raw = it }
+    scope.launch {
+      r.call.collect { info -> call.value = info }
+    }
+    scope.launch {
+      r.isConnected.collect { connected ->
+        connectionState.value =
+          if (connected) BluetoothProfile.STATE_CONNECTED else BluetoothProfile.STATE_DISCONNECTED
+        if (connected) profileReady.value = true
+        if (!connected) call.value = null
+      }
+    }
+    scope.launch {
+      r.lastError.collect { e -> if (e != null) lastError.value = e }
+    }
+    r.connect(target)
+  }
+
   fun connect(target: BluetoothDevice) {
     device.value = target
     if (useShizuku) {
       if (!shizuku!!.connect(target.address)) {
         lastError.value = "החיבור נכשל - נסה שוב"
       }
+      return
+    }
+    if (raw != null) {
+      raw?.connect(target)
       return
     }
     val c = client ?: return
@@ -177,7 +210,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   fun disconnect() {
-    if (useShizuku) {
+    if (rawActive) {
+      raw?.disconnect()
+    } else if (useShizuku) {
       device.value?.address?.let { shizuku?.disconnect(it) }
     } else {
       val c = client ?: return
@@ -196,16 +231,21 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       lastError.value = "לא מחובר לטלפון הכשר"
       return false
     }
+    if (rawActive) return raw?.dial(number) ?: false
     if (useShizuku) return shizuku?.dial(number) ?: false
     val c = client ?: return false
     return HiddenHfp.dial(c, number)
   }
 
   fun redial(): Boolean =
-    if (useShizuku) shizuku?.redial() ?: false else HiddenHfp.redial(client)
+    if (rawActive) raw?.redial() ?: false
+    else if (useShizuku) shizuku?.redial() ?: false
+    else HiddenHfp.redial(client)
 
   fun answer(): Boolean {
-    val ok = if (useShizuku) shizuku?.accept() ?: false else HiddenHfp.accept(client)
+    val ok = if (rawActive) raw?.answer() ?: false
+    else if (useShizuku) shizuku?.accept() ?: false
+    else HiddenHfp.accept(client)
     if (ok) {
       // Give the AG a moment to move the call to ACTIVE before requesting SCO.
       scope.launch {
@@ -217,23 +257,32 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   fun reject(): Boolean =
-    if (useShizuku) shizuku?.reject() ?: false else HiddenHfp.reject(client)
+    if (rawActive) raw?.reject() ?: false
+    else if (useShizuku) shizuku?.reject() ?: false
+    else HiddenHfp.reject(client)
 
   fun hangup(): Boolean =
-    if (useShizuku) shizuku?.hangup() ?: false else HiddenHfp.hangup(client)
+    if (rawActive) raw?.hangup() ?: false
+    else if (useShizuku) shizuku?.hangup() ?: false
+    else HiddenHfp.hangup(client)
 
   fun connectAudio() {
+    // Raw RFCOMM has no stack-level audio path; the SCO attempt belongs to the
+    // privileged backends.
+    if (rawActive) return
     if (useShizuku) shizuku?.connectAudio() else HiddenHfp.connectAudio(client)
   }
 
-  fun toggleAudio(): Boolean =
-    if (useShizuku) {
+  fun toggleAudio(): Boolean {
+    if (rawActive) return false
+    return if (useShizuku) {
       if (audioState.value == 2) shizuku?.disconnectAudio() ?: false
       else shizuku?.connectAudio() ?: false
     } else {
       if (audioState.value == 2) HiddenHfp.disconnectAudio(client)
       else HiddenHfp.connectAudio(client)
     }
+  }
 
   fun shutdown() {
     pollJob?.cancel()
@@ -247,6 +296,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     client = null
     shizuku?.unbind()
     shizuku = null
+    raw?.disconnect()
+    raw = null
   }
 
   // ------------------------------------------------------------------ callbacks
@@ -317,7 +368,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         }
         if (useShizuku) {
           pollShizuku()
-        } else {
+        } else if (!rawActive) {
           val c = client
           if (c != null) {
             val d = device.value ?: (HiddenHfp.connectedDevices(c).firstOrNull() as? BluetoothDevice)

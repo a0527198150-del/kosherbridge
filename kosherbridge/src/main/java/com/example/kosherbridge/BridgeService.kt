@@ -126,6 +126,17 @@ class BridgeService : Service() {
 
   fun dial(number: String): Boolean = manager.dial(number)
 
+  /** Direct HFP over RFCOMM - no permissions needed; audio depends on the player. */
+  fun connectRaw(address: String) {
+    val adapter = adapter()
+    if (adapter == null) return
+    val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull()
+    if (device != null) {
+      manager.connectRaw(device)
+      scope.launch { ServiceLocator.settings.rememberDevice(device.name ?: address, address) }
+    }
+  }
+
   fun disconnect() {
     lastManualDisconnectAt = System.currentTimeMillis()
     manager.disconnect()

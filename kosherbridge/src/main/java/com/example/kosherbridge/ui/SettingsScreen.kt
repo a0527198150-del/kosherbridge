@@ -74,6 +74,17 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       ) {
         BridgeHub.service?.bindShizuku()
       }
+      SettingRow(
+        "חיבור ישיר (ללא הרשאות)",
+        "שליטה וזיהוי שיחה ישירות מהאפליקציה; שמע תלוי בנגן",
+      ) {
+        val addr = state.deviceAddress
+        if (addr != null) {
+          BridgeHub.service?.connectRaw(addr)
+        } else {
+          showDevices = true
+        }
+      }
     }
     SettingsCard("שיחות") {
       SettingSwitch(
