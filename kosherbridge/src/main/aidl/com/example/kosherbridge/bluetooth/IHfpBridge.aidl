@@ -24,5 +24,8 @@ interface IHfpBridge {
     boolean reject();
     boolean hangup();
     String currentCallSnapshot();
-    void destroy();
+    // Reserved "destroy" transaction code defined by the Shizuku server
+    // (see the official Shizuku-API demo). Without the explicit code the
+    // server cannot signal this service to shut down.
+    void destroy() = 16777114;
 }

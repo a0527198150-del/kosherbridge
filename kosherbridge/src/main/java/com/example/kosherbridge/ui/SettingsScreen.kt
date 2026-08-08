@@ -68,6 +68,12 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       SettingRow("התאמת מכשיר חדש", null) {
         runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
       }
+      SettingRow(
+        "התחבר דרך Shizuku",
+        "עוקף חסימת אנדרואיד 12+ (דורש Shizuku פעיל עם הרשאה)",
+      ) {
+        BridgeHub.service?.bindShizuku()
+      }
     }
     SettingsCard("שיחות") {
       SettingSwitch(

@@ -88,6 +88,14 @@ class BridgeService : Service() {
     if (intent?.action == ACTION_START || intent?.action == null) {
       manager.register()
       maybeAutoConnect()
+      // If the in-process profile is blocked (hidden API / BLUETOOTH_PRIVILEGED on
+      // Android 12+), fall back to the privileged Shizuku user service.
+      scope.launch {
+        delay(2500)
+        if (!manager.profileReady.value) {
+          manager.bindShizuku()
+        }
+      }
     }
     return START_STICKY
   }
@@ -127,6 +135,11 @@ class BridgeService : Service() {
   fun reject() = manager.reject()
   fun hangup() = manager.hangup()
   fun toggleAudio() = manager.toggleAudio()
+
+  /** Tries to bind the privileged HFP bridge through Shizuku (shell/root UID). */
+  fun bindShizuku() {
+    scope.launch { manager.bindShizuku() }
+  }
 
   // ------------------------------------------------------------------ internals
 

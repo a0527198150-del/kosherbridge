@@ -43,14 +43,19 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var callbackProxy: Any? = null
   private var pollJob: Job? = null
   private var stateReceiver: BroadcastReceiver? = null
+  private var shizuku: ShizukuBridge? = null
 
   /** Short window after an explicit disconnect where the poll ignores re-detection. */
   private var ignorePollUntil = 0L
 
+  /** When the privileged Shizuku bridge is bound, every operation goes through it. */
+  private val useShizuku: Boolean get() = shizuku?.isBound == true
+
   val adapterOn: Boolean get() = adapter?.isEnabled == true
 
   fun bondedDevices(): List<PairedDeviceInfo> =
-    adapter?.bondedDevices?.map { PairedDeviceInfo(it.name ?: it.address, it.address) }
+    if (useShizuku) shizuku?.bondedDevices() ?: emptyList()
+    else adapter?.bondedDevices?.map { PairedDeviceInfo(it.name ?: it.address, it.address) }
       ?: emptyList()
 
   /** Binds the HFP client profile proxy. */
@@ -104,18 +109,81 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
   }
 
+  /**
+   * Binds the privileged HFP bridge through Shizuku. The user service runs in a
+   * separate process under the shell/root UID - exempt from hidden-API enforcement
+   * and granted BLUETOOTH_PRIVILEGED - so the same reflection calls that are
+   * blocked in this process succeed there. Once bound, every operation is routed
+   * through the remote service.
+   */
+  suspend fun bindShizuku(): Boolean {
+    val b = shizuku ?: ShizukuBridge(context).also { shizuku = it }
+    if (b.isBound && b.isProfileReady()) {
+      profileReady.value = true
+      startPolling()
+      return true
+    }
+    if (!b.isAvailable) {
+      lastError.value =
+        "Shizuku אינו פעיל - התקן את Shizuku והפעל אותו (adb או root), ואז נסה שוב"
+      return false
+    }
+    if (!b.permissionGranted) {
+      lastError.value =
+        "לא הוענקה הרשאה ל-Shizuku - פתח את אפליקציית Shizuku והענק הרשאה לאפליקציה זו"
+      return false
+    }
+    if (!b.bind()) {
+      lastError.value = "החיבור ל-Shizuku נכשל"
+      return false
+    }
+    // Binding is asynchronous (ServiceConnection is delivered on the main thread).
+    var waited = 0
+    while (!b.isBound && waited < 4000) {
+      delay(100)
+      waited += 100
+    }
+    if (!b.isBound) {
+      lastError.value = "תהליך Shizuku לא עלה - נסה שוב"
+      return false
+    }
+    if (!b.registerProfile()) {
+      lastError.value = "פרופיל הדיבורית לא זמין דרך Shizuku במכשיר זה"
+      return false
+    }
+    // If a device was already selected, make sure the remote profile connects to it.
+    device.value?.address?.let { addr ->
+      if (shizuku?.connectionState(addr) != BluetoothProfile.STATE_CONNECTED) {
+        shizuku?.connect(addr)
+      }
+    }
+    profileReady.value = true
+    startPolling()
+    return true
+  }
+
   fun connect(target: BluetoothDevice) {
-    val c = client ?: return
     device.value = target
+    if (useShizuku) {
+      if (!shizuku!!.connect(target.address)) {
+        lastError.value = "החיבור נכשל - נסה שוב"
+      }
+      return
+    }
+    val c = client ?: return
     if (!HiddenHfp.connect(c, target)) {
       lastError.value = "החיבור נכשל - נסה שוב"
     }
   }
 
   fun disconnect() {
-    val c = client ?: return
-    val d = device.value ?: return
-    HiddenHfp.disconnect(c, d)
+    if (useShizuku) {
+      device.value?.address?.let { shizuku?.disconnect(it) }
+    } else {
+      val c = client ?: return
+      val d = device.value ?: return
+      HiddenHfp.disconnect(c, d)
+    }
     ignorePollUntil = System.currentTimeMillis() + 3000
     device.value = null
     connectionState.value = BluetoothProfile.STATE_DISCONNECTED
@@ -123,19 +191,21 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   fun dial(number: String): Boolean {
-    val c = client ?: return false
+    if (number.isBlank()) return false
     if (connectionState.value != BluetoothProfile.STATE_CONNECTED) {
       lastError.value = "לא מחובר לטלפון הכשר"
       return false
     }
-    if (number.isBlank()) return false
+    if (useShizuku) return shizuku?.dial(number) ?: false
+    val c = client ?: return false
     return HiddenHfp.dial(c, number)
   }
 
-  fun redial(): Boolean = HiddenHfp.redial(client)
+  fun redial(): Boolean =
+    if (useShizuku) shizuku?.redial() ?: false else HiddenHfp.redial(client)
 
   fun answer(): Boolean {
-    val ok = HiddenHfp.accept(client)
+    val ok = if (useShizuku) shizuku?.accept() ?: false else HiddenHfp.accept(client)
     if (ok) {
       // Give the AG a moment to move the call to ACTIVE before requesting SCO.
       scope.launch {
@@ -146,13 +216,24 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     return ok
   }
 
-  fun reject(): Boolean = HiddenHfp.reject(client)
-  fun hangup(): Boolean = HiddenHfp.hangup(client)
-  fun connectAudio() { HiddenHfp.connectAudio(client) }
+  fun reject(): Boolean =
+    if (useShizuku) shizuku?.reject() ?: false else HiddenHfp.reject(client)
+
+  fun hangup(): Boolean =
+    if (useShizuku) shizuku?.hangup() ?: false else HiddenHfp.hangup(client)
+
+  fun connectAudio() {
+    if (useShizuku) shizuku?.connectAudio() else HiddenHfp.connectAudio(client)
+  }
 
   fun toggleAudio(): Boolean =
-    if (audioState.value == 2) HiddenHfp.disconnectAudio(client)
-    else HiddenHfp.connectAudio(client)
+    if (useShizuku) {
+      if (audioState.value == 2) shizuku?.disconnectAudio() ?: false
+      else shizuku?.connectAudio() ?: false
+    } else {
+      if (audioState.value == 2) HiddenHfp.disconnectAudio(client)
+      else HiddenHfp.connectAudio(client)
+    }
 
   fun shutdown() {
     pollJob?.cancel()
@@ -164,6 +245,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       runCatching { adapter?.closeProfileProxy(HiddenHfp.PROFILE_ID, c as BluetoothProfile) }
     }
     client = null
+    shizuku?.unbind()
+    shizuku = null
   }
 
   // ------------------------------------------------------------------ callbacks
@@ -232,27 +315,56 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           delay(700)
           continue
         }
-        val c = client
-        if (c != null) {
-          val d = device.value ?: (HiddenHfp.connectedDevices(c).firstOrNull() as? BluetoothDevice)
-          if (d != null) {
-            device.value = d
-            connectionState.value = HiddenHfp.connectionState(c, d)
-            audioState.value = HiddenHfp.audioState(c, d)
-            if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
-              val calls = HiddenHfp.currentCalls(c)
-              val key = callKey(calls)
-              if (key != lastKey) {
-                lastKey = key
-                call.value = primaryCall(calls)
+        if (useShizuku) {
+          pollShizuku()
+        } else {
+          val c = client
+          if (c != null) {
+            val d = device.value ?: (HiddenHfp.connectedDevices(c).firstOrNull() as? BluetoothDevice)
+            if (d != null) {
+              device.value = d
+              connectionState.value = HiddenHfp.connectionState(c, d)
+              audioState.value = HiddenHfp.audioState(c, d)
+              if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
+                val calls = HiddenHfp.currentCalls(c)
+                val key = callKey(calls)
+                if (key != lastKey) {
+                  lastKey = key
+                  call.value = primaryCall(calls)
+                }
+              } else {
+                call.value = null
               }
-            } else {
-              call.value = null
             }
           }
         }
         delay(700)
       }
+    }
+  }
+
+  /** Polls call state from the remote Shizuku user service. */
+  private fun pollShizuku() {
+    val s = shizuku ?: return
+    val d = device.value ?: return
+    connectionState.value = s.connectionState(d.address)
+    audioState.value = s.audioState(d.address)
+    if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
+      val snap = s.currentCallSnapshot()
+      if (snap.isNotBlank()) {
+        val parts = snap.split('|')
+        if (parts.size >= 3) {
+          val rawState = parts[0].toIntOrNull() ?: HiddenHfp.callStateIdle
+          val number = parts[1].takeIf { it.isNotBlank() }
+          val rawDir = parts[2].toIntOrNull() ?: HiddenHfp.callDirectionIncoming
+          val info = CallInfo(mapState(rawState), number, mapDirection(rawDir))
+          if (call.value != info) call.value = info
+        }
+      } else {
+        call.value = null
+      }
+    } else {
+      call.value = null
     }
   }
 
