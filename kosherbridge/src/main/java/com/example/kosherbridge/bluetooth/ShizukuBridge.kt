@@ -7,7 +7,7 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.IBinder
 import android.util.Log
-import dev.rikka.shizuku.Shizuku
+import rikka.shizuku.Shizuku
 
 /**
  * Client side of the privileged HFP bridge.
