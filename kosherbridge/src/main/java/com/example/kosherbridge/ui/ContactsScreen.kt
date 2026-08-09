@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -561,6 +562,11 @@ private fun ContactEditorDialog(
       modifier = Modifier
         .fillMaxWidth()
         .widthIn(max = 560.dp)
+        // Cap the height (90% of the screen) so the middle list scrolls and the
+        // pinned action row is always on screen.
+        .fillMaxHeight(0.9f)
+        // Shrink when the keyboard opens so the pinned action buttons stay reachable.
+        .imePadding()
         .clip(RoundedCornerShape(28.dp))
         .background(MaterialTheme.colorScheme.surface)
         .padding(20.dp),
@@ -575,6 +581,7 @@ private fun ContactEditorDialog(
       Column(
         modifier = Modifier
           .fillMaxWidth()
+          .weight(1f, fill = false)
           .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp),
       ) {
@@ -664,21 +671,23 @@ private fun ContactEditorDialog(
           label = { Text("הערות (אופציונלי)") },
           modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-          TextButton(onClick = onDismiss) { Text("ביטול") }
-          Spacer(Modifier.width(8.dp))
-          TextButton(
-            onClick = {
-              val cleanPhones = phones.map { it.label to it.number.trim() }.filter { it.second.isNotEmpty() }
-              val cleanEmails = emails.map { it.label to it.email.trim() }.filter { it.second.isNotEmpty() }
-              if (name.isNotBlank() && cleanPhones.isNotEmpty()) {
-                onSave(name.trim(), cleanPhones, cleanEmails, notes.trim().ifEmpty { null }, photo)
-              }
-            },
-            enabled = name.isNotBlank() && hasValidPhone,
-          ) { Text("שמור", fontWeight = FontWeight.Bold) }
-        }
+      }
+      // Action row is pinned below the scrollable fields so it is always visible
+      // (never pushed off-screen on short landscape screens).
+      Spacer(Modifier.height(12.dp))
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        TextButton(onClick = onDismiss) { Text("ביטול") }
+        Spacer(Modifier.width(8.dp))
+        TextButton(
+          onClick = {
+            val cleanPhones = phones.map { it.label to it.number.trim() }.filter { it.second.isNotEmpty() }
+            val cleanEmails = emails.map { it.label to it.email.trim() }.filter { it.second.isNotEmpty() }
+            if (name.isNotBlank() && cleanPhones.isNotEmpty()) {
+              onSave(name.trim(), cleanPhones, cleanEmails, notes.trim().ifEmpty { null }, photo)
+            }
+          },
+          enabled = name.isNotBlank() && hasValidPhone,
+        ) { Text("שמור", fontWeight = FontWeight.Bold) }
       }
     }
   }
