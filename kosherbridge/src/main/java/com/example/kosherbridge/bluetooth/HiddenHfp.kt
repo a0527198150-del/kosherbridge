@@ -58,6 +58,16 @@ object HiddenHfp {
   var privilegedBlocked: Boolean = false
     private set
 
+  /**
+   * Records that the system blocked a privileged Bluetooth call with a
+   * SecurityException - proof this device needs the Shizuku path. Called from
+   * the manager when getProfileProxy itself is rejected, in addition to the
+   * per-method invokers below.
+   */
+  fun markPrivilegedBlocked() {
+    privilegedBlocked = true
+  }
+
   // BluetoothHeadsetClientCall constants (AOSP fallbacks if reflection fails)
   var callStateActive = 0; private set
   var callStateHeld = 1; private set

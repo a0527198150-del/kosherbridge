@@ -124,6 +124,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         if (client == null) {
           lastError.value = "פרופיל הדיבורית אינו זמין במכשיר זה"
         } else {
+          // The direct (in-process) path works on this device - Shizuku is not
+          // needed. Clear any stale error (e.g. a premature Shizuku message)
+          // so the home screen doesn't keep telling the user to install it.
+          lastError.value = null
           registerCallback()
           registerStateReceiver()
           startPolling()
@@ -139,8 +143,18 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         call.value = null
       }
     }
-    val ok = runCatching { a.getProfileProxy(context, listener, HiddenHfp.PROFILE_ID) }.getOrDefault(false)
-    if (!ok) {
+    val ok = try {
+      a.getProfileProxy(context, listener, HiddenHfp.PROFILE_ID)
+    } catch (e: SecurityException) {
+      // The system rejected the profile request itself - the strongest proof
+      // this device needs the privileged Shizuku path.
+      HiddenHfp.markPrivilegedBlocked()
+      lastError.value = "גישה לפרופיל הדיבורית נחסמה על ידי המערכת"
+      false
+    } catch (e: Throwable) {
+      false
+    }
+    if (!ok && !HiddenHfp.privilegedBlocked) {
       lastError.value = "לא ניתן לגשת לפרופיל הדיבורית במכשיר זה"
     }
   }
@@ -193,6 +207,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         shizuku?.connect(addr)
       }
     }
+    lastError.value = null
     profileReady.value = true
     startPolling()
     return true

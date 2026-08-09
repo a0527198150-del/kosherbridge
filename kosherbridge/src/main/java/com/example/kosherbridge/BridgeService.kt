@@ -93,15 +93,20 @@ class BridgeService : Service() {
     if (intent?.action == ACTION_START || intent?.action == null) {
       manager.register()
       maybeAutoConnect()
-      // If the in-process profile is unavailable OR a real privileged call was
-      // already rejected with SecurityException (profileReady alone is not
-      // proof the privileged path works - getProfileProxy can succeed while
-      // every connect/dial fails without BLUETOOTH_PRIVILEGED), fall back to
-      // the privileged Shizuku user service. connect()/dial() also trigger this
+      // Fall back to the privileged Shizuku user service ONLY when the system
+      // actually blocked the direct path (SecurityException - the proof this
+      // device needs Shizuku). Slow players can take several seconds to bring
+      // the direct profile up, so wait for it to settle first instead of
+      // jumping to Shizuku after a fixed delay - otherwise players that work
+      // fine without Shizuku would briefly show a "Shizuku not installed"
+      // error on the home screen. connect()/dial() also trigger this
       // immediately; this delayed check is the boot-time backstop.
       scope.launch {
-        delay(2500)
-        if (!manager.profileReady.value || manager.privilegedBlocked) {
+        for (i in 0 until 30) {
+          if (manager.profileReady.value || manager.privilegedBlocked) break
+          delay(250)
+        }
+        if (manager.privilegedBlocked) {
           manager.bindShizuku()
         }
       }
