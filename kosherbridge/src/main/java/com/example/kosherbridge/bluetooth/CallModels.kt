@@ -26,4 +26,12 @@ data class BridgeUiState(
   val backendLabel: String? = null, // active bridge path, for diagnostics
   val call: CallInfo? = null,
   val lastError: String? = null,
+  // ---- capability report (diagnostics tab) ----
+  val deviceInfo: String? = null, // manufacturer + model + SDK
+  val hiddenApiAvailable: Boolean = false, // BluetoothHeadsetClient class exposed?
+  val privilegedBlocked: Boolean = false, // system rejected privileged calls?
+  val shizukuAvailable: Boolean = false,
+  val shizukuGranted: Boolean = false,
+  val scoSupport: String? = null, // does this player expose SCO at all?
+  val scoTechnique: String? = null, // last SCO technique the stack was asked for
 )

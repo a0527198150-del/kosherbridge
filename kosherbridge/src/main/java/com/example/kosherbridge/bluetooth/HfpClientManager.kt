@@ -90,6 +90,19 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   val privilegedBlocked: Boolean get() = HiddenHfp.privilegedBlocked
 
+  /** Flow mirror of [privilegedBlocked] - collected by BridgeService for the UI. */
+  val privilegedBlockedFlow = HiddenHfp.privilegedBlockedFlow
+
+  /**
+   * Whether the Shizuku server is reachable and this app is authorized there -
+   * for the diagnostics report. Safe to call anytime; creates the (cheap)
+   * bridge object if it hasn't been created yet.
+   */
+  fun shizukuState(): Pair<Boolean, Boolean> {
+    val b = shizuku ?: ShizukuBridge(context).also { shizuku = it }
+    return b.isAvailable to b.permissionGranted
+  }
+
   val adapterOn: Boolean get() = adapter?.isEnabled == true
 
   fun bondedDevices(): List<PairedDeviceInfo> =
@@ -127,6 +140,15 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         if (client == null) {
           lastError.value = "פרופיל הדיבורית אינו זמין במכשיר זה"
         } else {
+          // Early capability probe: fire a couple of cheap, non-destructive
+          // profile calls right away. On devices that actually lack
+          // BLUETOOTH_PRIVILEGED they throw SecurityException, which sets
+          // HiddenHfp.privilegedBlocked (and its flow) immediately - so the
+          // app knows at boot that this player needs the Shizuku path,
+          // instead of discovering it mid-call on the first real dial.
+          runCatching { HiddenHfp.currentCalls(client) }
+          runCatching { HiddenHfp.connectedDevices(client) }
+
           // The direct (in-process) path works on this device - Shizuku is not
           // needed. Clear any stale error (e.g. a premature Shizuku message)
           // so the home screen doesn't keep telling the user to install it.

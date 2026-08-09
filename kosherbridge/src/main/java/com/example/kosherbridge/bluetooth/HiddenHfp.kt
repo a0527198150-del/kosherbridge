@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothProfile
 import android.util.Log
 import java.lang.reflect.Method
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Safe reflection wrapper over the hidden `android.bluetooth.BluetoothHeadsetClient`
@@ -59,6 +60,12 @@ object HiddenHfp {
     private set
 
   /**
+   * Flow mirror of [privilegedBlocked], so the UI/service can react the moment
+   * the wall is proven instead of only reading the getter.
+   */
+  val privilegedBlockedFlow = MutableStateFlow(false)
+
+  /**
    * Records that the system blocked a privileged Bluetooth call with a
    * SecurityException - proof this device needs the Shizuku path. Called from
    * the manager when getProfileProxy itself is rejected, in addition to the
@@ -66,6 +73,7 @@ object HiddenHfp {
    */
   fun markPrivilegedBlocked() {
     privilegedBlocked = true
+    privilegedBlockedFlow.value = true
   }
 
   // BluetoothHeadsetClientCall constants (AOSP fallbacks if reflection fails)
@@ -164,21 +172,21 @@ object HiddenHfp {
 
   private fun bool(m: Method?, recv: Any?, vararg args: Any?): Boolean =
     try { (m?.invoke(recv, *args) as? Boolean) ?: false }
-    catch (e: SecurityException) { privilegedBlocked = true; false }
+    catch (e: SecurityException) { markPrivilegedBlocked(); false }
     catch (e: Throwable) { false }
 
   private fun int(m: Method?, recv: Any?, def: Int, vararg args: Any?): Int =
     try { (m?.invoke(recv, *args) as? Int) ?: def }
-    catch (e: SecurityException) { privilegedBlocked = true; def }
+    catch (e: SecurityException) { markPrivilegedBlocked(); def }
     catch (e: Throwable) { def }
 
   private fun string(m: Method?, recv: Any?, vararg args: Any?): String? =
     try { m?.invoke(recv, *args) as? String }
-    catch (e: SecurityException) { privilegedBlocked = true; null }
+    catch (e: SecurityException) { markPrivilegedBlocked(); null }
     catch (e: Throwable) { null }
 
   private fun list(m: Method?, recv: Any?): List<*> =
     try { m?.invoke(recv) as? List<*> ?: emptyList<Any>() }
-    catch (e: SecurityException) { privilegedBlocked = true; emptyList<Any>() }
+    catch (e: SecurityException) { markPrivilegedBlocked(); emptyList<Any>() }
     catch (e: Throwable) { emptyList<Any>() }
 }

@@ -15,6 +15,7 @@ import com.example.kosherbridge.bluetooth.CallDirection
 import com.example.kosherbridge.bluetooth.CallInfo
 import com.example.kosherbridge.bluetooth.CallState
 import com.example.kosherbridge.bluetooth.HfpClientManager
+import com.example.kosherbridge.bluetooth.HiddenHfp
 import com.example.kosherbridge.bluetooth.PairedDeviceInfo
 import com.example.kosherbridge.data.ServiceLocator
 import kotlinx.coroutines.CoroutineScope
@@ -77,6 +78,7 @@ class BridgeService : Service() {
     manager = HfpClientManager(this, scope)
     observeSettings()
     observeManager()
+    publishCapabilityReport()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -219,6 +221,36 @@ class BridgeService : Service() {
     }
   }
 
+  /**
+   * One-time capability report for the diagnostics tab: what this player is
+   * (manufacturer/model/SDK), whether the hidden HFP class is exposed, and
+   * whether Shizuku is available and authorized. Dynamic fields (privileged
+   * block, SCO) are updated by the collectors below.
+   */
+  private fun publishCapabilityReport() {
+    scope.launch {
+      val (sAvail, sGranted) = manager.shizukuState()
+      BridgeHub.update {
+        it.copy(
+          deviceInfo = "${Build.MANUFACTURER} ${Build.MODEL} (SDK ${Build.VERSION.SDK_INT})",
+          hiddenApiAvailable = HiddenHfp.isAvailable,
+          shizukuAvailable = sAvail,
+          shizukuGranted = sGranted,
+        )
+      }
+    }
+  }
+
+  /** Human-readable SCO support line for the diagnostics tab. */
+  private fun scoSupportText(): String {
+    val a = manager.audio
+    return when {
+      a.scoDeviceEverSeen && a.scoConnected.value -> "מחובר (${a.scoTechniqueUsed})"
+      a.scoDeviceEverSeen -> "נתמך - לא מחובר עכשיו"
+      else -> "לא זוהה התקן SCO - הנגן כנראה תומך רק בבקרה, לא בקול"
+    }
+  }
+
   private fun observeManager() {
     scope.launch {
       manager.profileReady.collect { ready ->
@@ -243,7 +275,20 @@ class BridgeService : Service() {
       manager.audioState.collect { a -> BridgeHub.update { it.copy(audioState = a) } }
     }
     scope.launch {
-      manager.audio.routeLabel.collect { r -> BridgeHub.update { it.copy(audioRoute = r) } }
+      manager.audio.routeLabel.collect { r ->
+        BridgeHub.update {
+          it.copy(
+            audioRoute = r,
+            scoSupport = scoSupportText(),
+            scoTechnique = manager.audio.scoTechniqueUsed.ifBlank { null },
+          )
+        }
+      }
+    }
+    scope.launch {
+      manager.privilegedBlockedFlow.collect { blocked ->
+        BridgeHub.update { it.copy(privilegedBlocked = blocked) }
+      }
     }
     scope.launch {
       manager.backendLabel.collect { r -> BridgeHub.update { it.copy(backendLabel = r) } }

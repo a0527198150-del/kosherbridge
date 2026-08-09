@@ -2,6 +2,9 @@ package com.example.kosherbridge.ui
 
 import android.Manifest
 import android.bluetooth.BluetoothProfile
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.provider.Settings
@@ -220,6 +223,28 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       state.audioRoute?.let {
         DiagRow("ניתוב שמע", it, it.startsWith("מנותב"))
       }
+      state.deviceInfo?.let { DiagRow("מכשיר", it, true) }
+      DiagRow("API נסתר (HFP)", if (state.hiddenApiAvailable) "זמין" else "לא זמין", state.hiddenApiAvailable)
+      DiagRow(
+        "חסימת הרשאות",
+        if (state.privilegedBlocked) "נחסמה - דרוש Shizuku" else "לא נחסמה",
+        !state.privilegedBlocked,
+      )
+      DiagRow(
+        "Shizuku",
+        when {
+          state.shizukuGranted -> "פעיל + הרשאה"
+          state.shizukuAvailable -> "מותקן, בלי הרשאה"
+          else -> "לא מותקן/לא פעיל"
+        },
+        state.shizukuGranted,
+      )
+      state.scoSupport?.let {
+        DiagRow("שמע (SCO)", it, it.startsWith("מחובר") || it.startsWith("נתמך"))
+      }
+      state.scoTechnique?.let {
+        DiagRow("טכניקת שמע אחרונה", it, true)
+      }
       SettingRow("בדיקת מיקרופון", micResult ?: "מוודא שהמיקרופון קולט קול לשיחה") {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
           PackageManager.PERMISSION_GRANTED
@@ -237,6 +262,14 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
           color = MaterialTheme.colorScheme.error,
           style = MaterialTheme.typography.bodySmall,
         )
+      }
+      SettingRow(
+        "העתק דוח אבחון",
+        "מעתיק דוח מלא של המכשיר והחיבור - הדבק אותו בתמיכה",
+      ) {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("kosherbridge-diagnostics", buildDiagnosticsReport(state)))
+        onSnackbar("דוח האבחון הועתק - הדבק אותו בהודעה")
       }
     }
     SettingsCard("אודות") {
@@ -372,4 +405,40 @@ private fun DiagRow(label: String, value: String, ok: Boolean) {
       color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
     )
   }
+}
+
+/** Builds the full local capability report copied by "העתק דוח אבחון". */
+private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
+  appendLine("KosherBridge - דוח אבחון")
+  appendLine("=======================")
+  appendLine("גרסת אפליקציה: ${com.example.kosherbridge.BuildConfig.VERSION_NAME}")
+  appendLine("מכשיר: ${state.deviceInfo ?: "-"}")
+  appendLine("API נסתר (HFP): ${if (state.hiddenApiAvailable) "זמין" else "לא זמין"}")
+  appendLine("פרופיל דיבורית: ${if (state.profileReady) "נתמך" else "לא נתמך"}")
+  appendLine("ערוץ פעיל: ${state.backendLabel ?: "לא פעיל"}")
+  appendLine("חסימת הרשאות: ${if (state.privilegedBlocked) "נחסמה - דרוש Shizuku" else "לא נחסמה"}")
+  appendLine(
+    "Shizuku: ${
+      when {
+        state.shizukuGranted -> "פעיל + הרשאה"
+        state.shizukuAvailable -> "מותקן, בלי הרשאה"
+        else -> "לא מותקן/לא פעיל"
+      }
+    }",
+  )
+  appendLine("בלוטוס: ${if (state.adapterOn) "פועל" else "כבוי"}")
+  appendLine("חיבור: ${connectionText(state)}")
+  appendLine(
+    "שמע: ${
+      when (state.audioState) {
+        2 -> "פעיל"
+        1 -> "מתחבר"
+        else -> "מנותק"
+      }
+    }",
+  )
+  state.audioRoute?.let { appendLine("ניתוב שמע: $it") }
+  state.scoSupport?.let { appendLine("שמע (SCO): $it") }
+  state.scoTechnique?.let { appendLine("טכניקת שמע אחרונה: $it") }
+  state.lastError?.let { appendLine("שגיאה אחרונה: $it") }
 }

@@ -61,12 +61,31 @@ class CallAudioManager(private val context: Context) {
   @Volatile private var focusGranted = false
   @Volatile private var receiversRegistered = false
   @Volatile private var micWasMuted = false // mic muted at OS level when the call started
+  @Volatile private var fallbackScheduled = false // legacy-SCO retry already queued
 
   /** True while the Bluetooth stack reports a live SCO (voice) link. */
   val scoConnected = MutableStateFlow(false)
 
   /** Short human-readable description of the current routing attempt. */
   val routeLabel = MutableStateFlow<String?>(null)
+
+  /** Description of the last SCO technique the stack was asked for. */
+  @Volatile private var scoTechnique = ""
+
+  /** True once any TYPE_BLUETOOTH_SCO device ever appeared as available. */
+  @Volatile private var everSawScoDevice = false
+
+  /** True once the stack ever confirmed a connected SCO link (broadcast). */
+  @Volatile private var scoEverConnected = false
+
+  /** For diagnostics: what the stack was last asked to do for the voice link. */
+  val scoTechniqueUsed: String get() = scoTechnique
+
+  /** For diagnostics: did this player ever expose a SCO-capable device? */
+  val scoDeviceEverSeen: Boolean get() = everSawScoDevice
+
+  /** For diagnostics: has the voice link ever actually come up on this player? */
+  val scoEverConnectedValue: Boolean get() = scoEverConnected
 
   /** Invoked by HfpClientManager when the SCO link dropped mid-call. */
   var onScoDropped: (() -> Unit)? = null
@@ -90,12 +109,14 @@ class CallAudioManager(private val context: Context) {
             AudioManager.EXTRA_SCO_AUDIO_STATE,
             AudioManager.SCO_AUDIO_STATE_DISCONNECTED,
           )
-          scoConnected.value = state == AudioManager.SCO_AUDIO_STATE_CONNECTED
+          val connected = state == AudioManager.SCO_AUDIO_STATE_CONNECTED
+          scoConnected.value = connected
+          if (connected) scoEverConnected = true
           // If the forced (virtual) SCO dropped, forget it so the next
           // connectAudio() re-forces it instead of no-op'ing.
-          if (state != AudioManager.SCO_AUDIO_STATE_CONNECTED) virtualScoOn = false
+          if (!connected) virtualScoOn = false
           Log.i(tag, "SCO state -> $state (inCall=$inCall)")
-          if (inCall && state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
+          if (inCall && !connected) {
             onScoDropped?.invoke()
           }
         }
@@ -164,17 +185,41 @@ class CallAudioManager(private val context: Context) {
       val target = findScoDevice(device)
       if (target == null) {
         routeLabel.value = "אין התקן דיבורית לניתוב"
+        scoTechnique = "לא נמצא התקן SCO"
         startLegacySco()
         return
       }
       val ok = runCatching { am.setCommunicationDevice(target) }.getOrDefault(false)
+      scoTechnique = if (ok) "setCommunicationDevice" else "setCommunicationDevice נכשל"
       routeLabel.value = if (ok) "מנותב להתקן דיבורית" else "הניתוב נכשל - מנסה SCO ישן"
       if (!ok) startLegacySco()
+      // Some modern stacks formally accept setCommunicationDevice but never
+      // actually bring the SCO link up. If nothing arrives within a couple of
+      // seconds, retry with the classic technique - even on API 31+.
+      scheduleScoFallback()
     } else {
       // Legacy path (API 24-30): the classic SCO technique used by car-kit
       // and VoIP apps. Deprecated on 31+ in favor of setCommunicationDevice.
       startLegacySco()
     }
+  }
+
+  /**
+   * If the modern API didn't produce a live SCO link within ~2.5s, also try
+   * the classic startBluetoothSco - some HALs with buggy setCommunicationDevice
+   * implementations only respond to the old technique. One-shot per call.
+   */
+  private fun scheduleScoFallback() {
+    if (fallbackScheduled) return
+    fallbackScheduled = true
+    Thread {
+      runCatching { Thread.sleep(2500) }
+      fallbackScheduled = false
+      if (!inCall || scoConnected.value) return@Thread
+      Log.w(tag, "SCO did not come up via the modern API - falling back to startBluetoothSco")
+      startLegacySco()
+      scoTechnique = "startBluetoothSco (נפילה)"
+    }.start()
   }
 
   /**
@@ -187,12 +232,14 @@ class CallAudioManager(private val context: Context) {
       available.firstOrNull {
         it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
           runCatching { it.address == device.address }.getOrDefault(false)
-      }?.let { return it }
+      }?.let { return it.also { everSawScoDevice = true } }
     }
     return available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+      ?.also { everSawScoDevice = true }
   }
 
   private fun startLegacySco() {
+    scoTechnique = "startBluetoothSco"
     runCatching { am.startBluetoothSco() }
     runCatching { am.isBluetoothScoOn = true }
   }
@@ -394,10 +441,21 @@ class CallAudioManager(private val context: Context) {
       Thread.sleep(300)
       val read = record.read(buffer, 0, frames, AudioRecord.READ_BLOCKING)
       val peak = (0 until read).maxOfOrNull { abs(buffer[it].toInt()) } ?: 0
+      // Where is the recording actually going? If it is NOT the Bluetooth SCO
+      // device, the voice never reaches the phone even though the mic works -
+      // this distinguishes "mic broken" from "route broken".
+      val routed = runCatching { record.routedDevice }.getOrNull()
+      val routeDesc = routed?.let {
+        if (it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+          "מנותב לדיבורית (SCO) - הקול יגיע לטלפון"
+        } else {
+          "נקלט ב: ${it.productName?.toString()?.takeIf { s -> s.isNotBlank() } ?: typeName(it.type)} - הקול לא יעבור דרך הבלוטוס"
+        }
+      } ?: "ניתוב לא ידוע"
       result = if (peak == 0) {
         "המיקרופון שקט - לא נקלט קול (בדוק שהנגן מזווג והבלוטוס דלוק)"
       } else {
-        "המיקרופון תקין - קולט קול (עוצמה $peak)"
+        "המיקרופון תקין - קולט קול (עוצמה $peak) · $routeDesc"
       }
     } catch (e: Exception) {
       result = "שגיאה בבדיקה: ${e.message ?: "לא ידוע"}"
@@ -406,5 +464,12 @@ class CallAudioManager(private val context: Context) {
       record.release()
     }
     result
+  }
+
+  private fun typeName(t: Int): String = when (t) {
+    AudioDeviceInfo.TYPE_BUILTIN_MIC -> "מיקרופון מובנה"
+    AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "דיבורית (SCO)"
+    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "אוזניות (A2DP)"
+    else -> "התקן $t"
   }
 }

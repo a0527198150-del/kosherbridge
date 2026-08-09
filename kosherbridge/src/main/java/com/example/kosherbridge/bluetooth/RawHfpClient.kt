@@ -35,8 +35,12 @@ class RawHfpClient(private val scope: CoroutineScope) {
 
   private val tag = "RawHfp"
 
-  // HFP Audio Gateway UUID (HandsfreeAudioGateway = 0x111E)
-  private val hfpAgUuid: UUID = UUID.fromString("0000111e-0000-1000-8000-00805f9b34fb")
+  // HFP Audio Gateway UUID (HandsfreeAudioGateway = 0x111F). The kosher phone
+  // plays the Audio Gateway (AG) role and publishes THIS service record, so
+  // createRfcommSocketToServiceRecord() finds it in the phone's SDP. (0x111E is
+  // the Handsfree/HF side - the role *this* player plays - which the phone does
+  // not publish; searching with it fails to find any record.)
+  private val hfpAgUuid: UUID = UUID.fromString("0000111f-0000-1000-8000-00805f9b34fb")
 
   // HSP (legacy "headset") Audio Gateway UUID (HeadsetAudioGateway = 0x1108).
   // Some phones only recognize the player as a headset ("אוזנייה") through
