@@ -18,12 +18,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,6 +43,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.data.ServiceLocator
+import com.example.kosherbridge.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 
 @Composable
@@ -49,7 +53,10 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
   val settings = ServiceLocator.settings
   val autoConnect by settings.autoConnect.collectAsStateWithLifecycle(true)
   val fullScreen by settings.fullScreen.collectAsStateWithLifecycle(true)
+  val vibrate by settings.vibrate.collectAsStateWithLifecycle(true)
+  val themeMode by settings.themeMode.collectAsStateWithLifecycle(ThemeMode.SYSTEM.name)
   var showDevices by remember { mutableStateOf(false) }
+  var showClearCallsConfirm by remember { mutableStateOf(false) }
 
   Column(
     modifier = modifier
@@ -92,6 +99,32 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         subtitle = "הצג מסך שיחה נכנסת גם כשהנגן נעול",
         checked = fullScreen,
       ) { v -> scope.launch { settings.setFullScreen(v) } }
+      SettingSwitch(
+        title = "רטט",
+        subtitle = "רטט בעת שיחה נכנסת",
+        checked = vibrate,
+      ) { v -> scope.launch { settings.setVibrate(v) } }
+    }
+    SettingsCard("מראה") {
+      Text("מצב תצוגה", style = MaterialTheme.typography.bodyLarge)
+      Row(
+        Modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        ThemeMode.entries.forEach { mode ->
+          FilterChip(
+            selected = themeMode == mode.name,
+            onClick = { scope.launch { settings.setThemeMode(mode.name) } },
+            label = { Text(mode.label) },
+          )
+        }
+      }
+    }
+    SettingsCard("יומן שיחות") {
+      SettingRow(
+        "נקה יומן שיחות",
+        "מחיקת כל השיחות שנרשמו ביומן",
+      ) { showClearCallsConfirm = true }
     }
     SettingsCard("אבחון") {
       DiagRow("פרופיל דיבורית (HFP Client)", if (state.profileReady) "נתמך" else "לא נתמך", state.profileReady)
@@ -133,6 +166,24 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         showDevices = false
         BridgeHub.service?.connectTo(address)
       },
+    )
+  }
+
+  if (showClearCallsConfirm) {
+    AlertDialog(
+      onDismissRequest = { showClearCallsConfirm = false },
+      title = { Text("לנקות את יומן השיחות?") },
+      text = { Text("כל השיחות ביומן יימחקו לצמיתות.") },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            scope.launch { ServiceLocator.contacts.clearCallLog() }
+            showClearCallsConfirm = false
+            onSnackbar("יומן השיחות נוקה")
+          },
+        ) { Text("מחק הכול", fontWeight = FontWeight.Bold) }
+      },
+      dismissButton = { TextButton(onClick = { showClearCallsConfirm = false }) { Text("ביטול") } },
     )
   }
 }

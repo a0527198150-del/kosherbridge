@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
@@ -23,7 +22,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -37,6 +35,7 @@ import com.example.kosherbridge.bluetooth.CallState
 fun IncomingCallScreen(
   number: String?,
   name: String?,
+  photoUri: String?,
   state: CallInfo?,
   onAnswer: () -> Unit,
   onReject: () -> Unit,
@@ -70,20 +69,7 @@ fun IncomingCallScreen(
         style = MaterialTheme.typography.titleLarge,
       )
       Spacer(Modifier.height(28.dp))
-      Box(
-        modifier = Modifier
-          .size(96.dp)
-          .clip(CircleShape)
-          .background(Color.White.copy(alpha = 0.15f)),
-        contentAlignment = Alignment.Center,
-      ) {
-        Text(
-          displayName?.let { initials(it) } ?: "?",
-          color = Color.White,
-          style = MaterialTheme.typography.headlineLarge,
-          fontWeight = FontWeight.Bold,
-        )
-      }
+      ContactAvatar(displayName ?: "", photoUri, 96.dp)
       Spacer(Modifier.height(20.dp))
       Text(
         displayName ?: "לא ידוע",

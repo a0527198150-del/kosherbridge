@@ -63,7 +63,7 @@ object Notifications {
       .build()
   }
 
-  fun showIncomingCall(context: Context, title: String, number: String?, fullScreen: Boolean) {
+  fun showIncomingCall(context: Context, title: String, number: String?, fullScreen: Boolean, vibrate: Boolean) {
     val full = PendingIntent.getActivity(
       context,
       2,
@@ -92,7 +92,7 @@ object Notifications {
       .setOngoing(true)
       .setAutoCancel(false)
       // No DEFAULT_SOUND here: IncomingCallActivity plays the ringtone itself.
-      .setDefaults(NotificationCompat.DEFAULT_VIBRATE)
+      .setDefaults(if (vibrate) NotificationCompat.DEFAULT_VIBRATE else 0)
       .setContentIntent(full)
       .addAction(0, "ענה", answer)
       .addAction(0, "דחה", reject)

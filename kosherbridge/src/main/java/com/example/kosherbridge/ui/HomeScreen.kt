@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.BluetoothDisabled
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -33,10 +34,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +56,7 @@ import com.example.kosherbridge.data.local.CallLogEntity
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifier = Modifier) {
@@ -68,6 +72,7 @@ fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifie
     ConnectionCard(state, onShowDevices = { showDevices = true }, onGoToDialer = onGoToDialer)
     state.call?.let { CallCard(it, state.audioState) }
     state.lastError?.let { ErrorCard(it) }
+    FollowUpCard()
     RecentCallsCard()
   }
 
@@ -279,6 +284,55 @@ private fun ErrorCard(message: String) {
   }
 }
 
+/** Calls the user flagged for follow-up: the app surfaces them until handled. */
+@Composable
+private fun FollowUpCard() {
+  val followUps by ServiceLocator.contacts.followUps().collectAsStateWithLifecycle(emptyList())
+  val scope = rememberCoroutineScope()
+  if (followUps.isEmpty()) return
+  Card(
+    shape = RoundedCornerShape(24.dp),
+    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0)),
+  ) {
+    Column(
+      Modifier.fillMaxWidth().padding(20.dp),
+      verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Filled.Flag, contentDescription = null, tint = Color(0xFFB26A00))
+        Spacer(Modifier.width(8.dp))
+        Text("לטיפול בהמשך", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+      }
+      followUps.take(5).forEach { c ->
+        Row(
+          Modifier.fillMaxWidth().padding(vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(
+            Modifier.weight(1f).clickable { BridgeHub.service?.dial(c.number) },
+          ) {
+            Text(
+              c.name ?: c.number,
+              style = MaterialTheme.typography.bodyLarge,
+              fontWeight = FontWeight.Medium,
+            )
+            if (c.name != null) {
+              Text(
+                c.number,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+          TextButton(onClick = { scope.launch { ServiceLocator.contacts.markFollowUp(c.id, false) } }) {
+            Text("סיים טיפול")
+          }
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun RecentCallsCard() {
   val calls by ServiceLocator.contacts.recentCalls().collectAsStateWithLifecycle(emptyList())
@@ -303,6 +357,7 @@ private fun RecentCallsCard() {
 
 @Composable
 private fun CallRow(c: CallLogEntity) {
+  val missed = c.missed && c.direction == "INCOMING"
   val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(c.timestamp))
   Row(
     modifier = Modifier
@@ -314,18 +369,37 @@ private fun CallRow(c: CallLogEntity) {
     Icon(
       imageVector = if (c.direction == "INCOMING") Icons.AutoMirrored.Filled.CallReceived else Icons.AutoMirrored.Filled.CallMade,
       contentDescription = null,
-      tint = if (c.direction == "INCOMING") MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+      tint = when {
+        missed -> MaterialTheme.colorScheme.error
+        c.direction == "INCOMING" -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.primary
+      },
     )
     Spacer(Modifier.width(12.dp))
     Column(Modifier.weight(1f)) {
       Text(
         c.name ?: c.number,
         style = MaterialTheme.typography.bodyLarge,
-        fontWeight = FontWeight.Medium,
+        fontWeight = if (missed) FontWeight.Bold else FontWeight.Medium,
+        color = if (missed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
       )
-      if (c.name != null) {
-        Text(c.number, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      when {
+        missed -> Text("לא נענתה", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        c.name != null -> Text(
+          c.number,
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
       }
+    }
+    if (c.followUp) {
+      Icon(
+        Icons.Filled.Flag,
+        contentDescription = "לטיפול",
+        tint = Color(0xFFB26A00),
+        modifier = Modifier.size(18.dp),
+      )
+      Spacer(Modifier.width(8.dp))
     }
     Text(time, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
   }

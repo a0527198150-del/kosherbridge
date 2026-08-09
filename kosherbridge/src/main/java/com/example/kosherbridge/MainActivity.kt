@@ -10,11 +10,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.ui.MainScreen
 import com.example.kosherbridge.ui.theme.KosherBridgeTheme
+import com.example.kosherbridge.ui.theme.ThemeMode
 
 class MainActivity : ComponentActivity() {
 
@@ -29,7 +32,10 @@ class MainActivity : ComponentActivity() {
     requestNeededPermissions()
 
     setContent {
-      KosherBridgeTheme {
+      val themeMode by ServiceLocator.settings.themeMode.collectAsStateWithLifecycle(ThemeMode.SYSTEM.name)
+      KosherBridgeTheme(
+        themeMode = runCatching { ThemeMode.valueOf(themeMode) }.getOrDefault(ThemeMode.SYSTEM),
+      ) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
           MainScreen()
         }

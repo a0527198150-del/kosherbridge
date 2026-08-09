@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Dialpad
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -59,6 +60,12 @@ fun MainScreen() {
         NavigationBarItem(
           selected = tab == 3,
           onClick = { tab = 3 },
+          icon = { Icon(Icons.Filled.History, contentDescription = null) },
+          label = { Text("יומן") },
+        )
+        NavigationBarItem(
+          selected = tab == 4,
+          onClick = { tab = 4 },
           icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
           label = { Text("הגדרות") },
         )
@@ -72,7 +79,8 @@ fun MainScreen() {
         0 -> HomeScreen(state, onGoToDialer = { tab = 1 })
         1 -> DialerScreen(onSnackbar = snack)
         2 -> ContactsScreen(onSnackbar = snack)
-        3 -> SettingsScreen(state, onSnackbar = snack)
+        3 -> CallLogScreen(onSnackbar = snack)
+        4 -> SettingsScreen(state, onSnackbar = snack)
       }
     }
   }

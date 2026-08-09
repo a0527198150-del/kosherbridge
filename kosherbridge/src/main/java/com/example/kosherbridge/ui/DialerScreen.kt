@@ -6,10 +6,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -35,7 +37,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeHub
 
@@ -49,12 +54,23 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
     modifier = modifier.fillMaxSize().padding(16.dp),
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {
+    val display = if (number.isEmpty()) "הזן מספר" else formatDialNumber(number)
     Spacer(Modifier.height(8.dp))
     Text(
-      text = number.ifEmpty { "הזן מספר" },
-      style = MaterialTheme.typography.headlineMedium,
+      text = display,
+      // The digits must read left-to-right (a real dialer), even though the
+      // rest of the app is RTL.
+      style = MaterialTheme.typography.headlineMedium.copy(
+        textDirection = if (number.isEmpty()) TextDirection.Content else TextDirection.Ltr,
+      ),
+      fontSize = when {
+        display.length > 15 -> 22.sp
+        display.length > 10 -> 26.sp
+        else -> 32.sp
+      },
       fontWeight = FontWeight.Bold,
       maxLines = 1,
+      textAlign = TextAlign.Center,
     )
     Spacer(Modifier.height(4.dp))
     Text(
@@ -62,24 +78,35 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
       style = MaterialTheme.typography.bodySmall,
       color = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
     )
-    Spacer(Modifier.height(20.dp))
+    Spacer(Modifier.height(16.dp))
 
     val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#")
-    keys.chunked(3).forEach { row ->
-      Row(
-        horizontalArrangement = Arrangement.spacedBy(28.dp),
-        modifier = Modifier.padding(vertical = 7.dp),
-      ) {
-        row.forEach { key ->
-          DialKey(
-            label = key,
-            onLongClick = if (key == "0") ({ number += "+" }) else null,
-          ) { number += key }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+      // Keys scale with the available width so the keypad fits every screen
+      // (phones, tablets and Android boxes) instead of overflowing or floating.
+      val keySize = ((maxWidth - 2 * 28.dp) / 3).coerceIn(56.dp, 88.dp)
+      keys.chunked(3).forEach { row ->
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(28.dp),
+          modifier = Modifier.fillMaxWidth(),
+        ) {
+          // Center the row when the keys hit their max size on wide screens
+          Spacer(Modifier.weight(1f))
+          row.forEach { key ->
+            DialKey(
+              label = key,
+              sub = t9Letters(key),
+              size = keySize,
+              onLongClick = if (key == "0") ({ number += "+" }) else null,
+            ) { number += key }
+          }
+          Spacer(Modifier.weight(1f))
         }
+        Spacer(Modifier.height(7.dp))
       }
     }
 
-    Spacer(Modifier.height(16.dp))
+    Spacer(Modifier.height(10.dp))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(36.dp)) {
       IconButton(
         onClick = { if (number.isNotEmpty()) number = number.dropLast(1) },
@@ -110,20 +137,56 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DialKey(label: String, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+private fun DialKey(
+  label: String,
+  sub: String?,
+  size: Dp,
+  onLongClick: (() -> Unit)? = null,
+  onClick: () -> Unit,
+) {
   Box(
     modifier = Modifier
-      .size(72.dp)
+      .size(size)
       .clip(CircleShape)
       .background(MaterialTheme.colorScheme.surfaceVariant)
       .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     contentAlignment = Alignment.Center,
   ) {
-    Text(
-      label,
-      style = MaterialTheme.typography.headlineSmall,
-      fontWeight = FontWeight.Medium,
-      textAlign = TextAlign.Center,
-    )
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+      Text(
+        label,
+        style = MaterialTheme.typography.headlineSmall,
+        fontWeight = FontWeight.Medium,
+        textAlign = TextAlign.Center,
+        fontSize = (size.value * 0.42f).sp,
+      )
+      if (!sub.isNullOrEmpty()) {
+        Text(
+          sub,
+          style = MaterialTheme.typography.labelSmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
   }
+}
+
+/** Classic T9 letters shown under the digits. */
+private fun t9Letters(key: String): String? = when (key) {
+  "2" -> "ABC"
+  "3" -> "DEF"
+  "4" -> "GHI"
+  "5" -> "JKL"
+  "6" -> "MNO"
+  "7" -> "PQRS"
+  "8" -> "TUV"
+  "9" -> "WXYZ"
+  else -> null
+}
+
+/** Readable grouping for dialing, e.g. 050-123-4567 or +972-50-123-4567. */
+internal fun formatDialNumber(raw: String): String = when {
+  raw.length == 10 && raw.startsWith("0") -> "${raw.substring(0, 3)}-${raw.substring(3, 6)}-${raw.substring(6)}"
+  raw.length == 12 && raw.startsWith("972") -> "+${raw.substring(0, 3)}-${raw.substring(3, 5)}-${raw.substring(5, 8)}-${raw.substring(8)}"
+  else -> raw
 }

@@ -18,6 +18,7 @@ class SettingsRepository(private val context: Context) {
     val AUTO_CONNECT = booleanPreferencesKey("auto_connect")
     val FULL_SCREEN = booleanPreferencesKey("full_screen_incoming")
     val VIBRATE = booleanPreferencesKey("vibrate")
+    val THEME_MODE = stringPreferencesKey("theme_mode")
     val LAST_DEVICE_NAME = stringPreferencesKey("last_device_name")
     val LAST_DEVICE_ADDRESS = stringPreferencesKey("last_device_address")
   }
@@ -31,6 +32,10 @@ class SettingsRepository(private val context: Context) {
   val vibrate: Flow<Boolean> =
     context.dataStore.data.map { it[Keys.VIBRATE] ?: true }
 
+  /** "SYSTEM", "LIGHT" or "DARK" - app-wide appearance. */
+  val themeMode: Flow<String> =
+    context.dataStore.data.map { it[Keys.THEME_MODE] ?: "SYSTEM" }
+
   val lastDevice: Flow<LastDevice?> =
     context.dataStore.data.map { prefs ->
       val address = prefs[Keys.LAST_DEVICE_ADDRESS]
@@ -43,6 +48,8 @@ class SettingsRepository(private val context: Context) {
   suspend fun setFullScreen(value: Boolean) = context.dataStore.edit { it[Keys.FULL_SCREEN] = value }
 
   suspend fun setVibrate(value: Boolean) = context.dataStore.edit { it[Keys.VIBRATE] = value }
+
+  suspend fun setThemeMode(mode: String) = context.dataStore.edit { it[Keys.THEME_MODE] = mode }
 
   suspend fun rememberDevice(name: String, address: String) = context.dataStore.edit {
     it[Keys.LAST_DEVICE_NAME] = name

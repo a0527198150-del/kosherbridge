@@ -62,6 +62,10 @@ class BridgeService : Service() {
   private var activeCallLogId: Long? = null
   private var lastCallInfo: CallInfo? = null
   private var fullScreenEnabled = true
+  private var vibrateEnabled = true
+  private var sawActive = false       // did the current call ever reach ACTIVE?
+  private var callStartedAt = 0L      // when ACTIVE began, for duration
+  private var activeCallDirection: CallDirection? = null
   private var reconnecting = false
   private var lastManualDisconnectAt = 0L
 
@@ -192,6 +196,7 @@ class BridgeService : Service() {
 
   private fun observeSettings() {
     scope.launch { ServiceLocator.settings.fullScreen.collect { fullScreenEnabled = it } }
+    scope.launch { ServiceLocator.settings.vibrate.collect { vibrateEnabled = it } }
   }
 
   private fun observeManager() {
@@ -235,8 +240,21 @@ class BridgeService : Service() {
 
     if (info == null || info.state == CallState.IDLE || info.state == CallState.TERMINATED) {
       Notifications.cancelCall(this)
-      activeCallLogId?.let { id -> ServiceLocator.contacts.updateCallState(id, CallState.IDLE) }
+      // Finalize the call log entry: an incoming call that never reached ACTIVE
+      // is a missed call; otherwise record the conversation length.
+      activeCallLogId?.let { id ->
+        val missed = activeCallDirection == CallDirection.INCOMING && !sawActive
+        val duration = if (sawActive && callStartedAt != 0L) {
+          ((System.currentTimeMillis() - callStartedAt) / 1000L).toInt()
+        } else {
+          0
+        }
+        ServiceLocator.contacts.finishCall(id, missed, duration)
+      }
       activeCallLogId = null
+      sawActive = false
+      callStartedAt = 0L
+      activeCallDirection = null
       lastCallInfo = null
       return
     }
@@ -246,6 +264,9 @@ class BridgeService : Service() {
       CallState.INCOMING, CallState.WAITING -> {
         if (prev == null || (prev.state != CallState.INCOMING && prev.state != CallState.WAITING)) {
           val name = ServiceLocator.contacts.nameFor(info.number)
+          sawActive = false
+          callStartedAt = 0L
+          activeCallDirection = CallDirection.INCOMING
           activeCallLogId = ServiceLocator.contacts.logCall(
             info.number ?: "",
             name,
@@ -258,6 +279,7 @@ class BridgeService : Service() {
       CallState.DIALING -> {
         if (info.direction == CallDirection.OUTGOING && activeCallLogId == null) {
           val name = ServiceLocator.contacts.nameFor(info.number)
+          activeCallDirection = CallDirection.OUTGOING
           activeCallLogId = ServiceLocator.contacts.logCall(
             info.number ?: "",
             name,
@@ -267,6 +289,8 @@ class BridgeService : Service() {
         }
       }
       CallState.ACTIVE -> {
+        sawActive = true
+        callStartedAt = System.currentTimeMillis()
         manager.connectAudio()
         Notifications.showInCall(this, info)
       }
@@ -275,7 +299,7 @@ class BridgeService : Service() {
   }
 
   private fun showIncomingCall(title: String, number: String?) {
-    Notifications.showIncomingCall(this, title, number, fullScreenEnabled)
+    Notifications.showIncomingCall(this, title, number, fullScreenEnabled, vibrateEnabled)
     if (fullScreenEnabled) {
       val intent = IncomingCallActivity.createIntent(this, number, title)
         .addFlags(

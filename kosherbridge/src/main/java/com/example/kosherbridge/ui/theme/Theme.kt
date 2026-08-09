@@ -7,6 +7,13 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
+/** App-wide appearance setting: follow the system, or force light / dark. */
+enum class ThemeMode(val label: String) {
+  SYSTEM("אוטומטי"),
+  LIGHT("בהיר"),
+  DARK("כהה"),
+}
+
 private val LightColors = lightColorScheme(
   primary = Color(0xFF00696D),
   onPrimary = Color.White,
@@ -38,9 +45,14 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun KosherBridgeTheme(
-  darkTheme: Boolean = isSystemInDarkTheme(),
+  themeMode: ThemeMode = ThemeMode.SYSTEM,
   content: @Composable () -> Unit,
 ) {
+  val darkTheme = when (themeMode) {
+    ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+  }
   MaterialTheme(
     colorScheme = if (darkTheme) DarkColors else LightColors,
     content = content,
