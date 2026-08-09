@@ -308,7 +308,10 @@ class BridgeService : Service() {
       }
       CallState.ACTIVE -> {
         sawActive = true
-        callStartedAt = System.currentTimeMillis()
+        // Only start the clock on the first ACTIVE of this call, so a
+        // HELD -> ACTIVE transition mid-call doesn't shrink the duration
+        // that gets written to the call log.
+        if (callStartedAt == 0L) callStartedAt = System.currentTimeMillis()
         manager.connectAudio()
         Notifications.showInCall(this, info)
       }

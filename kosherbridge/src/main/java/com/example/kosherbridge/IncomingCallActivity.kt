@@ -48,9 +48,16 @@ class IncomingCallActivity : ComponentActivity() {
           val state by BridgeHub.state.collectAsStateWithLifecycle()
           val call = state.call
           var photoUri by remember { mutableStateOf<String?>(null) }
+          var resolvedName by remember { mutableStateOf<String?>(null) }
 
+          // Resolve photo AND name from the contacts DB by number, so the
+          // full-screen call UI always shows the contact name even when the
+          // launching Intent (e.g. the notification's full-screen intent)
+          // carried only the number.
           LaunchedEffect(call?.number) {
-            photoUri = ServiceLocator.contacts.contactFor(call?.number)?.photoUri
+            val contact = ServiceLocator.contacts.contactFor(call?.number)
+            photoUri = contact?.photoUri
+            resolvedName = contact?.name
           }
 
           LaunchedEffect(call?.state) {
@@ -63,7 +70,7 @@ class IncomingCallActivity : ComponentActivity() {
 
           IncomingCallScreen(
             number = call?.number,
-            name = intent.getStringExtra(EXTRA_NAME),
+            name = intent.getStringExtra(EXTRA_NAME) ?: resolvedName,
             photoUri = photoUri,
             state = call,
             onAnswer = { BridgeHub.service?.answer() },

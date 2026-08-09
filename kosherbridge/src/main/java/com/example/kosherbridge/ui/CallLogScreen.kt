@@ -87,10 +87,21 @@ fun CallLogScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
   var detailFor by remember { mutableStateOf<CallLogEntity?>(null) }
   val filter = CallFilter.valueOf(filterName)
 
-  // Contact photos for known numbers, resolved once per list update.
-  val contacts by ServiceLocator.contacts.allContacts().collectAsStateWithLifecycle(emptyList())
+  // Contact photos for known numbers, resolved once per list update. The map
+  // is keyed by EVERY phone of each contact (primary + secondary) so calls
+  // that arrived from a non-primary number still get the right photo.
+  val contacts by ServiceLocator.contacts.contactsWithDetails().collectAsStateWithLifecycle(emptyList())
   val photoByNumber = remember(contacts) {
-    contacts.associate { ContactsRepository.normalizePhone(it.phone) to it }
+    buildMap {
+      contacts.forEach { c ->
+        val primary = ContactsRepository.normalizePhone(c.contact.phone)
+        if (primary.isNotEmpty()) put(primary, c.contact)
+        c.phones.forEach { p ->
+          val n = ContactsRepository.normalizePhone(p.number)
+          if (n.isNotEmpty()) put(n, c.contact)
+        }
+      }
+    }
   }
 
   Column(modifier.fillMaxSize()) {

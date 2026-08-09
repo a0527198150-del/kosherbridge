@@ -256,8 +256,14 @@ class ContactsRepository(
         val email = e.optString("email", "").trim()
         if (email.isNotEmpty()) emails.add(e.optString("label", "אימייל") to email)
       }
-      val existing = db.contactDao().byPhone(normalizePhone(phones.first().second))
-      if (existing == null) {
+      // Skip if ANY of this entry's numbers already exists - either as a
+      // contact's primary number (contacts.normalizedPhone) or as any
+      // secondary number (contact_phones.normalizedPhone).
+      val alreadyExists = phones.asSequence()
+        .map { normalizePhone(it.second) }
+        .filter { it.isNotEmpty() }
+        .any { n -> db.contactDao().byPhone(n) != null || db.contactDao().phoneByNormalized(n) != null }
+      if (!alreadyExists) {
         val id = db.contactDao().insert(
           ContactEntity(
             name = name,
