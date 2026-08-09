@@ -244,54 +244,77 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     return true
   }
 
+  private var rawCollectorsLaunched = false
+
   /**
    * Direct HFP over RFCOMM - no hidden API and no privileged permission.
-   * Call control and caller ID work on every player; call audio (SCO) only on
-   * stacks that cooperate. Opt-in from Settings ("חיבור ישיר").
+   * Opens the kosher phone's headset port directly, so the phone sees this
+   * player as a hands-free/headset even when the player's Bluetooth stack has
+   * no HFP client profile at all. Call control and caller ID work on every
+   * player; call audio (SCO) only on stacks that cooperate.
    */
   fun connectRaw(target: BluetoothDevice) {
     device.value = target
     backendLabel.value = "RFCOMM ישיר"
     val r = raw ?: RawHfpClient(scope).also { raw = it }
-    scope.launch {
-      r.call.collect { info -> call.value = info }
-    }
-    scope.launch {
-      r.isConnected.collect { connected ->
-        connectionState.value =
-          if (connected) BluetoothProfile.STATE_CONNECTED else BluetoothProfile.STATE_DISCONNECTED
-        if (connected) profileReady.value = true
-        if (!connected) call.value = null
+    if (!rawCollectorsLaunched) {
+      rawCollectorsLaunched = true
+      scope.launch {
+        r.call.collect { info -> call.value = info }
       }
-    }
-    scope.launch {
-      r.lastError.collect { e -> if (e != null) lastError.value = e }
+      scope.launch {
+        r.isConnected.collect { connected ->
+          connectionState.value =
+            if (connected) BluetoothProfile.STATE_CONNECTED else BluetoothProfile.STATE_DISCONNECTED
+          if (connected) profileReady.value = true
+          if (!connected) call.value = null
+        }
+      }
+      scope.launch {
+        r.lastError.collect { e -> if (e != null) lastError.value = e }
+      }
     }
     r.connect(target)
   }
 
+  /**
+   * Connects the bridge to the kosher phone. Priority: active raw RFCOMM link,
+   * then the privileged Shizuku path, then the in-process hidden API. When the
+   * hands-free profile is unavailable on this player - or the stack-level
+   * connect fails - fall back to opening the phone's headset port directly
+   * over RFCOMM, so the phone still sees this device as a hands-free/headset.
+   */
   fun connect(target: BluetoothDevice) {
     device.value = target
-    // Same priority as every other command: raw RFCOMM first, then Shizuku,
-    // then the in-process hidden API.
     if (rawActive) {
       raw?.connect(target)
       return
     }
     if (useShizuku) {
-      if (!shizuku!!.connect(target.address)) {
-        lastError.value = "החיבור נכשל - נסה שוב"
+      if (profileReady.value) {
+        if (shizuku!!.connect(target.address)) return
+        lastError.value = "חיבור הדיבורית נכשל - מנסה חיבור ישיר לשער הטלפון"
+        connectRaw(target)
+        return
       }
+      // Shizuku is bound but the profile never registered - the stack lacks it.
+      lastError.value = "פרופיל הדיבורית לא זמין בנגן - מתחבר ישירות לשער הדיבורית של הטלפון"
+      connectRaw(target)
       return
     }
-    val c = client ?: return
-    if (!HiddenHfp.connect(c, target)) {
+    val c = client
+    if (c != null) {
+      if (HiddenHfp.connect(c, target)) return
       if (HiddenHfp.privilegedBlocked) {
         fallbackToShizuku("גישה ישירה לפרופיל נחסמה על ידי המערכת - עוברים אוטומטית ל-Shizuku")
-      } else {
-        lastError.value = "החיבור נכשל - נסה שוב"
+        return
       }
+      lastError.value = "חיבור הדיבורית נכשל - מנסה חיבור ישיר לשער הטלפון"
+      connectRaw(target)
+      return
     }
+    lastError.value = "פרופיל הדיבורית לא זמין בנגן - מתחבר ישירות לשער הדיבורית של הטלפון"
+    connectRaw(target)
   }
 
   fun disconnect() {
@@ -399,6 +422,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     shizuku = null
     raw?.disconnect()
     raw = null
+    rawCollectorsLaunched = false
     backendLabel.value = null
   }
 
@@ -468,25 +492,27 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           delay(700)
           continue
         }
-        if (useShizuku) {
-          pollShizuku()
-        } else if (!rawActive) {
-          val c = client
-          if (c != null) {
-            val d = device.value ?: (HiddenHfp.connectedDevices(c).firstOrNull() as? BluetoothDevice)
-            if (d != null) {
-              device.value = d
-              connectionState.value = HiddenHfp.connectionState(c, d)
-              audioState.value = HiddenHfp.audioState(c, d)
-              if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
-                val calls = HiddenHfp.currentCalls(c)
-                val key = callKey(calls)
-                if (key != lastKey) {
-                  lastKey = key
-                  call.value = primaryCall(calls)
+        if (!rawActive) {
+          if (useShizuku) {
+            pollShizuku()
+          } else {
+            val c = client
+            if (c != null) {
+              val d = device.value ?: (HiddenHfp.connectedDevices(c).firstOrNull() as? BluetoothDevice)
+              if (d != null) {
+                device.value = d
+                connectionState.value = HiddenHfp.connectionState(c, d)
+                audioState.value = HiddenHfp.audioState(c, d)
+                if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
+                  val calls = HiddenHfp.currentCalls(c)
+                  val key = callKey(calls)
+                  if (key != lastKey) {
+                    lastKey = key
+                    call.value = primaryCall(calls)
+                  }
+                } else {
+                  call.value = null
                 }
-              } else {
-                call.value = null
               }
             }
           }
