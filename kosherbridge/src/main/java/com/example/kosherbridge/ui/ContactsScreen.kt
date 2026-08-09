@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -22,7 +23,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +33,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -45,12 +46,14 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -604,19 +607,14 @@ private fun ContactEditorDialog(
         Text("טלפונים", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
         phones.forEachIndexed { i, p ->
           Row(verticalAlignment = Alignment.CenterVertically) {
-            LabelChips(
-              selected = p.label,
-              options = PHONE_LABELS,
-              onSelect = { phones[i] = p.copy(label = it) },
-              modifier = Modifier.weight(1f),
-            )
+            LabelPicker(selected = p.label, options = PHONE_LABELS, onSelect = { phones[i] = p.copy(label = it) })
             Spacer(Modifier.width(6.dp))
             OutlinedTextField(
               value = p.number,
               onValueChange = { phones[i] = p.copy(number = it) },
               placeholder = { Text("מספר") },
               singleLine = true,
-              modifier = Modifier.weight(1.6f),
+              modifier = Modifier.weight(1f),
               keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
             )
             IconButton(onClick = { if (phones.size > 1) phones.removeAt(i) }) {
@@ -636,19 +634,14 @@ private fun ContactEditorDialog(
         Text("אימיילים", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
         emails.forEachIndexed { i, e ->
           Row(verticalAlignment = Alignment.CenterVertically) {
-            LabelChips(
-              selected = e.label,
-              options = EMAIL_LABELS,
-              onSelect = { emails[i] = e.copy(label = it) },
-              modifier = Modifier.weight(1f),
-            )
+            LabelPicker(selected = e.label, options = EMAIL_LABELS, onSelect = { emails[i] = e.copy(label = it) })
             Spacer(Modifier.width(6.dp))
             OutlinedTextField(
               value = e.email,
               onValueChange = { emails[i] = e.copy(email = it) },
               placeholder = { Text("אימייל") },
               singleLine = true,
-              modifier = Modifier.weight(1.6f),
+              modifier = Modifier.weight(1f),
               keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             )
             IconButton(onClick = { if (emails.size > 1) emails.removeAt(i) }) {
@@ -691,18 +684,33 @@ private fun ContactEditorDialog(
   }
 }
 
+/** Compact label dropdown (נייד/בית/עבודה/אחר) - fixed width, cannot overflow. */
 @Composable
-private fun LabelChips(selected: String, options: List<String>, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
-  Row(
-    modifier = modifier.horizontalScroll(rememberScrollState()),
-    horizontalArrangement = Arrangement.spacedBy(4.dp),
-  ) {
-    options.forEach { label ->
-      FilterChip(
-        selected = selected == label,
-        onClick = { onSelect(label) },
-        label = { Text(label) },
+private fun LabelPicker(selected: String, options: List<String>, onSelect: (String) -> Unit) {
+  var expanded by remember { mutableStateOf(false) }
+  Box {
+    OutlinedButton(
+      onClick = { expanded = true },
+      modifier = Modifier.width(88.dp),
+      contentPadding = PaddingValues(horizontal = 10.dp),
+    ) {
+      Text(selected, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+      Icon(
+        Icons.Filled.ArrowDropDown,
+        contentDescription = null,
+        modifier = Modifier.size(20.dp),
       )
+    }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+      options.forEach { option ->
+        DropdownMenuItem(
+          text = { Text(option) },
+          onClick = {
+            onSelect(option)
+            expanded = false
+          },
+        )
+      }
     }
   }
 }
