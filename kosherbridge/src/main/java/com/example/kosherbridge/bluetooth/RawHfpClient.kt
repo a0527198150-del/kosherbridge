@@ -38,6 +38,11 @@ class RawHfpClient(private val scope: CoroutineScope) {
   // HFP Audio Gateway UUID (HandsfreeAudioGateway = 0x111E)
   private val hfpAgUuid: UUID = UUID.fromString("0000111e-0000-1000-8000-00805f9b34fb")
 
+  // HSP (legacy "headset") Audio Gateway UUID (HeadsetAudioGateway = 0x1108).
+  // Some phones only recognize the player as a headset ("אוזנייה") through
+  // this older profile - it still carries call audio (SCO).
+  private val hspAgUuid: UUID = UUID.fromString("00001108-0000-1000-8000-00805f9b34fb")
+
   // HF features advertised in AT+BRSF: CLI, enhanced call status, enhanced call control
   private val hfFeatures = 0x0004 or 0x0020 or 0x0040
 
@@ -70,10 +75,8 @@ class RawHfpClient(private val scope: CoroutineScope) {
 
   private suspend fun runConnection(target: BluetoothDevice) {
     lastError.value = null
-    val sock = runCatching {
-      target.createRfcommSocketToServiceRecord(hfpAgUuid).also { it.connect() }
-    }.getOrElse {
-      Log.w(tag, "connect failed: ${it.message}")
+    val sock = openSocket(target) ?: run {
+      Log.w(tag, "connect failed on both HFP and HSP gateways")
       lastError.value = "החיבור הישיר נכשל - בדוק שהכשר מזווג והבלוטוס דלוק"
       isConnected.value = false
       return
@@ -90,6 +93,20 @@ class RawHfpClient(private val scope: CoroutineScope) {
     isConnected.value = true
     startPolling()
     readLoop()
+  }
+
+  /** Tries the HFP gateway port first, then the older HSP (headset) port. */
+  private fun openSocket(target: BluetoothDevice): BluetoothSocket? {
+    for ((uuid, label) in listOf(hfpAgUuid to "HFP", hspAgUuid to "HSP")) {
+      val sock = runCatching {
+        target.createRfcommSocketToServiceRecord(uuid).also { it.connect() }
+      }.getOrNull()
+      if (sock != null) {
+        Log.i(tag, "connected via $label gateway")
+        return sock
+      }
+    }
+    return null
   }
 
   /** HFP negotiation: BRSF, CIND, CMER, CLIP, CCWA - the handshake every AG accepts. */

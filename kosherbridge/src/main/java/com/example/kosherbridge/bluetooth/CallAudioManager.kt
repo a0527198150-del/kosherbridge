@@ -1,6 +1,9 @@
 package com.example.kosherbridge.bluetooth
 
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.media.AudioDeviceInfo
 import android.content.Context
@@ -12,6 +15,8 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
@@ -85,6 +90,9 @@ class CallAudioManager(private val context: Context) {
             AudioManager.SCO_AUDIO_STATE_DISCONNECTED,
           )
           scoConnected.value = state == AudioManager.SCO_AUDIO_STATE_CONNECTED
+          // If the forced (virtual) SCO dropped, forget it so the next
+          // connectAudio() re-forces it instead of no-op'ing.
+          if (state != AudioManager.SCO_AUDIO_STATE_CONNECTED) virtualScoOn = false
           Log.i(tag, "SCO state -> $state (inCall=$inCall)")
           if (inCall && state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
             onScoDropped?.invoke()
@@ -102,8 +110,13 @@ class CallAudioManager(private val context: Context) {
    * Called when a call becomes active (or the user enables audio). Sets up
    * everything needed to hear the caller and send the microphone through the
    * HFP device.
+   *
+   * @param forceVirtualSco when true (raw RFCOMM path), also ask the Bluetooth
+   *   stack to open the SCO voice channel to the device even though there is no
+   *   profile-level call - the stack doesn't know about the raw link, so this
+   *   is the only way to get call audio flowing.
    */
-  fun ensureCallAudio(device: BluetoothDevice?, boostVolume: Boolean) {
+  fun ensureCallAudio(device: BluetoothDevice?, boostVolume: Boolean, forceVirtualSco: Boolean = false) {
     inCall = true
     registerReceivers()
 
@@ -125,6 +138,8 @@ class CallAudioManager(private val context: Context) {
 
     routeToDevice(device)
 
+    if (forceVirtualSco) startVirtualSco(device)
+
     if (boostVolume) boostVolume()
   }
 
@@ -132,10 +147,11 @@ class CallAudioManager(private val context: Context) {
    * Re-asserts the route. Called by the watchdog when a call is active but the
    * SCO link is not up, and after SCO drops / audio gets stolen.
    */
-  fun retryAudio(device: BluetoothDevice?, boostVolume: Boolean) {
+  fun retryAudio(device: BluetoothDevice?, boostVolume: Boolean, forceVirtualSco: Boolean = false) {
     if (!inCall) return
     requestFocus()
     routeToDevice(device)
+    if (forceVirtualSco) startVirtualSco(device)
     if (boostVolume) boostVolume()
   }
 
@@ -201,6 +217,7 @@ class CallAudioManager(private val context: Context) {
   fun releaseCallAudio() {
     if (!inCall && !receiversRegistered) return
     inCall = false
+    stopVirtualSco()
     runCatching { am.stopBluetoothSco() }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       runCatching { am.clearCommunicationDevice() }
@@ -215,6 +232,84 @@ class CallAudioManager(private val context: Context) {
     scoConnected.value = false
     routeLabel.value = null
     unregisterReceivers()
+  }
+
+  // ------------------------------------------------------------------ virtual SCO
+  // startScoUsingVirtualVoiceCall asks the Bluetooth stack to open the SCO
+  // (voice) channel to the phone even without a profile-level call. The raw
+  // RFCOMM path has call control but the stack doesn't know about the link, so
+  // this is the bridge that gets call audio flowing on players with no HFP
+  // client profile. Only used on the raw path; the profile paths negotiate SCO
+  // themselves.
+
+  @Volatile private var headset: BluetoothHeadset? = null
+  @Volatile private var virtualScoOn = false
+  @Volatile private var virtualScoDevice: BluetoothDevice? = null
+
+  private fun startVirtualSco(device: BluetoothDevice?) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+    if (virtualScoOn) return
+    val d = device ?: return
+    val h = headset
+    if (h != null) {
+      virtualScoOn = runCatching { h.startScoUsingVirtualVoiceCall(d) }.getOrDefault(false)
+      if (virtualScoOn) {
+        virtualScoDevice = d
+        Log.i(tag, "virtual voice call started - SCO forced to the phone")
+      } else {
+        Log.w(tag, "startScoUsingVirtualVoiceCall failed - stack refuses SCO")
+      }
+      return
+    }
+    // Headset proxy not ready yet - fetch it on a background thread (the
+    // profile callback can be slow) and try again.
+    Thread {
+      val hs = acquireHeadsetProxy() ?: return@Thread
+      val ok = runCatching { hs.startScoUsingVirtualVoiceCall(d) }.getOrDefault(false)
+      if (ok) {
+        virtualScoOn = true
+        virtualScoDevice = d
+        Log.i(tag, "virtual voice call started (after proxy)")
+      } else {
+        Log.w(tag, "startScoUsingVirtualVoiceCall failed - stack refuses SCO")
+      }
+    }.start()
+  }
+
+  private fun acquireHeadsetProxy(): BluetoothHeadset? {
+    if (headset != null) return headset
+    val adapter =
+      (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter ?: return null
+    val latch = CountDownLatch(1)
+    var hs: BluetoothHeadset? = null
+    val listener = object : BluetoothProfile.ServiceListener {
+      override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+        if (profile != BluetoothProfile.HEADSET) return
+        hs = proxy as? BluetoothHeadset
+        latch.countDown()
+      }
+      override fun onServiceDisconnected(profile: Int) {
+        if (profile == BluetoothProfile.HEADSET) headset = null
+      }
+    }
+    runCatching { adapter.getProfileProxy(context, listener, BluetoothProfile.HEADSET) }
+    runCatching { latch.await(3, TimeUnit.SECONDS) }
+    headset = hs
+    return hs
+  }
+
+  private fun stopVirtualSco() {
+    if (!virtualScoOn) return
+    virtualScoOn = false
+    val d = virtualScoDevice
+    virtualScoDevice = null
+    if (d != null) runCatching { headset?.stopScoUsingVirtualVoiceCall(d) }
+    runCatching {
+      val adapter =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+      headset?.let { h -> adapter?.closeProfileProxy(BluetoothProfile.HEADSET, h) }
+    }
+    headset = null
   }
 
   private fun abandonFocus() {

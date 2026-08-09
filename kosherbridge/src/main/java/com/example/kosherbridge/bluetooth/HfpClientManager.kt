@@ -260,7 +260,18 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     if (!rawCollectorsLaunched) {
       rawCollectorsLaunched = true
       scope.launch {
-        r.call.collect { info -> call.value = info }
+        r.call.collect { info ->
+          call.value = info
+          // The raw path has no profile-level audio: force the SCO voice
+          // channel while a call is actually active, and tear it down when
+          // the call ends or the link drops.
+          when {
+            info == null || info.state == CallState.IDLE || info.state == CallState.TERMINATED ->
+              audio.releaseCallAudio()
+            info.state == CallState.ACTIVE -> connectAudio()
+            else -> Unit
+          }
+        }
       }
       scope.launch {
         r.isConnected.collect { connected ->
@@ -380,10 +391,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   fun connectAudio() {
     if (rawActive) {
-      // Raw RFCOMM has no stack-level SCO, but routing the communication
-      // audio is still worth attempting on cooperative stacks - harmless if
-      // the stack ignores it.
-      audio.ensureCallAudio(device.value, volumeBoost)
+      // Raw RFCOMM has no profile-level SCO, so also force the stack to open
+      // the SCO voice channel directly - harmless if the stack refuses.
+      audio.ensureCallAudio(device.value, volumeBoost, forceVirtualSco = true)
       return
     }
     if (useShizuku) shizuku?.connectAudio() else HiddenHfp.connectAudio(client)
