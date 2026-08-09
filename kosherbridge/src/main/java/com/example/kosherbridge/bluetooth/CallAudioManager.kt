@@ -2,6 +2,7 @@ package com.example.kosherbridge.bluetooth
 
 import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
+import android.media.AudioDeviceInfo
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -131,7 +132,7 @@ class CallAudioManager(private val context: Context) {
       // Modern path: routes playback + mic to the HFP device and triggers the
       // SCO setup at the stack level. The single most effective technique on
       // API 31+ players.
-      val target = device ?: am.communicationDevice
+      val target = findScoDevice(device)
       if (target == null) {
         routeLabel.value = "אין התקן דיבורית לניתוב"
         startLegacySco()
@@ -145,6 +146,21 @@ class CallAudioManager(private val context: Context) {
       // and VoIP apps. Deprecated on 31+ in favor of setCommunicationDevice.
       startLegacySco()
     }
+  }
+
+  /**
+   * Finds the hands-free SCO device among the available communication devices,
+   * preferring the exact paired HFP device when its address is known.
+   */
+  private fun findScoDevice(device: BluetoothDevice?): AudioDeviceInfo? {
+    val available = runCatching { am.getAvailableCommunicationDevices() }.getOrDefault(emptyList())
+    if (device != null) {
+      available.firstOrNull {
+        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
+          runCatching { it.address == device.address }.getOrDefault(false)
+      }?.let { return it }
+    }
+    return available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
   }
 
   private fun startLegacySco() {
@@ -161,13 +177,11 @@ class CallAudioManager(private val context: Context) {
   }
 
   private fun boostVolume() {
+    // STREAM_VOICE_CALL maps to the SCO/communication path once the
+    // communication device is set and the mode is MODE_IN_COMMUNICATION.
     runCatching {
       val max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
       am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, max, 0)
-    }
-    runCatching {
-      val sMax = am.getStreamMaxVolume(AudioManager.STREAM_BLUETOOTH_SCO)
-      am.setStreamVolume(AudioManager.STREAM_BLUETOOTH_SCO, sMax, 0)
     }
   }
 
