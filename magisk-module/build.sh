@@ -11,7 +11,12 @@
 set -e
 cd "$(dirname "$0")"
 
-APK_SRC="${1:-../kosherbridge/build/outputs/apk/debug/kosherbridge-debug.apk}"
+# Resolve the APK path against the repo root (build.sh runs from magisk-module/).
+REPO_ROOT="$(cd .. && pwd)"
+APK_SRC="${1:-$REPO_ROOT/kosherbridge/build/outputs/apk/debug/kosherbridge-debug.apk}"
+if [ ! -f "$APK_SRC" ] && [ -f "$REPO_ROOT/$APK_SRC" ]; then
+  APK_SRC="$REPO_ROOT/$APK_SRC"
+fi
 if [ ! -f "$APK_SRC" ]; then
   echo "APK not found at: $APK_SRC"
   echo "Build it first (gradle :kosherbridge:assembleDebug) or pass the APK path as an argument."
