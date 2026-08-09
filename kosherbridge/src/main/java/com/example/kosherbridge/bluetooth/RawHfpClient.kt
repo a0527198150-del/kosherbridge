@@ -57,6 +57,14 @@ class RawHfpClient(private val scope: CoroutineScope) {
   private var pollJob: Job? = null
   private val writeLock = Any()
 
+  // Auto-reconnect: kosher phones (and cheap stacks) frequently drop a fresh
+  // link a few seconds after it comes up. Instead of giving up, keep
+  // re-opening the gateway with a short backoff until the user disconnects on
+  // purpose. connect() arms it, disconnect() disarms it.
+  @Volatile private var targetDevice: BluetoothDevice? = null
+  @Volatile private var reconnectEnabled = false
+  private var reconnectAttempts = 0
+
   val isConnected = MutableStateFlow(false)
   val call = MutableStateFlow<CallInfo?>(null)
   val lastError = MutableStateFlow<String?>(null)
@@ -72,31 +80,51 @@ class RawHfpClient(private val scope: CoroutineScope) {
   // ----------------------------------------------------------------- connect
 
   fun connect(target: BluetoothDevice) {
+    targetDevice = target
+    reconnectEnabled = true
+    reconnectAttempts = 0
     if (isConnected.value) return
     readJob?.cancel()
-    readJob = scope.launch(Dispatchers.IO) { runConnection(target) }
+    readJob = scope.launch(Dispatchers.IO) { runConnection() }
   }
 
-  private suspend fun runConnection(target: BluetoothDevice) {
-    lastError.value = null
-    val sock = openSocket(target) ?: run {
-      Log.w(tag, "connect failed on both HFP and HSP gateways")
-      lastError.value = "החיבור הישיר נכשל - בדוק שהכשר מזווג והבלוטוס דלוק"
-      isConnected.value = false
-      return
-    }
-    socket = sock
-    input = BufferedReader(InputStreamReader(sock.inputStream, Charsets.ISO_8859_1))
-    output = sock.outputStream
+  private suspend fun runConnection() {
+    val target = targetDevice ?: return
+    while (reconnectEnabled) {
+      lastError.value = null
+      val sock = openSocket(target)
+      if (sock == null) {
+        Log.w(tag, "connect failed on both HFP and HSP gateways - retrying")
+        lastError.value = "החיבור הישיר נכשל - מנסה שוב..."
+        if (!waitBeforeRetry()) return
+        continue
+      }
+      socket = sock
+      input = BufferedReader(InputStreamReader(sock.inputStream, Charsets.ISO_8859_1))
+      output = sock.outputStream
 
-    if (!handshake()) {
-      lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית"
-      close()
-      return
+      if (!handshake()) {
+        lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית - מנסה שוב..."
+        teardown()
+        if (!waitBeforeRetry()) return
+        continue
+      }
+      reconnectAttempts = 0
+      isConnected.value = true
+      startPolling()
+      readLoop() // blocks until the link dies (teardown() happens inside)
+      // The phone dropped the link - reconnect unless the user disconnected
+      // on purpose. This is the fix for "connects for a few seconds then
+      // immediately disconnects" on cheap stacks.
+      if (!waitBeforeRetry()) return
     }
-    isConnected.value = true
-    startPolling()
-    readLoop()
+  }
+
+  /** Backoff between reconnect attempts: 3s, 6s, 9s, then capped at 10s. */
+  private suspend fun waitBeforeRetry(): Boolean {
+    reconnectAttempts++
+    delay(minOf(3000L * reconnectAttempts, 10_000L))
+    return reconnectEnabled
   }
 
   /** Tries the HFP gateway port first, then the older HSP (headset) port. */
@@ -130,7 +158,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
   private fun readLoop() {
     val r = input
     if (r == null) {
-      close()
+      teardown()
       return
     }
     while (true) {
@@ -138,7 +166,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
       handleLine(line.trim())
     }
     Log.w(tag, "link closed")
-    close()
+    teardown()
   }
 
   private fun startPolling() {
@@ -182,8 +210,9 @@ class RawHfpClient(private val scope: CoroutineScope) {
   }
 
   fun disconnect() {
+    reconnectEnabled = false
     readJob?.cancel()
-    close()
+    teardown()
   }
 
   // ------------------------------------------------------------------ parsing
@@ -353,7 +382,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
     }
   }
 
-  private fun close() {
+  private fun teardown() {
     pollJob?.cancel()
     pollJob = null
     runCatching { socket?.close() }
