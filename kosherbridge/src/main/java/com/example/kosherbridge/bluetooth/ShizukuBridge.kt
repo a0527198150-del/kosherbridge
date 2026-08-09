@@ -69,6 +69,7 @@ class ShizukuBridge(private val context: Context) {
     }
     args = a
     conn = connection
+    Log.i(tag, "requesting user service bind (${a.component.flattenToString()})")
     return runCatching {
       Shizuku.bindUserService(a, connection)
       true

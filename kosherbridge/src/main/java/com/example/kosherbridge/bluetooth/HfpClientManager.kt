@@ -187,16 +187,42 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       lastError.value = "החיבור ל-Shizuku נכשל"
       return false
     }
-    // Binding is asynchronous (ServiceConnection is delivered on the main thread).
+    // The Shizuku server itself allows up to 30 seconds to spawn the
+    // user-service process (it runs app_process and loads the whole
+    // Application). On slow players this can take many seconds - wait like the
+    // server does instead of giving up after a few seconds. Giving up early
+    // left the remote never registered, so every connect afterwards failed.
     var waited = 0
-    while (!b.isBound && waited < 4000) {
-      delay(100)
-      waited += 100
+    while (!b.isBound && waited < 30_000) {
+      delay(200)
+      waited += 200
     }
     if (!b.isBound) {
-      lastError.value = "תהליך Shizuku לא עלה - נסה שוב"
+      // Still spawning. Keep watching in the background: when the binder
+      // finally arrives, finish the wiring so the app starts working instead
+      // of staying broken. (Bounded so a dead server doesn't leak a loop.)
+      lastError.value =
+        "תהליך Shizuku עדיין עולה (זה יכול לקחת כמה שניות בנגן איטי) - אם זה נמשך, ודא ש-Shizuku פעיל ונסה שוב"
+      scope.launch {
+        var waited = 0
+        while (!b.isBound && waited < 60_000) {
+          if (!b.isAvailable) return@launch
+          delay(500)
+          waited += 500
+        }
+        if (b.isBound) finishShizukuBind(b)
+      }
       return false
     }
+    return finishShizukuBind(b)
+  }
+
+  /**
+   * Wires up the remote user service once its binder arrived: registers the
+   * HFP profile there, re-connects a previously selected device, clears the
+   * error and starts polling call state.
+   */
+  private suspend fun finishShizukuBind(b: ShizukuBridge): Boolean {
     if (!b.registerProfile()) {
       lastError.value = "פרופיל הדיבורית לא זמין דרך Shizuku במכשיר זה"
       return false
