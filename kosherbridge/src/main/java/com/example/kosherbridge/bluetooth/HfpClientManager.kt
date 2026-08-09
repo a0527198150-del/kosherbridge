@@ -47,6 +47,29 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var raw: RawHfpClient? = null
   private var shizukuFallbackLaunched = false
 
+  /**
+   * Active call-audio techniques (SCO routing, communication mode, focus,
+   * volume). Drives the voice through the player even when it has no call
+   * support of its own.
+   */
+  val audio = CallAudioManager(context)
+
+  @Volatile private var autoAudio = true
+  @Volatile private var volumeBoost = true
+  private var audioInUse = false
+  private var audioRetry = 0
+
+  init {
+    audio.onScoDropped = { if (autoAudio) connectAudio() }
+    audio.onAudioStolen = { if (autoAudio) connectAudio() }
+  }
+
+  /** Applies the "שמע אוטומטי" and "הגברת עוצמה בשיחה" settings. */
+  fun setAudioPrefs(auto: Boolean, boost: Boolean) {
+    autoAudio = auto
+    volumeBoost = boost
+  }
+
   /** Short window after an explicit disconnect where the poll ignores re-detection. */
   private var ignorePollUntil = 0L
 
@@ -286,25 +309,37 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     else HiddenHfp.hangup(client)
 
   fun connectAudio() {
-    // Raw RFCOMM has no stack-level audio path; the SCO attempt belongs to the
-    // privileged backends.
-    if (rawActive) return
+    if (rawActive) {
+      // Raw RFCOMM has no stack-level SCO, but routing the communication
+      // audio is still worth attempting on cooperative stacks - harmless if
+      // the stack ignores it.
+      audio.ensureCallAudio(device.value, volumeBoost)
+      return
+    }
     if (useShizuku) shizuku?.connectAudio() else HiddenHfp.connectAudio(client)
+    if (autoAudio) audio.ensureCallAudio(device.value, volumeBoost)
   }
 
   fun toggleAudio(): Boolean {
-    if (rawActive) return false
-    return if (useShizuku) {
-      if (audioState.value == 2) shizuku?.disconnectAudio() ?: false
+    if (rawActive) {
+      audio.ensureCallAudio(device.value, volumeBoost)
+      return true
+    }
+    val connected = audioState.value == 2
+    val ok = if (useShizuku) {
+      if (connected) shizuku?.disconnectAudio() ?: false
       else shizuku?.connectAudio() ?: false
     } else {
-      if (audioState.value == 2) HiddenHfp.disconnectAudio(client)
+      if (connected) HiddenHfp.disconnectAudio(client)
       else HiddenHfp.connectAudio(client)
     }
+    if (ok && !connected && autoAudio) audio.ensureCallAudio(device.value, volumeBoost)
+    return ok
   }
 
   fun shutdown() {
     pollJob?.cancel()
+    audio.releaseCallAudio()
     stateReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }
     stateReceiver = null
     callbackProxy?.let { HiddenHfp.unregisterCallback(client, it) }
@@ -406,6 +441,31 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
                 call.value = null
               }
             }
+          }
+        }
+
+        // ---- call-audio watchdog: keep the voice link alive during a call ----
+        // On players not built for calls the SCO link can fail silently or
+        // drop mid-call. While a call is ACTIVE and the profile reports the
+        // audio link down, re-request it (with the routing techniques) about
+        // every 2 seconds. When the call ends, tear the audio down.
+        if (autoAudio && !rawActive) {
+          val active = call.value?.state == CallState.ACTIVE
+          if (active) {
+            audioInUse = true
+            if (audioState.value != 2) {
+              audioRetry++
+              if (audioRetry >= 3) {
+                audioRetry = 0
+                connectAudio()
+              }
+            } else {
+              audioRetry = 0
+            }
+          } else if (audioInUse) {
+            audioInUse = false
+            audioRetry = 0
+            audio.releaseCallAudio()
           }
         }
         delay(700)

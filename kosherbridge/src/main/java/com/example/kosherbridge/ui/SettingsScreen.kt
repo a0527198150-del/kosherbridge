@@ -1,7 +1,9 @@
 package com.example.kosherbridge.ui
 
+import android.Manifest
 import android.bluetooth.BluetoothProfile
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -57,10 +59,24 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
   val fullScreen by settings.fullScreen.collectAsStateWithLifecycle(true)
   val vibrate by settings.vibrate.collectAsStateWithLifecycle(true)
   val keyTone by settings.keyTone.collectAsStateWithLifecycle(true)
+  val autoAudio by settings.autoAudio.collectAsStateWithLifecycle(true)
+  val volumeBoost by settings.volumeBoost.collectAsStateWithLifecycle(true)
   val themeMode by settings.themeMode.collectAsStateWithLifecycle(ThemeMode.SYSTEM.name)
   var showDevices by remember { mutableStateOf(false) }
   var showClearCallsConfirm by remember { mutableStateOf(false) }
   var showClearContactsConfirm by remember { mutableStateOf(false) }
+  var micResult by remember { mutableStateOf<String?>(null) }
+
+  val micPermission = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestPermission(),
+  ) { granted ->
+    micResult = if (granted) {
+      BridgeHub.service?.checkMicrophone { micResult = it }
+      "בודק..."
+    } else {
+      "אין הרשאת מיקרופון"
+    }
+  }
 
   // Export / import contacts as a JSON backup file (SAF document pickers).
   val exportLauncher = rememberLauncherForActivityResult(
@@ -136,6 +152,16 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         subtitle = "צליל DTMF בעת לחיצה על מקשי החייגן",
         checked = keyTone,
       ) { v -> scope.launch { settings.setKeyTone(v) } }
+      SettingSwitch(
+        title = "שמע אוטומטי בשיחה",
+        subtitle = "העבר את הקול (גם המיקרופון) לנגן אוטומטית והשאר אותו חי לאורך השיחה",
+        checked = autoAudio,
+      ) { v -> scope.launch { settings.setAutoAudio(v) } }
+      SettingSwitch(
+        title = "הגברת עוצמה בשיחה",
+        subtitle = "עוצמת השיחה למקסימום בזמן שיחה פעילה",
+        checked = volumeBoost,
+      ) { v -> scope.launch { settings.setVolumeBoost(v) } }
     }
     SettingsCard("אנשי קשר") {
       SettingRow(
@@ -190,6 +216,19 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         },
         state.audioState == 2,
       )
+      state.audioRoute?.let {
+        DiagRow("ניתוב שמע", it, it.startsWith("מנותב"))
+      }
+      SettingRow("בדיקת מיקרופון", micResult ?: "מוודא שהמיקרופון קולט קול לשיחה") {
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+          PackageManager.PERMISSION_GRANTED
+        ) {
+          micResult = "בודק..."
+          BridgeHub.service?.checkMicrophone { micResult = it }
+        } else {
+          micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+      }
       state.lastError?.let {
         Spacer(Modifier.height(4.dp))
         Text(

@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -160,6 +161,11 @@ class BridgeService : Service() {
     scope.launch { manager.bindShizuku() }
   }
 
+  /** Records briefly from the call microphone and reports the result. */
+  fun checkMicrophone(onResult: (String) -> Unit) {
+    scope.launch { onResult(manager.audio.checkMicrophone()) }
+  }
+
   // ------------------------------------------------------------------ internals
 
   private fun adapter(): BluetoothAdapter? =
@@ -201,6 +207,11 @@ class BridgeService : Service() {
   private fun observeSettings() {
     scope.launch { ServiceLocator.settings.fullScreen.collect { fullScreenEnabled = it } }
     scope.launch { ServiceLocator.settings.vibrate.collect { vibrateEnabled = it } }
+    scope.launch {
+      val settings = ServiceLocator.settings
+      combine(settings.autoAudio, settings.volumeBoost) { auto, boost -> auto to boost }
+        .collect { (auto, boost) -> manager.setAudioPrefs(auto, boost) }
+    }
   }
 
   private fun observeManager() {
@@ -225,6 +236,9 @@ class BridgeService : Service() {
     }
     scope.launch {
       manager.audioState.collect { a -> BridgeHub.update { it.copy(audioState = a) } }
+    }
+    scope.launch {
+      manager.audio.routeLabel.collect { r -> BridgeHub.update { it.copy(audioRoute = r) } }
     }
     scope.launch {
       manager.lastError.collect { e -> BridgeHub.update { it.copy(lastError = e) } }

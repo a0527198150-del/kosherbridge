@@ -31,6 +31,10 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Call audio techniques: routing the conversation (mic + speaker) to the
+         hands-free device, and recording briefly for the mic diagnostic. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- Privileged permission: allows full HFP control (dial/answer/AT commands).
          Ignored on stock devices; enables the full experience on system-signed
