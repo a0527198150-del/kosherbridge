@@ -258,6 +258,20 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       ) { showClearCallsConfirm = true }
     }
     SettingsCard("אבחון") {
+      val guidance = buildGuidance(state)
+      if (guidance != null) {
+        Card(
+          shape = RoundedCornerShape(12.dp),
+          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        ) {
+          Text(
+            guidance,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(12.dp),
+          )
+        }
+        Spacer(Modifier.height(4.dp))
+      }
       DiagRow("פרופיל דיבורית (HFP Client)", if (state.profileReady) "נתמך" else "לא נתמך", state.profileReady)
       DiagRow("ערוץ פעיל", state.backendLabel ?: "לא פעיל", state.profileReady)
       DiagRow("בלוטוס", if (state.adapterOn) "פועל" else "כבוי", state.adapterOn)
@@ -567,6 +581,28 @@ private fun DiagRow(label: String, value: String, ok: Boolean) {
       color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
     )
   }
+}
+
+/**
+ * Tells the user in plain Hebrew what to do next, based on the current state.
+ * Returns null when everything is fine (nothing to guide).
+ */
+private fun buildGuidance(state: BridgeUiState): String? = when {
+  !state.adapterOn -> "הדלק את הבלוטוס בהגדרות המערכת וחזור לכאן."
+  state.connectionState != BluetoothProfile.STATE_CONNECTED -> {
+    when {
+      !state.hiddenApiAvailable && !state.shizukuAvailable ->
+        "המכשיר חוסם את פרופיל הדיבורית. שתי דרכים:\n" +
+          "1) התקן Shizuku והפעל אותו פעם אחת (adb אלחוטי), ואז לחץ 'התחבר דרך Shizuku'.\n" +
+          "2) בלי התקנות: זווג את הטלפון הכשר ובחר אותו באפליקציה - החיבור הישיר ינסה לבד."
+      !state.profileReady ->
+        "זווג את הטלפון הכשר ('צימוד מכשיר חדש' או הגדרות בלוטוס) ובחר אותו ב'בחר מכשיר'."
+      else -> "בחר את הטלפון הכשר ב'בחר מכשיר'."
+    }
+  }
+  state.audioState != 2 ->
+    "מחובר. אם אין קול: רוץ 'בדיקת מיקרופון', ואם הקול לא עובר - נסה לשנות את 'ערוץ חיבור' ל-RFCOMM ישיר."
+  else -> null
 }
 
 /** Short label for the "ערוץ חיבור" settings row. */
