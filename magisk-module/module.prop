@@ -1,0 +1,6 @@
+id=kosherbridge
+name=KosherBridge - גשר כשר (system HFP bridge)
+version=v1.0
+versionCode=1
+author=KosherBridge
+description=מתקין את אפליקציית הגשר הכשר כאפליקציית מערכת (priv-app) עם הרשאת BLUETOOTH_PRIVILEGED ומבטל את חסימת ה-API הנסתר - כך פרופיל הדיבורית עובד לצמיתות בנגן מרוט, כולל אחרי אתחול, בלי Shizuku ובלי adb.

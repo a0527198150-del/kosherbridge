@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Grants the KosherBridge app the signature|privileged BLUETOOTH_PRIVILEGED
+  permission once it is installed as a priv-app by this Magisk module. This is
+  the permission that lets the app control the hands-free (HFP) profile -
+  dial, answer, reject, hang up - instead of being rejected by the system.
+-->
+<permissions>
+    <privapp-permissions package="com.example.kosherbridge">
+        <permission name="android.permission.BLUETOOTH_PRIVILEGED"/>
+    </privapp-permissions>
+</permissions>

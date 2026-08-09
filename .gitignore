@@ -19,3 +19,7 @@ debug.keystore
 
 # Freebuff internal workspace data - never upload
 .freebuff/
+
+# Magisk module build outputs - the APK is bundled at build time, never committed
+magisk-module/system/priv-app/
+kosherbridge-magisk-*.zip

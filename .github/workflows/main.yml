@@ -50,3 +50,15 @@ jobs:
         with:
           name: kosherbridge-apk
           path: kosherbridge/build/outputs/apk/debug/*.apk
+
+      # Package the built APK into the Magisk module (final solution for rooted
+      # players: installs the app as a system priv-app with BLUETOOTH_PRIVILEGED
+      # and disables hidden-API enforcement at boot).
+      - name: Package Magisk module
+        run: sh magisk-module/build.sh kosherbridge/build/outputs/apk/debug/kosherbridge-debug.apk
+
+      - name: Upload Magisk module
+        uses: actions/upload-artifact@v4
+        with:
+          name: kosherbridge-magisk-module
+          path: kosherbridge-magisk-v1.zip
