@@ -39,6 +39,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   val call = MutableStateFlow<CallInfo?>(null)
   val lastError = MutableStateFlow<String?>(null)
 
+  /** Human-readable name of the currently active bridge path, for diagnostics. */
+  val backendLabel = MutableStateFlow<String?>(null)
+
   private var client: Any? = null
   private var callbackProxy: Any? = null
   private var pollJob: Job? = null
@@ -128,6 +131,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           // needed. Clear any stale error (e.g. a premature Shizuku message)
           // so the home screen doesn't keep telling the user to install it.
           lastError.value = null
+          backendLabel.value = "ישיר"
           registerCallback()
           registerStateReceiver()
           startPolling()
@@ -234,6 +238,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
     }
     lastError.value = null
+    backendLabel.value = "Shizuku"
     profileReady.value = true
     startPolling()
     return true
@@ -246,6 +251,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   fun connectRaw(target: BluetoothDevice) {
     device.value = target
+    backendLabel.value = "RFCOMM ישיר"
     val r = raw ?: RawHfpClient(scope).also { raw = it }
     scope.launch {
       r.call.collect { info -> call.value = info }
@@ -393,6 +399,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     shizuku = null
     raw?.disconnect()
     raw = null
+    backendLabel.value = null
   }
 
   // ------------------------------------------------------------------ callbacks

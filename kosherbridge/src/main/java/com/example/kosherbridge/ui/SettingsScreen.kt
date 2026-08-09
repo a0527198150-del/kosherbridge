@@ -205,6 +205,7 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
     }
     SettingsCard("אבחון") {
       DiagRow("פרופיל דיבורית (HFP Client)", if (state.profileReady) "נתמך" else "לא נתמך", state.profileReady)
+      DiagRow("ערוץ פעיל", state.backendLabel ?: "לא פעיל", state.profileReady)
       DiagRow("בלוטוס", if (state.adapterOn) "פועל" else "כבוי", state.adapterOn)
       DiagRow("חיבור", connectionText(state), state.connectionState == BluetoothProfile.STATE_CONNECTED)
       DiagRow(

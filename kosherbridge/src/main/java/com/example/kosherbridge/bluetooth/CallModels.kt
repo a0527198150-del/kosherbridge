@@ -23,6 +23,7 @@ data class BridgeUiState(
   val deviceAddress: String? = null,
   val audioState: Int = 0, // 0 disconnected, 1 connecting, 2 connected
   val audioRoute: String? = null, // last routing attempt, for diagnostics
+  val backendLabel: String? = null, // active bridge path, for diagnostics
   val call: CallInfo? = null,
   val lastError: String? = null,
 )

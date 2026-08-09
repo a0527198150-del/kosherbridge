@@ -246,6 +246,9 @@ class BridgeService : Service() {
       manager.audio.routeLabel.collect { r -> BridgeHub.update { it.copy(audioRoute = r) } }
     }
     scope.launch {
+      manager.backendLabel.collect { r -> BridgeHub.update { it.copy(backendLabel = r) } }
+    }
+    scope.launch {
       manager.lastError.collect { e -> BridgeHub.update { it.copy(lastError = e) } }
     }
     scope.launch {
