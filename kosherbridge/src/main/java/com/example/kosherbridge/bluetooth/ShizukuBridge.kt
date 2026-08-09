@@ -51,7 +51,8 @@ class ShizukuBridge(private val context: Context) {
       Log.w(tag, "Shizuku permission not granted for this app")
       return false
     }
-    val a = Shizuku.UserServiceArgs(ComponentName(context, HfpUserService::class.java))
+    val component = ComponentName(context, HfpUserService::class.java)
+    val a = Shizuku.UserServiceArgs(component)
       .daemon(false)
       .processNameSuffix("shizuku")
       .debuggable(false)
@@ -69,7 +70,7 @@ class ShizukuBridge(private val context: Context) {
     }
     args = a
     conn = connection
-    Log.i(tag, "requesting user service bind (${a.component.flattenToString()})")
+    Log.i(tag, "requesting user service bind (${component.flattenToString()})")
     return runCatching {
       Shizuku.bindUserService(a, connection)
       true
