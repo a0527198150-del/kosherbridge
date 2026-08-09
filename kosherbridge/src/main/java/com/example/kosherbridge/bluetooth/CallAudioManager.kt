@@ -54,6 +54,7 @@ class CallAudioManager(private val context: Context) {
   @Volatile private var inCall = false
   @Volatile private var focusGranted = false
   @Volatile private var receiversRegistered = false
+  @Volatile private var micWasMuted = false // mic muted at OS level when the call started
 
   /** True while the Bluetooth stack reports a live SCO (voice) link. */
   val scoConnected = MutableStateFlow(false)
@@ -108,6 +109,17 @@ class CallAudioManager(private val context: Context) {
 
     runCatching { am.mode = AudioManager.MODE_IN_COMMUNICATION }
       .onFailure { Log.w(tag, "setMode failed: ${it.message}") }
+
+    // If the microphone was muted at the OS level (by the user, another app,
+    // or a system state), un-mute it for the call so the far side can hear
+    // us - and remember to restore it when the call ends.
+    runCatching {
+      micWasMuted = am.isMicrophoneMute
+      if (micWasMuted) {
+        am.isMicrophoneMute = false
+        Log.i(tag, "microphone was muted - unmuted for the call")
+      }
+    }
 
     requestFocus()
 
@@ -194,6 +206,10 @@ class CallAudioManager(private val context: Context) {
       runCatching { am.clearCommunicationDevice() }
     }
     runCatching { am.isBluetoothScoOn = false }
+    if (micWasMuted) {
+      runCatching { am.isMicrophoneMute = true }
+      micWasMuted = false
+    }
     abandonFocus()
     runCatching { am.mode = AudioManager.MODE_NORMAL }
     scoConnected.value = false
