@@ -84,7 +84,7 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
       // Keys scale with the available width so the keypad fits every screen
       // (phones, tablets and Android boxes) instead of overflowing or floating.
-      val keySize = ((maxWidth - 2 * 28.dp) / 3).coerceIn(56.dp, 88.dp)
+      val keySize = ((maxWidth - 56.dp) / 3).coerceIn(56.dp, 88.dp)
       keys.chunked(3).forEach { row ->
         Row(
           horizontalArrangement = Arrangement.spacedBy(28.dp),

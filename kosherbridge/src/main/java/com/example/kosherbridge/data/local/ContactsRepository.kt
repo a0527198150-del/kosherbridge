@@ -21,6 +21,9 @@ class ContactsRepository(
 
   fun recentCalls(): Flow<List<CallLogEntity>> = db.callDao().all()
 
+  /** Calls the user flagged for follow-up ("handle later"), newest first. */
+  fun followUps(): Flow<List<CallLogEntity>> = db.callDao().followUps()
+
   suspend fun addContact(
     name: String,
     phone: String,

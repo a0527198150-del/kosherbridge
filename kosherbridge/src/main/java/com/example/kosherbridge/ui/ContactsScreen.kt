@@ -57,13 +57,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.toSp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.kosherbridge.BridgeHub
@@ -220,7 +219,7 @@ internal fun ContactAvatar(name: String, photoUri: String?, size: Dp, modifier: 
       modifier = modifier.size(size).clip(CircleShape),
     )
   } else {
-    val fontSize = with(LocalDensity.current) { (size * 0.34f).toSp() }
+    val fontSize = (size.value * 0.34f).sp
     Box(
       modifier = modifier
         .size(size)
