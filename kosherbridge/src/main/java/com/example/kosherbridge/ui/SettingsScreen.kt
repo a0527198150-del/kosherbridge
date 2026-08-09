@@ -3,6 +3,8 @@ package com.example.kosherbridge.ui
 import android.bluetooth.BluetoothProfile
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,9 +56,34 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
   val autoConnect by settings.autoConnect.collectAsStateWithLifecycle(true)
   val fullScreen by settings.fullScreen.collectAsStateWithLifecycle(true)
   val vibrate by settings.vibrate.collectAsStateWithLifecycle(true)
+  val keyTone by settings.keyTone.collectAsStateWithLifecycle(true)
   val themeMode by settings.themeMode.collectAsStateWithLifecycle(ThemeMode.SYSTEM.name)
   var showDevices by remember { mutableStateOf(false) }
   var showClearCallsConfirm by remember { mutableStateOf(false) }
+  var showClearContactsConfirm by remember { mutableStateOf(false) }
+
+  // Export / import contacts as a JSON backup file (SAF document pickers).
+  val exportLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.CreateDocument("application/json"),
+  ) { uri ->
+    if (uri != null) {
+      scope.launch {
+        val n = ServiceLocator.contacts.exportContactsTo(uri)
+        onSnackbar("ייצאו $n אנשי קשר")
+      }
+    }
+  }
+  val importLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.OpenDocument(),
+  ) { uri ->
+    if (uri != null) {
+      scope.launch {
+        runCatching { ServiceLocator.contacts.importContactsFrom(uri) }
+          .onSuccess { n -> onSnackbar(if (n > 0) "יובאו $n אנשי קשר" else "לא נמצאו אנשי קשר חדשים") }
+          .onFailure { e -> onSnackbar("הייבוא נכשל: ${e.message ?: "שגיאה"}") }
+      }
+    }
+  }
 
   Column(
     modifier = modifier
@@ -104,6 +131,30 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         subtitle = "רטט בעת שיחה נכנסת",
         checked = vibrate,
       ) { v -> scope.launch { settings.setVibrate(v) } }
+      SettingSwitch(
+        title = "צליל מקשים",
+        subtitle = "צליל DTMF בעת לחיצה על מקשי החייגן",
+        checked = keyTone,
+      ) { v -> scope.launch { settings.setKeyTone(v) } }
+    }
+    SettingsCard("אנשי קשר") {
+      SettingRow(
+        "ייצוא אנשי קשר",
+        "שמירת כל אנשי הקשר לקובץ גיבוי (JSON)",
+      ) {
+        exportLauncher.launch("kosherbridge-contacts-${System.currentTimeMillis()}.json")
+      }
+      SettingRow(
+        "ייבוא אנשי קשר",
+        "שחזור מגיבוי JSON שייצאת בעבר",
+      ) {
+        importLauncher.launch(arrayOf("application/json", "application/octet-stream"))
+      }
+      SettingRow(
+        "מחיקת כל אנשי הקשר",
+        "מחיקה לצמיתות של כל אנשי הקשר (אפשר לשחזר מגיבוי)",
+        error = true,
+      ) { showClearContactsConfirm = true }
     }
     SettingsCard("מראה") {
       Text("מצב תצוגה", style = MaterialTheme.typography.bodyLarge)
@@ -149,6 +200,7 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       }
     }
     SettingsCard("אודות") {
+      DiagRow("גרסת אפליקציה", "${com.example.kosherbridge.BuildConfig.VERSION_NAME}", true)
       Text(
         "גשר כשר מחבר את הנגן לטלפון הכשר דרך בלוטוס (פרוטוקול HFP - דיבורית). " +
           "הניחו את הטלפון הכשר במקום עם קליטה, זווגו אותו עם הנגן ובחרו אותו בהגדרות. " +
@@ -186,6 +238,24 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       dismissButton = { TextButton(onClick = { showClearCallsConfirm = false }) { Text("ביטול") } },
     )
   }
+
+  if (showClearContactsConfirm) {
+    AlertDialog(
+      onDismissRequest = { showClearContactsConfirm = false },
+      title = { Text("למחוק את כל אנשי הקשר?") },
+      text = { Text("כל אנשי הקשר יימחקו לצמיתות. מומלץ לייצא גיבוי קודם.") },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            scope.launch { ServiceLocator.contacts.clearAllContacts() }
+            showClearContactsConfirm = false
+            onSnackbar("כל אנשי הקשר נמחקו")
+          },
+        ) { Text("מחק הכול", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) }
+      },
+      dismissButton = { TextButton(onClick = { showClearContactsConfirm = false }) { Text("ביטול") } },
+    )
+  }
 }
 
 @Composable
@@ -206,7 +276,7 @@ private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> U
 }
 
 @Composable
-private fun SettingRow(title: String, subtitle: String?, onClick: () -> Unit) {
+private fun SettingRow(title: String, subtitle: String?, error: Boolean = false, onClick: () -> Unit) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
@@ -216,12 +286,24 @@ private fun SettingRow(title: String, subtitle: String?, onClick: () -> Unit) {
     verticalAlignment = Alignment.CenterVertically,
   ) {
     Column(Modifier.weight(1f)) {
-      Text(title, style = MaterialTheme.typography.bodyLarge)
+      Text(
+        title,
+        style = MaterialTheme.typography.bodyLarge,
+        color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+      )
       subtitle?.let {
-        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+          it,
+          style = MaterialTheme.typography.bodySmall,
+          color = if (error) MaterialTheme.colorScheme.error.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
       }
     }
-    Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    Icon(
+      Icons.Filled.ChevronRight,
+      contentDescription = null,
+      tint = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
   }
 }
 

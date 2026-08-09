@@ -18,6 +18,7 @@ class SettingsRepository(private val context: Context) {
     val AUTO_CONNECT = booleanPreferencesKey("auto_connect")
     val FULL_SCREEN = booleanPreferencesKey("full_screen_incoming")
     val VIBRATE = booleanPreferencesKey("vibrate")
+    val KEY_TONE = booleanPreferencesKey("key_tone")
     val THEME_MODE = stringPreferencesKey("theme_mode")
     val LAST_DEVICE_NAME = stringPreferencesKey("last_device_name")
     val LAST_DEVICE_ADDRESS = stringPreferencesKey("last_device_address")
@@ -31,6 +32,10 @@ class SettingsRepository(private val context: Context) {
 
   val vibrate: Flow<Boolean> =
     context.dataStore.data.map { it[Keys.VIBRATE] ?: true }
+
+  /** Play DTMF tones when pressing the dialer keys. */
+  val keyTone: Flow<Boolean> =
+    context.dataStore.data.map { it[Keys.KEY_TONE] ?: true }
 
   /** "SYSTEM", "LIGHT" or "DARK" - app-wide appearance. */
   val themeMode: Flow<String> =
@@ -48,6 +53,8 @@ class SettingsRepository(private val context: Context) {
   suspend fun setFullScreen(value: Boolean) = context.dataStore.edit { it[Keys.FULL_SCREEN] = value }
 
   suspend fun setVibrate(value: Boolean) = context.dataStore.edit { it[Keys.VIBRATE] = value }
+
+  suspend fun setKeyTone(value: Boolean) = context.dataStore.edit { it[Keys.KEY_TONE] = value }
 
   suspend fun setThemeMode(mode: String) = context.dataStore.edit { it[Keys.THEME_MODE] = mode }
 

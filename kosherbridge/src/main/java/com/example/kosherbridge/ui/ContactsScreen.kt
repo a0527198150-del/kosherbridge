@@ -6,36 +6,45 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.ImportContacts
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -46,6 +55,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,21 +65,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.data.ServiceLocator
-import com.example.kosherbridge.data.local.ContactEntity
+import com.example.kosherbridge.data.local.ContactWithDetails
 import com.example.kosherbridge.data.local.ContactsRepository
 import kotlinx.coroutines.launch
+
+private val HEBREW_LETTERS = "אבגדהוזחטיכלמנסעפצקרשת"
+private val PHONE_LABELS = listOf("נייד", "בית", "עבודה", "אחר")
+private val EMAIL_LABELS = listOf("אימייל", "עבודה", "אחר")
 
 @Composable
 fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
@@ -78,8 +91,9 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
   var query by rememberSaveable { mutableStateOf("") }
   val list by repo.searchContacts(query).collectAsStateWithLifecycle(emptyList())
   var showAdd by remember { mutableStateOf(false) }
-  var editing by remember { mutableStateOf<ContactEntity?>(null) }
-  var detailFor by remember { mutableStateOf<ContactEntity?>(null) }
+  var detailFor by remember { mutableStateOf<ContactWithDetails?>(null) }
+  var editFor by remember { mutableStateOf<ContactWithDetails?>(null) }
+  var deleteFor by remember { mutableStateOf<ContactWithDetails?>(null) }
 
   val importLauncher = rememberLauncherForActivityResult(
     ActivityResultContracts.RequestPermission(),
@@ -103,8 +117,15 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
         OutlinedTextField(
           value = query,
           onValueChange = { query = it },
-          placeholder = { Text("חיפוש איש קשר") },
+          placeholder = { Text("חיפוש שם או מספר") },
           leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+          trailingIcon = {
+            if (query.isNotEmpty()) {
+              IconButton(onClick = { query = "" }) {
+                Icon(Icons.Filled.Close, contentDescription = "ניקוי חיפוש")
+              }
+            }
+          },
           singleLine = true,
           modifier = Modifier.weight(1f),
         )
@@ -113,24 +134,21 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
           Icon(Icons.Filled.ImportContacts, contentDescription = "ייבוא מאנשי הקשר")
         }
       }
-      LazyColumn(Modifier.fillMaxSize()) {
-        if (list.isEmpty()) {
-          item {
-            Text(
-              "אין אנשי קשר.\nלחץ על + להוספה, או ייבא מהטלפון.",
-              modifier = Modifier.padding(16.dp),
-              style = MaterialTheme.typography.bodyMedium,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-        }
-        items(list, key = { it.id }) { c ->
-          ContactRow(c) { detailFor = c }
-          HorizontalDivider(
-            Modifier.padding(horizontal = 16.dp),
-            color = MaterialTheme.colorScheme.outlineVariant,
+      if (list.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+          Text(
+            if (query.isBlank()) "אין אנשי קשר.\nלחץ על + להוספה, או ייבא מהטלפון."
+            else "לא נמצאו תוצאות ל\"$query\"",
+            modifier = Modifier.padding(16.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
           )
         }
+      } else if (query.isBlank()) {
+        GroupedContactList(list = list, onOpen = { detailFor = it }, onCall = { number -> BridgeHub.service?.dial(number) })
+      } else {
+        FlatContactList(list = list, onOpen = { detailFor = it }, onCall = { number -> BridgeHub.service?.dial(number) })
       }
     }
     FloatingActionButton(
@@ -142,72 +160,178 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
   }
 
   if (showAdd) {
-    ContactEditDialog(
+    ContactEditorDialog(
       title = "איש קשר חדש",
-      initialName = "",
-      initialPhone = "",
-      initialEmail = "",
-      initialNotes = "",
-      initialPhoto = null,
-      onSave = { name, phone, email, notes, photo ->
-        scope.launch { repo.addContact(name, phone, photo, email, notes) }
+      initial = null,
+      onSave = { name, phones, emails, notes, photo ->
+        scope.launch {
+          val ok = repo.addContact(name, phones, photo, emails, notes)
+          if (!ok) onSnackbar("איש קשר עם מספר זה כבר קיים")
+        }
         showAdd = false
       },
       onDismiss = { showAdd = false },
     )
   }
-  editing?.let { c ->
-    ContactEditDialog(
+  editFor?.let { c ->
+    ContactEditorDialog(
       title = "עריכת איש קשר",
-      initialName = c.name,
-      initialPhone = c.phone,
-      initialEmail = c.email ?: "",
-      initialNotes = c.notes ?: "",
-      initialPhoto = c.photoUri,
-      onSave = { name, phone, email, notes, photo ->
+      initial = c,
+      onSave = { name, phones, emails, notes, photo ->
         scope.launch {
-          if (photo != c.photoUri) repo.deleteContactPhoto(c.photoUri)
-          repo.updateContact(
-            c.copy(
-              name = name,
-              phone = phone,
-              normalizedPhone = ContactsRepository.normalizePhone(phone),
-              photoUri = photo,
-              email = email,
-              notes = notes,
-            ),
-          )
+          if (photo != c.contact.photoUri) repo.deleteContactPhoto(c.contact.photoUri)
+          repo.updateContact(c.contact.copy(name = name, photoUri = photo, notes = notes), phones, emails)
         }
-        editing = null
+        editFor = null
       },
-      onDismiss = { editing = null },
+      onDismiss = { editFor = null },
     )
   }
   detailFor?.let { c ->
     ContactDetailDialog(
       contact = c,
       onDismiss = { detailFor = null },
-      onCall = {
-        BridgeHub.service?.dial(c.phone)
+      onCall = { number ->
+        BridgeHub.service?.dial(number)
         detailFor = null
       },
-      onToggleFavorite = {
-        scope.launch { repo.toggleFavorite(c) }
-        detailFor = null
-      },
+      onToggleFavorite = { scope.launch { repo.toggleFavorite(c.contact) } },
       onEdit = {
-        editing = c
+        editFor = c
         detailFor = null
       },
-      onDelete = {
-        scope.launch { repo.deleteContact(c) }
-        detailFor = null
+      onDelete = { deleteFor = c },
+    )
+  }
+  deleteFor?.let { c ->
+    AlertDialog(
+      onDismissRequest = { deleteFor = null },
+      title = { Text("למחוק את איש הקשר?") },
+      text = { Text("${c.contact.name} וכל המספרים שלו יימחקו לצמיתות.") },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            scope.launch { repo.deleteContact(c.contact) }
+            deleteFor = null
+            onSnackbar("איש הקשר נמחק")
+          },
+        ) { Text("מחק", fontWeight = FontWeight.Bold) }
       },
+      dismissButton = { TextButton(onClick = { deleteFor = null }) { Text("ביטול") } },
     )
   }
 }
 
-// --- Rows & dialogs ---
+// ---------------------------------------------------------------------------
+// Grouped list with alphabet index (Google Contacts style)
+// ---------------------------------------------------------------------------
+
+private sealed interface ListItem {
+  data class Header(val letter: String) : ListItem
+  data class Contact(val contact: ContactWithDetails) : ListItem
+}
+
+private fun buildItems(list: List<ContactWithDetails>): Pair<List<ListItem>, Map<String, Int>> {
+  val items = mutableListOf<ListItem>()
+  val index = mutableMapOf<String, Int>()
+  val favorites = list.filter { it.contact.favorite }
+  if (favorites.isNotEmpty()) {
+    index["★"] = items.size
+    items.add(ListItem.Header("★ מועדפים"))
+    favorites.sortedBy { it.contact.name.lowercase() }.forEach { items.add(ListItem.Contact(it)) }
+  }
+  val rest = list.filter { !it.contact.favorite }.sortedBy { it.contact.name.lowercase() }
+  rest.groupBy { indexLetter(it.contact.name) }.forEach { (letter, group) ->
+    index[letter] = items.size
+    items.add(ListItem.Header(letter))
+    group.forEach { items.add(ListItem.Contact(it)) }
+  }
+  return items to index
+}
+
+/** First Hebrew letter of the name, or "#" for anything else (Latin/digits). */
+private fun indexLetter(name: String): String {
+  val first = name.trim().firstOrNull()?.toString() ?: return "#"
+  return if (first in HEBREW_LETTERS) first else "#"
+}
+
+@Composable
+private fun GroupedContactList(
+  list: List<ContactWithDetails>,
+  onOpen: (ContactWithDetails) -> Unit,
+  onCall: (String) -> Unit,
+) {
+  val (items, index) = remember(list) { buildItems(list) }
+  val listState = rememberLazyListState()
+  Box(Modifier.fillMaxSize()) {
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+      items(items, key = {
+        when (it) {
+          is ListItem.Header -> "h_${it.letter}"
+          is ListItem.Contact -> "c_${it.contact.contact.id}"
+        }
+      }) { item ->
+        when (item) {
+          is ListItem.Header -> SectionHeader(item.letter)
+          is ListItem.Contact -> ContactRow(item.contact, onClick = { onOpen(item.contact) }, onCall = onCall)
+        }
+      }
+    }
+    // Alphabet / favorites index bar on the end side (left in RTL).
+    Column(
+      modifier = Modifier
+        .align(Alignment.CenterEnd)
+        .fillMaxHeight()
+        .padding(vertical = 24.dp, horizontal = 2.dp),
+      verticalArrangement = Arrangement.SpaceEvenly,
+      horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      val letters = (listOf("★") + HEBREW_LETTERS.map { it.toString() }).filter { index.containsKey(it) }
+      letters.forEach { letter ->
+        Text(
+          letter,
+          modifier = Modifier
+            .clickable { index[letter]?.let { listState.animateScrollToItem(it) } }
+            .padding(horizontal = 6.dp, vertical = 1.dp),
+          style = MaterialTheme.typography.labelSmall,
+          fontWeight = FontWeight.Bold,
+          color = MaterialTheme.colorScheme.primary,
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun FlatContactList(
+  list: List<ContactWithDetails>,
+  onOpen: (ContactWithDetails) -> Unit,
+  onCall: (String) -> Unit,
+) {
+  LazyColumn(Modifier.fillMaxSize()) {
+    items(list, key = { it.contact.id }) { c ->
+      ContactRow(c, onClick = { onOpen(c) }, onCall = onCall)
+    }
+  }
+}
+
+@Composable
+private fun SectionHeader(letter: String) {
+  Text(
+    letter,
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+      .padding(horizontal = 16.dp, vertical = 6.dp),
+    style = MaterialTheme.typography.labelLarge,
+    fontWeight = FontWeight.Bold,
+    color = MaterialTheme.colorScheme.primary,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Rows & avatars
+// ---------------------------------------------------------------------------
 
 @Composable
 internal fun ContactAvatar(name: String, photoUri: String?, size: Dp, modifier: Modifier = Modifier) {
@@ -215,7 +339,7 @@ internal fun ContactAvatar(name: String, photoUri: String?, size: Dp, modifier: 
     AsyncImage(
       model = photoUri,
       contentDescription = null,
-      contentScale = ContentScale.Crop,
+      contentScale = androidx.compose.ui.layout.ContentScale.Crop,
       modifier = modifier.size(size).clip(CircleShape),
     )
   } else {
@@ -238,129 +362,181 @@ internal fun ContactAvatar(name: String, photoUri: String?, size: Dp, modifier: 
 }
 
 @Composable
-private fun ContactRow(c: ContactEntity, onClick: () -> Unit) {
+private fun ContactRow(c: ContactWithDetails, onClick: () -> Unit, onCall: (String) -> Unit) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
       .clickable(onClick = onClick)
-      .padding(horizontal = 16.dp, vertical = 10.dp),
+      .padding(horizontal = 16.dp, vertical = 8.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    ContactAvatar(c.name, c.photoUri, 44.dp)
+    ContactAvatar(c.contact.name, c.contact.photoUri, 44.dp)
     Spacer(Modifier.width(12.dp))
     Column(Modifier.weight(1f)) {
-      Text(c.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+      Text(c.contact.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
       Text(
-        c.phone,
+        c.primaryPhone,
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
     }
-    if (c.favorite) {
-      Icon(Icons.Filled.Star, contentDescription = null, tint = Color(0xFFFFB300))
+    if (c.contact.favorite) {
+      Icon(Icons.Filled.Star, contentDescription = null, tint = Color(0xFFFFB300), modifier = Modifier.size(20.dp))
+      Spacer(Modifier.width(4.dp))
+    }
+    IconButton(onClick = { onCall(c.primaryPhone) }, modifier = Modifier.size(40.dp)) {
+      Icon(
+        Icons.Filled.Call,
+        contentDescription = "חייג ל${c.contact.name}",
+        tint = MaterialTheme.colorScheme.primary,
+      )
     }
   }
 }
 
-/** Google-Contacts-style detail view: big avatar, contact info and quick actions. */
+// ---------------------------------------------------------------------------
+// Detail view (full-screen, Google Contacts style)
+// ---------------------------------------------------------------------------
+
 @Composable
 private fun ContactDetailDialog(
-  contact: ContactEntity,
+  contact: ContactWithDetails,
   onDismiss: () -> Unit,
-  onCall: () -> Unit,
+  onCall: (String) -> Unit,
   onToggleFavorite: () -> Unit,
   onEdit: () -> Unit,
   onDelete: () -> Unit,
 ) {
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    text = {
+  Dialog(onDismissRequest = onDismiss) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .widthIn(max = 560.dp)
+        .clip(RoundedCornerShape(28.dp))
+        .background(MaterialTheme.colorScheme.surface)
+        .padding(20.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onDismiss) {
+          Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "חזרה")
+        }
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onToggleFavorite) {
+          Icon(
+            if (contact.contact.favorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+            contentDescription = "מועדף",
+            tint = if (contact.contact.favorite) Color(0xFFFFB300) else MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        IconButton(onClick = onEdit) {
+          Icon(Icons.Filled.Edit, contentDescription = "עריכה", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        IconButton(onClick = onDelete) {
+          Icon(Icons.Filled.Delete, contentDescription = "מחיקה", tint = MaterialTheme.colorScheme.error)
+        }
+      }
       Column(
-        modifier = Modifier
-          .fillMaxWidth()
-          .verticalScroll(rememberScrollState()),
+        modifier = Modifier.verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
       ) {
-        ContactAvatar(contact.name, contact.photoUri, 104.dp)
+        ContactAvatar(contact.contact.name, contact.contact.photoUri, 104.dp)
         Spacer(Modifier.height(12.dp))
         Text(
-          contact.name,
+          contact.contact.name,
           style = MaterialTheme.typography.headlineSmall,
           fontWeight = FontWeight.Bold,
           textAlign = TextAlign.Center,
         )
-        if (contact.favorite) {
-          Text(
-            "מועדף",
-            style = MaterialTheme.typography.labelMedium,
-            color = Color(0xFFFFB300),
-          )
+        if (contact.contact.favorite) {
+          Text("מועדף", style = MaterialTheme.typography.labelMedium, color = Color(0xFFFFB300))
         }
-        Spacer(Modifier.height(12.dp))
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .clickable(onClick = onCall)
-            .padding(vertical = 10.dp, horizontal = 4.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Icon(Icons.Filled.Call, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-          Spacer(Modifier.width(12.dp))
-          Text(
-            contact.phone,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Medium,
-          )
-        }
-        contact.email?.takeIf { it.isNotBlank() }?.let { email ->
+        Spacer(Modifier.height(16.dp))
+        contact.phoneLabels().forEach { (label, number) ->
           Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 4.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(MaterialTheme.shapes.medium)
+              .clickable { onCall(number) }
+              .padding(vertical = 10.dp, horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Icon(Icons.Filled.Phone, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+              Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+              Text(number, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium)
+            }
+            Icon(Icons.Filled.Call, contentDescription = "חייג", tint = MaterialTheme.colorScheme.primary)
+          }
+        }
+        val emailRows = contact.emails.map { it.label to it.email } +
+          listOfNotNull(contact.contact.email?.takeIf { it.isNotBlank() }?.let { "אימייל" to it })
+        emailRows.distinctBy { it.second }.forEach { (label, email) ->
+          Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
           ) {
             Icon(Icons.Filled.Email, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(12.dp))
-            Text(email, style = MaterialTheme.typography.bodyLarge)
+            Column {
+              Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+              Text(email, style = MaterialTheme.typography.bodyLarge)
+            }
           }
         }
-        contact.notes?.takeIf { it.isNotBlank() }?.let { notes ->
+        contact.contact.notes?.takeIf { it.isNotBlank() }?.let { notes ->
           Text(
             notes,
-            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 4.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp, horizontal = 4.dp),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
         }
-        Spacer(Modifier.height(12.dp))
-        ActionButton(Icons.Filled.Call, "חייג") { onCall() }
-        ActionButton(
-          if (contact.favorite) Icons.Filled.Star else Icons.Filled.StarBorder,
-          if (contact.favorite) "הסר מהמועדפים" else "הוסף למועדפים",
-        ) { onToggleFavorite() }
-        ActionButton(Icons.Filled.Edit, "ערוך") { onEdit() }
-        ActionButton(Icons.Filled.Delete, "מחק", error = true) { onDelete() }
+        Spacer(Modifier.height(16.dp))
       }
-    },
-    confirmButton = {},
-  )
+    }
+  }
 }
 
+// ---------------------------------------------------------------------------
+// Add / edit editor (full-screen, multi phone + email)
+// ---------------------------------------------------------------------------
+
+private data class PhoneField(val label: String = "נייד", val number: String = "")
+private data class EmailField(val label: String = "אימייל", val email: String = "")
+
 @Composable
-private fun ContactEditDialog(
+private fun ContactEditorDialog(
   title: String,
-  initialName: String,
-  initialPhone: String,
-  initialEmail: String,
-  initialNotes: String,
-  initialPhoto: String?,
-  onSave: (name: String, phone: String, email: String?, notes: String?, photo: String?) -> Unit,
+  initial: ContactWithDetails?,
+  onSave: (name: String, phones: List<Pair<String, String>>, emails: List<Pair<String, String>>, notes: String?, photo: String?) -> Unit,
   onDismiss: () -> Unit,
 ) {
-  var name by remember(initialName) { mutableStateOf(initialName) }
-  var phone by remember(initialPhone) { mutableStateOf(initialPhone) }
-  var email by remember(initialEmail) { mutableStateOf(initialEmail) }
-  var notes by remember(initialNotes) { mutableStateOf(initialNotes) }
-  var photo by remember(initialPhoto) { mutableStateOf(initialPhoto) }
+  var name by remember(initial) { mutableStateOf(initial?.contact?.name ?: "") }
+  val phones = remember(initial) {
+    mutableStateListOf<PhoneField>().apply {
+      if (initial != null) {
+        initial.phoneLabels().forEach { (label, number) -> add(PhoneField(label, number)) }
+        if (isEmpty()) add(PhoneField())
+      } else {
+        add(PhoneField())
+      }
+    }
+  }
+  val emails = remember(initial) {
+    mutableStateListOf<EmailField>().apply {
+      if (initial != null) {
+        initial.emails.forEach { add(EmailField(it.label, it.email)) }
+        initial.contact.email?.takeIf { it.isNotBlank() }?.let { add(EmailField("אימייל", it)) }
+        if (isEmpty()) add(EmailField())
+      } else {
+        add(EmailField())
+      }
+    }
+  }
+  var notes by remember(initial) { mutableStateOf(initial?.contact?.notes ?: "") }
+  var photo by remember(initial) { mutableStateOf(initial?.contact?.photoUri) }
   val scope = rememberCoroutineScope()
   val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
     if (uri != null) {
@@ -369,30 +545,47 @@ private fun ContactEditDialog(
       }
     }
   }
-  AlertDialog(
-    onDismissRequest = onDismiss,
-    title = { Text(title) },
-    text = {
+  val hasValidPhone = phones.any { it.number.isNotBlank() }
+
+  Dialog(onDismissRequest = onDismiss) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .widthIn(max = 560.dp)
+        .clip(RoundedCornerShape(28.dp))
+        .background(MaterialTheme.colorScheme.surface)
+        .padding(20.dp),
+      horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        IconButton(onClick = onDismiss) {
+          Icon(Icons.Filled.Close, contentDescription = "סגירה")
+        }
+      }
       Column(
-        modifier = Modifier.verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        ContactAvatar(name.ifEmpty { "?" }, photo, 88.dp)
-        Row {
-          TextButton(
-            onClick = {
-              picker.launch(
-                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-              )
-            },
-          ) {
-            Icon(Icons.Filled.PhotoCamera, contentDescription = null)
-            Spacer(Modifier.width(6.dp))
-            Text("בחר תמונה")
-          }
-          if (photo != null) {
-            TextButton(onClick = { photo = null }) { Text("הסר תמונה") }
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+          Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            ContactAvatar(name.ifEmpty { "?" }, photo, 88.dp)
+            Row {
+              TextButton(
+                onClick = {
+                  picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+              ) {
+                Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("בחר תמונה")
+              }
+              if (photo != null) {
+                TextButton(onClick = { photo = null }) { Text("הסר") }
+              }
+            }
           }
         }
         OutlinedTextField(
@@ -402,51 +595,109 @@ private fun ContactEditDialog(
           singleLine = true,
           modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-          value = phone,
-          onValueChange = { phone = it },
-          label = { Text("מספר טלפון") },
-          singleLine = true,
-          modifier = Modifier.fillMaxWidth(),
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-        )
-        OutlinedTextField(
-          value = email,
-          onValueChange = { email = it },
-          label = { Text("אימייל (אופציונלי)") },
-          singleLine = true,
-          modifier = Modifier.fillMaxWidth(),
-          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-        )
+        Text("טלפונים", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        phones.forEachIndexed { i, p ->
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            LabelChips(
+              selected = p.label,
+              options = PHONE_LABELS,
+              onSelect = { phones[i] = p.copy(label = it) },
+              modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(6.dp))
+            OutlinedTextField(
+              value = p.number,
+              onValueChange = { phones[i] = p.copy(number = it) },
+              placeholder = { Text("מספר") },
+              singleLine = true,
+              modifier = Modifier.weight(1.6f),
+              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+            )
+            IconButton(onClick = { if (phones.size > 1) phones.removeAt(i) }) {
+              Icon(
+                Icons.Filled.Close,
+                contentDescription = "הסר מספר",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+        }
+        TextButton(onClick = { phones.add(PhoneField()) }) {
+          Icon(Icons.Filled.Add, contentDescription = null)
+          Spacer(Modifier.width(6.dp))
+          Text("הוסף מספר")
+        }
+        Text("אימיילים", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        emails.forEachIndexed { i, e ->
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            LabelChips(
+              selected = e.label,
+              options = EMAIL_LABELS,
+              onSelect = { emails[i] = e.copy(label = it) },
+              modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(6.dp))
+            OutlinedTextField(
+              value = e.email,
+              onValueChange = { emails[i] = e.copy(email = it) },
+              placeholder = { Text("אימייל") },
+              singleLine = true,
+              modifier = Modifier.weight(1.6f),
+              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            )
+            IconButton(onClick = { if (emails.size > 1) emails.removeAt(i) }) {
+              Icon(
+                Icons.Filled.Close,
+                contentDescription = "הסר אימייל",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+          }
+        }
+        TextButton(onClick = { emails.add(EmailField()) }) {
+          Icon(Icons.Filled.Add, contentDescription = null)
+          Spacer(Modifier.width(6.dp))
+          Text("הוסף אימייל")
+        }
         OutlinedTextField(
           value = notes,
           onValueChange = { notes = it },
           label = { Text("הערות (אופציונלי)") },
           modifier = Modifier.fillMaxWidth(),
         )
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+          TextButton(onClick = onDismiss) { Text("ביטול") }
+          Spacer(Modifier.width(8.dp))
+          TextButton(
+            onClick = {
+              val cleanPhones = phones.map { it.label to it.number.trim() }.filter { it.second.isNotEmpty() }
+              val cleanEmails = emails.map { it.label to it.email.trim() }.filter { it.second.isNotEmpty() }
+              if (name.isNotBlank() && cleanPhones.isNotEmpty()) {
+                onSave(name.trim(), cleanPhones, cleanEmails, notes.trim().ifEmpty { null }, photo)
+              }
+            },
+            enabled = name.isNotBlank() && hasValidPhone,
+          ) { Text("שמור", fontWeight = FontWeight.Bold) }
+        }
       }
-    },
-    confirmButton = {
-      TextButton(
-        onClick = { onSave(name.trim(), phone.trim(), email.trim().ifEmpty { null }, notes.trim().ifEmpty { null }, photo) },
-        enabled = name.isNotBlank() && phone.isNotBlank(),
-      ) { Text("שמור") }
-    },
-    dismissButton = { TextButton(onClick = onDismiss) { Text("ביטול") } },
-  )
+    }
+  }
 }
 
 @Composable
-private fun ActionButton(icon: ImageVector, label: String, error: Boolean = false, onClick: () -> Unit) {
-  TextButton(
-    onClick = onClick,
-    colors = ButtonDefaults.textButtonColors(
-      contentColor = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-    ),
+private fun LabelChips(selected: String, options: List<String>, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
+  Row(
+    modifier = modifier.horizontalScroll(rememberScrollState()),
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
   ) {
-    Icon(icon, contentDescription = null)
-    Spacer(Modifier.width(8.dp))
-    Text(label)
+    options.forEach { label ->
+      FilterChip(
+        selected = selected == label,
+        onClick = { onSelect(label) },
+        label = { Text(label) },
+      )
+    }
   }
 }
 

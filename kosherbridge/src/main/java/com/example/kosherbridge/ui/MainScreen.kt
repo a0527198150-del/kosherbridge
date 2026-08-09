@@ -1,8 +1,10 @@
 package com.example.kosherbridge.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.Dialpad
@@ -73,14 +75,23 @@ fun MainScreen() {
     },
     snackbarHost = { SnackbarHost(snackbarHostState) },
   ) { padding ->
-    Box(Modifier.fillMaxSize().padding(padding)) {
-      val snack: (String) -> Unit = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
-      when (tab) {
-        0 -> HomeScreen(state, onGoToDialer = { tab = 1 })
-        1 -> DialerScreen(onSnackbar = snack)
-        2 -> ContactsScreen(onSnackbar = snack)
-        3 -> CallLogScreen(onSnackbar = snack)
-        4 -> SettingsScreen(state, onSnackbar = snack)
+    // Wide screens (tablets, Android boxes, landscape) get a centered column so
+    // lists and the dialer never stretch edge-to-edge.
+    BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+      val contentWidth = if (maxWidth > 640.dp) 640.dp else maxWidth
+      Box(
+        Modifier
+          .fillMaxSize()
+          .padding(horizontal = ((maxWidth - contentWidth) / 2).coerceAtLeast(0.dp)),
+      ) {
+        val snack: (String) -> Unit = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
+        when (tab) {
+          0 -> HomeScreen(state, onGoToDialer = { tab = 1 })
+          1 -> DialerScreen(onSnackbar = snack)
+          2 -> ContactsScreen(onSnackbar = snack)
+          3 -> CallLogScreen(onSnackbar = snack)
+          4 -> SettingsScreen(state, onSnackbar = snack)
+        }
       }
     }
   }
