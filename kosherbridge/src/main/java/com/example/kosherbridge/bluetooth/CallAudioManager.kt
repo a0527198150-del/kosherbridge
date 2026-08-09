@@ -15,6 +15,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
+import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
@@ -241,10 +242,17 @@ class CallAudioManager(private val context: Context) {
   // this is the bridge that gets call audio flowing on players with no HFP
   // client profile. Only used on the raw path; the profile paths negotiate SCO
   // themselves.
+  //
+  // These methods are hidden/system APIs (not in the public SDK), so they are
+  // invoked through reflection - the same approach as HiddenHfp. If a given
+  // stack doesn't expose them (or blocks them), the attempt just fails
+  // silently and everything else keeps working.
 
   @Volatile private var headset: BluetoothHeadset? = null
   @Volatile private var virtualScoOn = false
   @Volatile private var virtualScoDevice: BluetoothDevice? = null
+  @Volatile private var mStartVirtualCall: Method? = null
+  @Volatile private var mStopVirtualCall: Method? = null
 
   private fun startVirtualSco(device: BluetoothDevice?) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
@@ -252,7 +260,7 @@ class CallAudioManager(private val context: Context) {
     val d = device ?: return
     val h = headset
     if (h != null) {
-      virtualScoOn = runCatching { h.startScoUsingVirtualVoiceCall(d) }.getOrDefault(false)
+      virtualScoOn = invokeVirtualSco(h, d, start = true)
       if (virtualScoOn) {
         virtualScoDevice = d
         Log.i(tag, "virtual voice call started - SCO forced to the phone")
@@ -265,7 +273,7 @@ class CallAudioManager(private val context: Context) {
     // profile callback can be slow) and try again.
     Thread {
       val hs = acquireHeadsetProxy() ?: return@Thread
-      val ok = runCatching { hs.startScoUsingVirtualVoiceCall(d) }.getOrDefault(false)
+      val ok = invokeVirtualSco(hs, d, start = true)
       if (ok) {
         virtualScoOn = true
         virtualScoDevice = d
@@ -274,6 +282,19 @@ class CallAudioManager(private val context: Context) {
         Log.w(tag, "startScoUsingVirtualVoiceCall failed - stack refuses SCO")
       }
     }.start()
+  }
+
+  /** Reflectively calls start/stopScoUsingVirtualVoiceCall on the headset proxy. */
+  private fun invokeVirtualSco(h: BluetoothHeadset, d: BluetoothDevice, start: Boolean): Boolean {
+    val cached = if (start) mStartVirtualCall else mStopVirtualCall
+    val m = cached ?: runCatching {
+      val name = if (start) "startScoUsingVirtualVoiceCall" else "stopScoUsingVirtualVoiceCall"
+      h.javaClass.getMethod(name, BluetoothDevice::class.java)
+    }.getOrNull() ?: return false
+    if (cached == null) {
+      if (start) mStartVirtualCall = m else mStopVirtualCall = m
+    }
+    return runCatching { m.invoke(h, d) as? Boolean ?: false }.getOrDefault(false)
   }
 
   private fun acquireHeadsetProxy(): BluetoothHeadset? {
@@ -303,7 +324,10 @@ class CallAudioManager(private val context: Context) {
     virtualScoOn = false
     val d = virtualScoDevice
     virtualScoDevice = null
-    if (d != null) runCatching { headset?.stopScoUsingVirtualVoiceCall(d) }
+    if (d != null) {
+      val h = headset
+      if (h != null) runCatching { invokeVirtualSco(h, d, start = false) }
+    }
     runCatching {
       val adapter =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
