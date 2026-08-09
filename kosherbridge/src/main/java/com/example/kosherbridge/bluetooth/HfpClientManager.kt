@@ -45,6 +45,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var stateReceiver: BroadcastReceiver? = null
   private var shizuku: ShizukuBridge? = null
   private var raw: RawHfpClient? = null
+  private var shizukuFallbackLaunched = false
 
   /** Short window after an explicit disconnect where the poll ignores re-detection. */
   private var ignorePollUntil = 0L
@@ -54,6 +55,14 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   /** Raw RFCOMM mode, opted-in from Settings ("חיבור ישיר"). */
   private val rawActive: Boolean get() = raw?.isConnected?.value == true
+
+  /**
+   * True once a real privileged call was rejected with SecurityException -
+   * the profile proxy exists (profileReady == true) but BLUETOOTH_PRIVILEGED
+   * is actually missing. BridgeService checks this when deciding whether the
+   * delayed Shizuku fallback is still needed.
+   */
+  val privilegedBlocked: Boolean get() = HiddenHfp.privilegedBlocked
 
   val adapterOn: Boolean get() = adapter?.isEnabled == true
 
@@ -193,19 +202,25 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   fun connect(target: BluetoothDevice) {
     device.value = target
+    // Same priority as every other command: raw RFCOMM first, then Shizuku,
+    // then the in-process hidden API.
+    if (rawActive) {
+      raw?.connect(target)
+      return
+    }
     if (useShizuku) {
       if (!shizuku!!.connect(target.address)) {
         lastError.value = "החיבור נכשל - נסה שוב"
       }
       return
     }
-    if (raw != null) {
-      raw?.connect(target)
-      return
-    }
     val c = client ?: return
     if (!HiddenHfp.connect(c, target)) {
-      lastError.value = "החיבור נכשל - נסה שוב"
+      if (HiddenHfp.privilegedBlocked) {
+        fallbackToShizuku("גישה ישירה לפרופיל נחסמה על ידי המערכת - עוברים אוטומטית ל-Shizuku")
+      } else {
+        lastError.value = "החיבור נכשל - נסה שוב"
+      }
     }
   }
 
@@ -234,7 +249,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     if (rawActive) return raw?.dial(number) ?: false
     if (useShizuku) return shizuku?.dial(number) ?: false
     val c = client ?: return false
-    return HiddenHfp.dial(c, number)
+    val ok = HiddenHfp.dial(c, number)
+    if (!ok && HiddenHfp.privilegedBlocked) {
+      fallbackToShizuku("החיוג הישיר נחסם על ידי המערכת - עוברים אוטומטית ל-Shizuku")
+    }
+    return ok
   }
 
   fun redial(): Boolean =
@@ -394,10 +413,42 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
   }
 
+  /**
+   * Automatically switches to the privileged Shizuku path when the direct
+   * hidden-API path is blocked by the system (SecurityException). Called from
+   * connect()/dial() so the user is never left with a silently failing
+   * "direct" connection; BridgeService's delayed check is a backstop.
+   */
+  private fun fallbackToShizuku(reason: String) {
+    if (useShizuku || shizukuFallbackLaunched) return
+    shizukuFallbackLaunched = true
+    lastError.value = reason
+    scope.launch {
+      bindShizuku()
+      shizukuFallbackLaunched = false
+    }
+  }
+
   /** Polls call state from the remote Shizuku user service. */
   private fun pollShizuku() {
     val s = shizuku ?: return
-    val d = device.value ?: return
+    var d = device.value
+    if (d == null) {
+      // Rediscover the connected device, mirroring the direct path's
+      // connectedDevices() lookup, so a manual "התחבר דרך Shizuku" works even
+      // when auto-connect never filled device.value.
+      val addr = s.bondedDevices()
+        .firstOrNull { s.connectionState(it.address) == BluetoothProfile.STATE_CONNECTED }
+        ?.address
+      if (addr != null) {
+        val dev = runCatching { adapter?.getRemoteDevice(addr) }.getOrNull()
+        if (dev != null) {
+          device.value = dev
+          d = dev
+        }
+      }
+    }
+    if (d == null) return
     connectionState.value = s.connectionState(d.address)
     audioState.value = s.audioState(d.address)
     if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {

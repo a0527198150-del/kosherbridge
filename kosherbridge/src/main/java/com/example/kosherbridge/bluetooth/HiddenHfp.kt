@@ -47,6 +47,17 @@ object HiddenHfp {
   private var mCallRemote: Method? = null
   private var mCallDirection: Method? = null
 
+  /**
+   * Becomes true the moment any privileged call is rejected with a
+   * SecurityException - i.e. the profile proxy was obtained (so [isAvailable]
+   * and profileReady are true) but the app actually lacks BLUETOOTH_PRIVILEGED
+   * ("wall 2"). Sticky: the permission cannot change at runtime. The manager
+   * uses this to fall back to Shizuku instead of failing silently.
+   */
+  @Volatile
+  var privilegedBlocked: Boolean = false
+    private set
+
   // BluetoothHeadsetClientCall constants (AOSP fallbacks if reflection fails)
   var callStateActive = 0; private set
   var callStateHeld = 1; private set
@@ -142,14 +153,22 @@ object HiddenHfp {
     try { c?.getField(name)?.getInt(null) ?: fallback } catch (e: Throwable) { fallback }
 
   private fun bool(m: Method?, recv: Any?, vararg args: Any?): Boolean =
-    try { (m?.invoke(recv, *args) as? Boolean) ?: false } catch (e: Throwable) { false }
+    try { (m?.invoke(recv, *args) as? Boolean) ?: false }
+    catch (e: SecurityException) { privilegedBlocked = true; false }
+    catch (e: Throwable) { false }
 
   private fun int(m: Method?, recv: Any?, def: Int, vararg args: Any?): Int =
-    try { (m?.invoke(recv, *args) as? Int) ?: def } catch (e: Throwable) { def }
+    try { (m?.invoke(recv, *args) as? Int) ?: def }
+    catch (e: SecurityException) { privilegedBlocked = true; def }
+    catch (e: Throwable) { def }
 
   private fun string(m: Method?, recv: Any?, vararg args: Any?): String? =
-    try { m?.invoke(recv, *args) as? String } catch (e: Throwable) { null }
+    try { m?.invoke(recv, *args) as? String }
+    catch (e: SecurityException) { privilegedBlocked = true; null }
+    catch (e: Throwable) { null }
 
   private fun list(m: Method?, recv: Any?): List<*> =
-    try { m?.invoke(recv) as? List<*> ?: emptyList<Any>() } catch (e: Throwable) { emptyList<Any>() }
+    try { m?.invoke(recv) as? List<*> ?: emptyList<Any>() }
+    catch (e: SecurityException) { privilegedBlocked = true; emptyList<Any>() }
+    catch (e: Throwable) { emptyList<Any>() }
 }

@@ -92,11 +92,15 @@ class BridgeService : Service() {
     if (intent?.action == ACTION_START || intent?.action == null) {
       manager.register()
       maybeAutoConnect()
-      // If the in-process profile is blocked (hidden API / BLUETOOTH_PRIVILEGED on
-      // Android 12+), fall back to the privileged Shizuku user service.
+      // If the in-process profile is unavailable OR a real privileged call was
+      // already rejected with SecurityException (profileReady alone is not
+      // proof the privileged path works - getProfileProxy can succeed while
+      // every connect/dial fails without BLUETOOTH_PRIVILEGED), fall back to
+      // the privileged Shizuku user service. connect()/dial() also trigger this
+      // immediately; this delayed check is the boot-time backstop.
       scope.launch {
         delay(2500)
-        if (!manager.profileReady.value) {
+        if (!manager.profileReady.value || manager.privilegedBlocked) {
           manager.bindShizuku()
         }
       }
