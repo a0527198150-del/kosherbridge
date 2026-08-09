@@ -263,6 +263,7 @@ private fun GroupedContactList(
 ) {
   val (items, index) = remember(list) { buildItems(list) }
   val listState = rememberLazyListState()
+  val scope = rememberCoroutineScope()
   Box(Modifier.fillMaxSize()) {
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
       items(items, key = {
@@ -291,7 +292,7 @@ private fun GroupedContactList(
         Text(
           letter,
           modifier = Modifier
-            .clickable { index[letter]?.let { listState.animateScrollToItem(it) } }
+            .clickable { scope.launch { index[letter]?.let { listState.animateScrollToItem(it) } } }
             .padding(horizontal = 6.dp, vertical = 1.dp),
           style = MaterialTheme.typography.labelSmall,
           fontWeight = FontWeight.Bold,

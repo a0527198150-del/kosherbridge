@@ -55,6 +55,7 @@ import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.CallLogEntity
 import com.example.kosherbridge.data.local.ContactEntity
+import com.example.kosherbridge.data.local.ContactsRepository
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
