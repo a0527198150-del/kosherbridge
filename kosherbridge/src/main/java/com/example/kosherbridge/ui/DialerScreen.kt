@@ -84,25 +84,25 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
       // Keys scale with the available width so the keypad fits every screen
       // (phones, tablets and Android boxes) instead of overflowing or floating.
+      // NOTE: BoxWithConstraints is a Box - the rows must live inside a Column
+      // so they stack vertically instead of overlapping.
       val keySize = ((maxWidth - 56.dp) / 3).coerceIn(56.dp, 88.dp)
-      keys.chunked(3).forEach { row ->
-        Row(
-          horizontalArrangement = Arrangement.spacedBy(28.dp),
-          modifier = Modifier.fillMaxWidth(),
-        ) {
-          // Center the row when the keys hit their max size on wide screens
-          Spacer(Modifier.weight(1f))
-          row.forEach { key ->
-            DialKey(
-              label = key,
-              sub = t9Letters(key),
-              size = keySize,
-              onLongClick = if (key == "0") ({ number += "+" }) else null,
-            ) { number += key }
+      Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        keys.chunked(3).forEach { row ->
+          Row(
+            horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            row.forEach { key ->
+              DialKey(
+                label = key,
+                sub = t9Letters(key),
+                size = keySize,
+                onLongClick = if (key == "0") ({ number += "+" }) else null,
+              ) { number += key }
+            }
           }
-          Spacer(Modifier.weight(1f))
         }
-        Spacer(Modifier.height(7.dp))
       }
     }
 
