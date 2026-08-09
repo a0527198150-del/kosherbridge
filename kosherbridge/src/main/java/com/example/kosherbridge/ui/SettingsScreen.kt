@@ -1,12 +1,17 @@
 package com.example.kosherbridge.ui
 
 import android.Manifest
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -35,6 +41,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +57,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.data.ServiceLocator
+import com.example.kosherbridge.data.local.ChannelState
 import com.example.kosherbridge.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 
@@ -70,6 +78,14 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
   var showClearContactsConfirm by remember { mutableStateOf(false) }
   var micResult by remember { mutableStateOf<String?>(null) }
 
+  // Connection channel for THIS player + in-app Bluetooth pairing.
+  val fp = remember { Build.FINGERPRINT }
+  val channelState by settings.channelState(fp).collectAsStateWithLifecycle(ChannelState("AUTO", "AUTO", ""))
+  var showChannelDialog by remember { mutableStateOf(false) }
+  var showPairDialog by remember { mutableStateOf(false) }
+  var discovered by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+  var scanning by remember { mutableStateOf(false) }
+
   val micPermission = rememberLauncherForActivityResult(
     ActivityResultContracts.RequestPermission(),
   ) { granted ->
@@ -78,6 +94,36 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       "בודק..."
     } else {
       "אין הרשאת מיקרופון"
+    }
+  }
+
+  val startScan: () -> Unit = {
+    discovered = emptyList()
+    scanning = true
+    showPairDialog = true
+  }
+  val scanPermLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions(),
+  ) { grants ->
+    if (grants.values.all { it }) startScan() else onSnackbar("נדרשת הרשאת סריקת בלוטוס לצימוד")
+  }
+  val requestScanPermissions: () -> Unit = {
+    val perms = if (Build.VERSION.SDK_INT >= 31) {
+      arrayOf(Manifest.permission.BLUETOOTH_SCAN)
+    } else {
+      arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+    val missing = perms.filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+    if (missing.isEmpty()) startScan() else scanPermLauncher.launch(missing.toTypedArray())
+  }
+  val pairDevice: (String) -> Unit = { address ->
+    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+    val d = runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
+    if (d == null) {
+      onSnackbar("המכשיר לא זמין")
+    } else {
+      val ok = runCatching { d.createBond() }.getOrDefault(false)
+      onSnackbar(if (ok) "הצימוד החל - אשר את הזיווג במכשיר ובטלפון" else "הצימוד לא החל - נסה שוב")
     }
   }
 
@@ -121,6 +167,11 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       SettingRow("התאמת מכשיר חדש", null) {
         runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
       }
+      SettingRow("ערוץ חיבור", channelLabel(channelState)) { showChannelDialog = true }
+      SettingRow(
+        "צימוד מכשיר חדש (סריקה)",
+        "סורק בלוטוס ומצמיד מכשיר חדש מהאפליקציה",
+      ) { requestScanPermissions() }
       SettingRow(
         "התחבר דרך Shizuku",
         "עוקף חסימת אנדרואיד 12+ (דורש Shizuku פעיל עם הרשאה)",
@@ -284,6 +335,46 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
     }
   }
 
+  // Discovery for in-app pairing: register the receiver and scan while the
+  // pairing dialog is open.
+  DisposableEffect(scanning) {
+    if (!scanning) return@DisposableEffect onDispose { }
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(c: Context?, i: Intent?) {
+        if (i?.action == BluetoothDevice.ACTION_FOUND) {
+          val d = if (Build.VERSION.SDK_INT >= 33) {
+            i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+          } else {
+            @Suppress("DEPRECATION")
+            i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+          }
+          if (d != null && d.bondState != BluetoothDevice.BOND_BONDED) {
+            val entry = (d.name ?: d.address) to d.address
+            if (discovered.none { it.second == entry.second }) {
+              discovered = discovered + entry
+            }
+          }
+        }
+      }
+    }
+    val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
+    runCatching {
+      if (Build.VERSION.SDK_INT >= 33) {
+        context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+      } else {
+        @Suppress("DEPRECATION")
+        context.registerReceiver(receiver, filter)
+      }
+    }
+    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+    runCatching { adapter?.startDiscovery() }
+    onDispose {
+      runCatching { context.unregisterReceiver(receiver) }
+      runCatching { adapter?.cancelDiscovery() }
+      scanning = false
+    }
+  }
+
   if (showDevices) {
     DevicePickerDialog(
       onDismiss = { showDevices = false },
@@ -291,6 +382,77 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         showDevices = false
         BridgeHub.service?.connectTo(address)
       },
+    )
+  }
+
+  if (showChannelDialog) {
+    AlertDialog(
+      onDismissRequest = { showChannelDialog = false },
+      title = { Text("ערוץ חיבור") },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          listOf(
+            "AUTO" to "אוטומטי - האפליקציה בוחרת לבד",
+            "DIRECT" to "ישיר (ללא Shizuku)",
+            "SHIZUKU" to "דרך Shizuku",
+            "RAW" to "חיבור ישיר RFCOMM",
+          ).forEach { (mode, label) ->
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .clickable {
+                  scope.launch { settings.setChannel(fp, mode) }
+                  showChannelDialog = false
+                }
+                .padding(vertical = 10.dp, horizontal = 4.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+              if (channelState.effective == mode) {
+                Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+              }
+            }
+          }
+        }
+      },
+      confirmButton = { TextButton(onClick = { showChannelDialog = false }) { Text("סגור") } },
+    )
+  }
+
+  if (showPairDialog) {
+    AlertDialog(
+      onDismissRequest = { showPairDialog = false; scanning = false },
+      title = { Text("מכשירים שנמצאו") },
+      text = {
+        if (discovered.isEmpty()) {
+          Text(if (scanning) "סורק... (הפעל מצב זיווג במכשיר האחר)" else "לא נמצאו מכשירים חדשים")
+        } else {
+          Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            discovered.forEach { (name, address) ->
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(12.dp))
+                  .clickable { pairDevice(address) }
+                  .padding(vertical = 10.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Column(Modifier.weight(1f)) {
+                  Text(name, style = MaterialTheme.typography.bodyLarge)
+                  Text(
+                    address,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+                Text("צמד", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+              }
+            }
+          }
+        }
+      },
+      confirmButton = { TextButton(onClick = { showPairDialog = false; scanning = false }) { Text("סגור") } },
     )
   }
 
@@ -404,6 +566,21 @@ private fun DiagRow(label: String, value: String, ok: Boolean) {
       fontWeight = FontWeight.Medium,
       color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
     )
+  }
+}
+
+/** Short label for the "ערוץ חיבור" settings row. */
+private fun channelLabel(cs: ChannelState): String {
+  val name = when (cs.effective) {
+    "DIRECT" -> "ישיר"
+    "SHIZUKU" -> "Shizuku"
+    "RAW" -> "RFCOMM ישיר"
+    else -> "אוטומטי"
+  }
+  return when {
+    cs.manual != "AUTO" -> "$name (ידני)"
+    cs.learned.isNotBlank() -> "$name (זוכר)"
+    else -> name
   }
 }
 

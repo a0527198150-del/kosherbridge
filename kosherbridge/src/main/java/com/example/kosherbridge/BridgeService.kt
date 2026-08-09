@@ -76,6 +76,11 @@ class BridgeService : Service() {
     instance = this
     Notifications.createChannels(this)
     manager = HfpClientManager(this, scope)
+    // Remember which connection channel actually worked on this exact player
+    // (keyed by Build.FINGERPRINT) so the next launch can jump straight to it.
+    manager.onBackendWorked = { backend ->
+      scope.launch { ServiceLocator.settings.learnChannel(Build.FINGERPRINT, backend) }
+    }
     observeSettings()
     observeManager()
     publishCapabilityReport()
@@ -93,23 +98,30 @@ class BridgeService : Service() {
     }
     ensureForeground()
     if (intent?.action == ACTION_START || intent?.action == null) {
-      manager.register()
-      maybeAutoConnect()
-      // Fall back to the privileged Shizuku user service ONLY when the system
-      // actually blocked the direct path (SecurityException - the proof this
-      // device needs Shizuku). Slow players can take several seconds to bring
-      // the direct profile up, so wait for it to settle first instead of
-      // jumping to Shizuku after a fixed delay - otherwise players that work
-      // fine without Shizuku would briefly show a "Shizuku not installed"
-      // error on the home screen. connect()/dial() also trigger this
-      // immediately; this delayed check is the boot-time backstop.
       scope.launch {
-        for (i in 0 until 30) {
-          if (manager.profileReady.value || manager.privilegedBlocked) break
-          delay(250)
-        }
-        if (manager.privilegedBlocked) {
-          manager.bindShizuku()
+        // Apply the channel for THIS player first (the user's manual choice,
+        // or the channel that worked on this exact device before), then
+        // register and auto-connect with it.
+        val mode = ServiceLocator.settings.effectiveChannel(Build.FINGERPRINT).first()
+        manager.setChannelMode(mode)
+        manager.register()
+        maybeAutoConnect()
+        // Fall back to the privileged Shizuku user service ONLY when the
+        // system actually blocked the direct path (SecurityException - the
+        // proof this device needs Shizuku), and only in AUTO mode: a manual
+        // override or a remembered channel must be respected. Slow players
+        // can take several seconds to bring the direct profile up, so wait
+        // for it to settle first instead of jumping to Shizuku after a fixed
+        // delay. connect()/dial() also trigger this immediately; this
+        // delayed check is the boot-time backstop.
+        if (mode == "AUTO") {
+          for (i in 0 until 30) {
+            if (manager.profileReady.value || manager.privilegedBlocked) break
+            delay(250)
+          }
+          if (manager.privilegedBlocked) {
+            manager.bindShizuku()
+          }
         }
       }
     }
@@ -218,6 +230,24 @@ class BridgeService : Service() {
       val settings = ServiceLocator.settings
       combine(settings.autoAudio, settings.volumeBoost) { auto, boost -> auto to boost }
         .collect { (auto, boost) -> manager.setAudioPrefs(auto, boost) }
+    }
+    scope.launch {
+      val settings = ServiceLocator.settings
+      var applied: String? = null
+      settings.effectiveChannel(Build.FINGERPRINT).collect { mode ->
+        manager.setChannelMode(mode)
+        if (applied != null && applied != mode) {
+          // The user switched the channel in settings - re-apply it to the
+          // live connection so the change takes effect immediately.
+          val dev = settings.lastDevice.first() ?: return@collect
+          manager.disconnect()
+          delay(300)
+          runCatching { adapter()?.getRemoteDevice(dev.address) }?.getOrNull()?.let {
+            manager.connect(it)
+          }
+        }
+        applied = mode
+      }
     }
   }
 

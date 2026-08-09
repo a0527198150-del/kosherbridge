@@ -62,6 +62,30 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var audioInUse = false
   private var audioRetry = 0
 
+  /**
+   * Which connection channel to use: "AUTO" (probe everything in order),
+   * "DIRECT" (in-process hidden API, no fallbacks), "SHIZUKU" (privileged
+   * process), "RAW" (direct RFCOMM). Set by BridgeService from
+   * SettingsRepository - either the user's manual choice or the channel that
+   * worked on this exact player (Build.FINGERPRINT).
+   */
+  @Volatile var channelMode: String = "AUTO"
+    private set
+
+  fun setChannelMode(mode: String) {
+    channelMode = mode
+  }
+
+  /** The currently applied channel mode - read by BridgeService. */
+  val activeChannel: String get() = channelMode
+
+  /**
+   * Invoked when a backend proves itself working on this player: "DIRECT",
+   * "SHIZUKU" or "RAW". BridgeService persists it per Build.FINGERPRINT so
+   * the next launch can jump straight to the known-good channel.
+   */
+  var onBackendWorked: ((String) -> Unit)? = null
+
   init {
     audio.onScoDropped = { if (autoAudio) connectAudio() }
     audio.onAudioStolen = { if (autoAudio) connectAudio() }
@@ -112,6 +136,20 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   /** Binds the HFP client profile proxy. */
   fun register() {
+    when (channelMode) {
+      // Raw RFCOMM has no profile to register - the link is opened in connect().
+      "RAW" -> {
+        lastError.value = null
+        return
+      }
+      // Shizuku binding is started lazily from connect() so it is never
+      // launched twice during startup.
+      "SHIZUKU" -> {
+        lastError.value = null
+        return
+      }
+      else -> Unit
+    }
     HiddenHfp.init()
     if (!HiddenHfp.isAvailable) {
       profileReady.value = false
@@ -157,6 +195,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           registerCallback()
           registerStateReceiver()
           startPolling()
+          onBackendWorked?.invoke("DIRECT")
         }
       }
 
@@ -263,6 +302,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     backendLabel.value = "Shizuku"
     profileReady.value = true
     startPolling()
+    onBackendWorked?.invoke("SHIZUKU")
     return true
   }
 
@@ -299,7 +339,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         r.isConnected.collect { connected ->
           connectionState.value =
             if (connected) BluetoothProfile.STATE_CONNECTED else BluetoothProfile.STATE_DISCONNECTED
-          if (connected) profileReady.value = true
+          if (connected) {
+            profileReady.value = true
+            onBackendWorked?.invoke("RAW")
+          }
           if (!connected) call.value = null
         }
       }
@@ -319,6 +362,54 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   fun connect(target: BluetoothDevice) {
     device.value = target
+    when (channelMode) {
+      // User forced the raw RFCOMM path - open the phone's headset port
+      // directly, no profile involvement, no fallbacks.
+      "RAW" -> {
+        connectRaw(target)
+        return
+      }
+      // User forced the Shizuku path - bind on demand and connect through the
+      // remote privileged process.
+      "SHIZUKU" -> {
+        if (useShizuku) {
+          if (profileReady.value) {
+            if (!shizuku!!.connect(target.address)) {
+              lastError.value = "חיבור הדיבורית נכשל דרך Shizuku"
+            }
+          } else {
+            lastError.value = "פרופיל הדיבורית לא זמין דרך Shizuku בנגן זה"
+          }
+        } else {
+          lastError.value = "מתחבר דרך Shizuku..."
+          scope.launch {
+            if (bindShizuku()) {
+              connect(target)
+            } else {
+              lastError.value = "Shizuku לא פעיל/לא מורשה - שנה ערוץ חיבור בהגדרות"
+            }
+          }
+        }
+        return
+      }
+      // User forced the in-process hidden-API path - no automatic fallbacks.
+      "DIRECT" -> {
+        val c = client
+        if (c != null) {
+          if (HiddenHfp.connect(c, target)) return
+          lastError.value = if (HiddenHfp.privilegedBlocked) {
+            "הגישה הישירה נחסמה על ידי המערכת - שנה ערוץ חיבור לאוטומטי או Shizuku"
+          } else {
+            "חיבור הדיבורית נכשל"
+          }
+        } else {
+          lastError.value = "פרופיל הדיבורית לא זמין - שנה ערוץ חיבור בהגדרות"
+        }
+        return
+      }
+      // AUTO - probe everything in order (existing behavior).
+      else -> Unit
+    }
     if (rawActive) {
       raw?.connect(target)
       return

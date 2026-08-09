@@ -12,6 +12,17 @@ private val Context.dataStore by preferencesDataStore(name = "bridge_settings")
 
 data class LastDevice(val name: String, val address: String)
 
+/**
+ * The connection channel for the current player, resolved from the user's
+ * manual choice (if any) and the channel that proved to work on this exact
+ * player before. Values: "AUTO" (let the app probe), "DIRECT" (in-process
+ * hidden API), "SHIZUKU" (privileged process), "RAW" (direct RFCOMM).
+ */
+data class ChannelState(val effective: String, val manual: String, val learned: String)
+
+private fun channelManualKey(fp: String) = stringPreferencesKey("channel_manual_$fp")
+private fun channelLearnedKey(fp: String) = stringPreferencesKey("channel_learned_$fp")
+
 class SettingsRepository(private val context: Context) {
 
   private object Keys {
@@ -81,4 +92,38 @@ class SettingsRepository(private val context: Context) {
     it[Keys.LAST_DEVICE_NAME] = ""
     it[Keys.LAST_DEVICE_ADDRESS] = ""
   }
+
+  // ------------------------------------------------------------------ channel
+
+  /**
+   * The resolved channel for this player (fingerprint): the user's manual
+   * choice wins; otherwise the channel learned from a previous successful
+   * connection on this exact player; otherwise AUTO (full probing).
+   */
+  fun effectiveChannel(fp: String): Flow<String> =
+    context.dataStore.data.map { prefs ->
+      val manual = prefs[channelManualKey(fp)] ?: "AUTO"
+      if (manual != "AUTO") manual
+      else prefs[channelLearnedKey(fp)]?.takeIf { it.isNotBlank() } ?: "AUTO"
+    }
+
+  /** Full channel state (effective + manual + learned) for the settings UI. */
+  fun channelState(fp: String): Flow<ChannelState> =
+    context.dataStore.data.map { prefs ->
+      val manual = prefs[channelManualKey(fp)] ?: "AUTO"
+      val learned = prefs[channelLearnedKey(fp)] ?: ""
+      ChannelState(
+        effective = if (manual != "AUTO") manual else if (learned.isNotBlank()) learned else "AUTO",
+        manual = manual,
+        learned = learned,
+      )
+    }
+
+  /** The user's explicit choice for this player ("AUTO" = let the app decide). */
+  suspend fun setChannel(fp: String, mode: String) =
+    context.dataStore.edit { it[channelManualKey(fp)] = mode }
+
+  /** Records that a backend proved itself working on this exact player. */
+  suspend fun learnChannel(fp: String, backend: String) =
+    context.dataStore.edit { it[channelLearnedKey(fp)] = backend }
 }
