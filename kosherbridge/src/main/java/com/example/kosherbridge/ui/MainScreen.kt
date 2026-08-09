@@ -76,10 +76,10 @@ fun MainScreen() {
     },
     snackbarHost = { SnackbarHost(snackbarHostState) },
   ) { padding ->
-    // Wide screens (tablets, Android boxes, landscape) get a centered column so
-    // lists and the dialer never stretch edge-to-edge.
+    // Content always fills the screen; only truly huge displays (TV boxes
+    // wider than ~1000dp) get a centered column so lists don't stretch absurdly.
     BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
-      val contentWidth = if (maxWidth > 640.dp) 640.dp else maxWidth
+      val contentWidth = if (maxWidth > 1000.dp) 1000.dp else maxWidth
       Box(
         Modifier
           .fillMaxSize()

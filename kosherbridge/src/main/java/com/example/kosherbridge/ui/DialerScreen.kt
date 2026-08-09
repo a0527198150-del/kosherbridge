@@ -20,9 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Call
@@ -83,10 +81,12 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
   }
   val recents = recentCalls.take(3)
 
+  // No vertical scroll: the keypad is sized from the height that is left after
+  // the display/actions, so every row (including *, 0, # and the call button)
+  // stays on screen even on short landscape screens.
   Column(
     modifier = modifier
       .fillMaxSize()
-      .verticalScroll(rememberScrollState())
       .padding(horizontal = 16.dp, vertical = 8.dp),
     horizontalAlignment = Alignment.CenterHorizontally,
   ) {
@@ -184,15 +184,25 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
     }
 
     // ---------------- keypad (LTR) ----------------
-    Spacer(Modifier.height(10.dp))
+    Spacer(Modifier.height(8.dp))
     val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#")
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-      BoxWithConstraints(Modifier.fillMaxWidth()) {
+      // weight(1f) hands the keypad every dp that the rest of the screen does
+      // not use, so on a short landscape screen the keys shrink and all four
+      // rows still fit; on a tall phone they grow up to 88dp.
+      BoxWithConstraints(
+        Modifier
+          .fillMaxWidth()
+          .weight(1f),
+      ) {
         val keySize =
           ((maxWidth - 56.dp) / 3)
             .coerceAtMost(((maxHeight - 21.dp) / 4))
-            .coerceIn(40.dp, 88.dp)
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            .coerceIn(36.dp, 88.dp)
+        Column(
+          Modifier.fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterVertically),
+        ) {
           keys.chunked(3).forEach { row ->
             Row(
               horizontalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterHorizontally),
@@ -217,7 +227,7 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
     }
 
     // ---------------- actions ----------------
-    Spacer(Modifier.height(10.dp))
+    Spacer(Modifier.height(6.dp))
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(36.dp)) {
         Box(

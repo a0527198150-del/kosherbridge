@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -264,7 +265,7 @@ private fun GroupedContactList(
   val (items, index) = remember(list) { buildItems(list) }
   val listState = rememberLazyListState()
   val scope = rememberCoroutineScope()
-  Box(Modifier.fillMaxSize()) {
+  BoxWithConstraints(Modifier.fillMaxSize()) {
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
       items(items, key = {
         when (it) {
@@ -278,26 +279,30 @@ private fun GroupedContactList(
         }
       }
     }
-    // Alphabet / favorites index bar on the end side (left in RTL).
-    Column(
-      modifier = Modifier
-        .align(Alignment.CenterEnd)
-        .fillMaxHeight()
-        .padding(vertical = 24.dp, horizontal = 2.dp),
-      verticalArrangement = Arrangement.SpaceEvenly,
-      horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-      val letters = (listOf("★") + HEBREW_LETTERS.map { it.toString() }).filter { index.containsKey(it) }
-      letters.forEach { letter ->
-        Text(
-          letter,
-          modifier = Modifier
-            .clickable { scope.launch { index[letter]?.let { listState.animateScrollToItem(it) } } }
-            .padding(horizontal = 6.dp, vertical = 1.dp),
-          style = MaterialTheme.typography.labelSmall,
-          fontWeight = FontWeight.Bold,
-          color = MaterialTheme.colorScheme.primary,
-        )
+    // Alphabet / favorites index bar on the end side (left in RTL). Only shown
+    // when there is enough vertical space - on short landscape screens the
+    // letters would be squeezed together and overlap.
+    if (maxHeight >= 420.dp) {
+      Column(
+        modifier = Modifier
+          .align(Alignment.CenterEnd)
+          .fillMaxHeight()
+          .padding(vertical = 24.dp, horizontal = 2.dp),
+        verticalArrangement = Arrangement.SpaceEvenly,
+        horizontalAlignment = Alignment.CenterHorizontally,
+      ) {
+        val letters = (listOf("★") + HEBREW_LETTERS.map { it.toString() }).filter { index.containsKey(it) }
+        letters.forEach { letter ->
+          Text(
+            letter,
+            modifier = Modifier
+              .clickable { scope.launch { index[letter]?.let { listState.animateScrollToItem(it) } } }
+              .padding(horizontal = 6.dp, vertical = 1.dp),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+          )
+        }
       }
     }
   }
