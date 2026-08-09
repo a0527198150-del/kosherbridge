@@ -23,6 +23,15 @@ jobs:
       - name: Accept Android SDK licenses
         run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
+      # Restore the stable signing key so every build shares one signature and
+      # updates install over previous versions without uninstalling. Without
+      # this, Gradle generates a throwaway debug key per run and each APK has a
+      # different signature (install over old version fails).
+      - name: Restore stable debug keystore
+        run: |
+          echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+          ls -la debug.keystore
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:

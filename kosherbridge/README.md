@@ -57,3 +57,24 @@
 ```
 
 קובץ ה-APK ייווצר ב-`kosherbridge/build/outputs/apk/debug/`.
+
+> **בנייה מקומית דורשת את `debug.keystore` בשורש הפרויקט** (אותו קובץ שה-CI משחזר
+> מה-secret). אם הקובץ חסר, הבנייה נכשלת עם "Keystore file not found". כדי ליצור
+> אותו מקומית מריצים פעם אחת:
+> `keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"`
+> ⚠️ מפתח שנוצר מקומית **שונה** מהמפתח של ה-CI — APK שנבנה אצלך במחשב לא יתעדכן מעל
+> APK מה-CI (ולהפך). להתקנה על המכשיר עדיף תמיד להוריד את ה-APK מהריצה האחרונה בגיטהאב.
+
+## עדכונים (בלי להסיר את האפליקציה)
+
+כל APK שנבנה ב-GitHub Actions נחתם עם **אותו מפתח קבוע** (`debug.keystore` שמשוחזר
+מה-secret `DEBUG_KEYSTORE_BASE64`), וה-`versionCode` נגזר אוטומטית ממספר ה-commits
+כך שהוא תמיד עולה. לכן:
+
+- **עדכון = פשוט מתקינים את ה-APK החדש מעל הקיים** — מהריצה האחרונה בגיטהאב
+  (ארטיקט `kosherbridge-apk`). אנדרואיד מזהה עדכון ושומר את כל הנתונים (אנשי קשר, יומן).
+- **לא להסיר לפני עדכון**, אלא אם המכשיר אומר שהחתימה לא תואמת — זה יכול לקרות רק
+  אם הגרסה המותקנת נחתמה במפתח אחר (למשל APK שמורידים ממקום אחר או build מקומי),
+  ובמקרה כזה נדרשת הסרה חד-פעמית.
+- ה-secret `DEBUG_KEYSTORE_BASE64` נמצא בהגדרות המאגר (Settings → Secrets and variables → Actions).
+  **שומרים עליו!** איבוד שלו = עדכונים עתידיים לא יוכלו להתקין מעל גרסאות קיימות.
