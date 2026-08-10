@@ -129,6 +129,12 @@ class RawHfpClient(private val scope: CoroutineScope) {
       input = BufferedReader(InputStreamReader(sock.inputStream, Charsets.ISO_8859_1))
       output = sock.outputStream
 
+      // Some embedded AG stacks (feature phones) need a moment after the
+      // RFCOMM channel opens before they're ready for AT commands.
+      // Blasting BRSF immediately can cause "connects then drops" on slow
+      // stacks - a short pause lets the AG finish its internal setup.
+      delay(300)
+
       // Some AGs accept the socket but never answer AT commands. Close the
       // socket after 12s so a silent handshake can't hang the reconnect loop.
       val watchdog = scope.launch(Dispatchers.IO) {
@@ -367,10 +373,19 @@ class RawHfpClient(private val scope: CoroutineScope) {
       line.startsWith("+CLIP:") -> handleClip(line)
       line.startsWith("+CLCC:") -> handleClcc(line)
       line.startsWith("+CIND:") -> handleCind(line)
+      line.startsWith("+BRSF:") -> handleBrsf(line)
       line == "OK" || line == "ERROR" -> finishClccBatch()
       // everything else is either an ack or an unsolicited event we don't need
       else -> Unit
     }
+  }
+
+  /** Parses the AG's BRSF feature bitmap (advertised in response to AT+BRSF). */
+  @Volatile private var agBrsfFeatures = 0
+
+  private fun handleBrsf(line: String) {
+    agBrsfFeatures = line.substringAfter("+BRSF:").trim().toIntOrNull() ?: return
+    Log.i(tag, "AG features: $agBrsfFeatures")
   }
 
   private fun handleCiev(line: String) {
