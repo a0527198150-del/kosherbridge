@@ -44,6 +44,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class RawHfpClient(
   private val context: Context,
   private val scope: CoroutineScope,
+  private val onLog: (String, Boolean) -> Unit = { _, _ -> },
 ) {
 
   private val tag = "RawHfp"
@@ -120,6 +121,7 @@ class RawHfpClient(
 
   fun connect(target: BluetoothDevice) {
     targetDevice = target
+    onLog("נבחר מכשיר ${target.name ?: target.address}", false)
     reconnectEnabled = true
     reconnectAttempts = 0
     dropCount = 0
@@ -171,6 +173,7 @@ class RawHfpClient(
       val handshakeOk = handshake() && !handshakeWatchdogFired.get() && sock.isConnected
       watchdog.cancel()
       if (!handshakeOk) {
+        onLog("משא ומתן הדיבורית נכשל דרך ${lastGateway ?: "שער לא ידוע"}", true)
         // The AG rejected our AT negotiation on this gateway - try another one.
         rotateGateway()
         lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית - מנסה שוב..."
@@ -189,6 +192,7 @@ class RawHfpClient(
         dropCount++
         lastDropMs = lastedMs
         if (lastedMs < 4000) quickDropCount++ else quickDropCount = 0
+        onLog("הקישור נותק אחרי ${lastedMs}ms דרך ${lastGateway ?: "שער לא ידוע"}", true)
         Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway) [drop #$dropCount]")
         dropInfo.value = buildDropInfo()
         // A link that dies within a few seconds usually means this gateway is
@@ -238,6 +242,7 @@ class RawHfpClient(
       if (sock != null) {
         lastGateway = label
         connectionDiagnostics.value = "SDP=[${discoveredUuids.joinToString()}], ניסיון=${attempts.joinToString("; ")}"
+        onLog("הסוקט נפתח דרך $label", false)
         Log.i(tag, "connected via $label gateway")
         return sock
       }
@@ -254,11 +259,13 @@ class RawHfpClient(
       if (sock != null) {
         lastGateway = "RFCOMM:$channel"
         connectionDiagnostics.value = "SDP=[${discoveredUuids.joinToString()}], ניסיון=${attempts.joinToString("; ")}"
+        onLog("הסוקט נפתח דרך ערוץ RFCOMM $channel", false)
         Log.i(tag, "connected via direct RFCOMM channel $channel")
         return sock
       }
     }
     connectionDiagnostics.value = "SDP=[${discoveredUuids.joinToString()}], ניסיון=${attempts.joinToString("; ")}"
+    onLog("כל ניסיונות החיבור נכשלו: ${attempts.joinToString("; ")}", true)
     return null
   }
 
@@ -293,8 +300,11 @@ class RawHfpClient(
       }
       val requested = runCatching { target.fetchUuidsWithSdp() }.getOrDefault(false)
       if (requested) latch.await(2500, TimeUnit.MILLISECONDS)
-      found.orEmpty().map { it.uuid }.toSet()
+      val result = found.orEmpty().map { it.uuid }.toSet()
+      onLog("גילוי SDP: ${if (result.isEmpty()) "לא נמצאו שירותים" else result.joinToString()}", result.isEmpty())
+      result
     } catch (t: Throwable) {
+      onLog("גילוי SDP נכשל: ${t.message ?: "שגיאה לא ידועה"}", true)
       Log.w(tag, "SDP discovery failed: ${t.message}")
       emptySet()
     } finally {
@@ -440,6 +450,7 @@ class RawHfpClient(
           // loop picks it up immediately instead of waiting for readLoop
           // to detect the closure.
           if (writeFailures >= 3) {
+            onLog("זרם הכתיבה מת אחרי $writeFailures כשלונות — מתחבר מחדש", true)
             Log.w(tag, "output stream dead after $writeFailures write failures - forcing reconnect")
             teardown()
             return@launch

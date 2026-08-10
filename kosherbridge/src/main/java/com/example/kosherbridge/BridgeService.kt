@@ -189,8 +189,11 @@ class BridgeService : Service() {
 
   fun disconnect() {
     lastManualDisconnectAt = System.currentTimeMillis()
+    manager.logConnection("ניתוק יזום על ידי המשתמש")
     manager.disconnect()
   }
+
+  fun clearConnectionLog() = manager.clearConnectionLog()
 
   fun answer() = manager.answer()
   fun reject() = manager.reject()
@@ -367,6 +370,11 @@ class BridgeService : Service() {
     scope.launch {
       manager.rawConnectionDiagnostics.collect { d ->
         BridgeHub.update { it.copy(rawConnectionDiagnostics = d) }
+      }
+    }
+    scope.launch {
+      manager.connectionLog.collect { lines ->
+        BridgeHub.update { it.copy(connectionLog = lines) }
       }
     }
     scope.launch {

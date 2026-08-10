@@ -352,6 +352,37 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         onSnackbar("דוח האבחון הועתק - הדבק אותו בהודעה")
       }
     }
+    SettingsCard("יומן חיבור בלוטוס") {
+      Text(
+        "היומן נשמר מקומית במכשיר. שורות אדומות הן כשלים שהאפליקציה זיהתה.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+      if (state.connectionLog.isEmpty()) {
+        Text("עדיין לא נרשמו ניסיונות חיבור.", style = MaterialTheme.typography.bodySmall)
+      } else {
+        Column(
+          Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .padding(vertical = 4.dp),
+          verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+          state.connectionLog.takeLast(40).forEach { line ->
+            Text(
+              line,
+              style = MaterialTheme.typography.labelSmall,
+              color = if (line.contains("🔴")) MaterialTheme.colorScheme.error
+              else MaterialTheme.colorScheme.onSurface,
+            )
+          }
+        }
+      }
+      SettingRow("נקה יומן חיבור", "מחיקת השורות שנשמרו במכשיר") {
+        BridgeHub.service?.clearConnectionLog()
+        onSnackbar("יומן החיבור נוקה")
+      }
+    }
     SettingsCard("אודות") {
       DiagRow("גרסת אפליקציה", "${com.example.kosherbridge.BuildConfig.VERSION_NAME}", true)
       Text(
@@ -693,5 +724,9 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
   state.scoTechnique?.let { appendLine("טכניקת שמע אחרונה: $it") }
   state.rawDropInfo?.let { appendLine("ניתוקי קישור: $it") }
   state.rawConnectionDiagnostics?.let { appendLine("ניסיונות SDP/RFCOMM: $it") }
+  if (state.connectionLog.isNotEmpty()) {
+    appendLine("יומן חיבור:")
+    state.connectionLog.takeLast(100).forEach { appendLine(it) }
+  }
   state.lastError?.let { appendLine("שגיאה אחרונה: $it") }
 }

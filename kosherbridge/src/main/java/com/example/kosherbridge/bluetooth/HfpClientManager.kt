@@ -59,6 +59,32 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   /** SDP and direct-channel attempts, including the exact failure reason. */
   val rawConnectionDiagnostics = MutableStateFlow<String?>(null)
 
+  private val connectionLogPrefs =
+    context.getSharedPreferences("connection_diagnostics", Context.MODE_PRIVATE)
+  val connectionLog = MutableStateFlow(
+    connectionLogPrefs.getString("lines", "")
+      ?.lineSequence()
+      ?.filter { it.isNotBlank() }
+      ?.toList()
+      ?: emptyList(),
+  )
+
+  /** Adds a timestamped local entry and keeps the last 200 entries. */
+  fun logConnection(message: String, error: Boolean = false) {
+    val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+      .format(java.util.Date())
+    val prefix = if (error) "🔴 שגיאה" else "מידע"
+    val line = "$stamp · $prefix: $message"
+    val next = (connectionLog.value + line).takeLast(200)
+    connectionLog.value = next
+    connectionLogPrefs.edit().putString("lines", next.joinToString("\n")).apply()
+  }
+
+  fun clearConnectionLog() {
+    connectionLog.value = emptyList()
+    connectionLogPrefs.edit().remove("lines").apply()
+  }
+
   // ------------------------------------------------------------------ system profiles
 
   /**
@@ -389,6 +415,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * through the remote service.
    */
   suspend fun bindShizuku(): Boolean {
+    logConnection("מתחיל חיבור דרך שיזוקו")
     val b = shizuku ?: ShizukuBridge(context).also { shizuku = it }
     if (b.isBound && b.isProfileReady()) {
       profileReady.value = true
@@ -398,15 +425,18 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     if (!b.isAvailable) {
       lastError.value =
         "Shizuku אינו פעיל - התקן את Shizuku והפעל אותו (adb או root), ואז נסה שוב"
+      logConnection("שיזוקו אינו פעיל", true)
       return false
     }
     if (!b.permissionGranted) {
       lastError.value =
         "לא הוענקה הרשאה ל-Shizuku - פתח את אפליקציית Shizuku והענק הרשאה לאפליקציה זו"
+      logConnection("לשיזוקו אין הרשאה לאפליקציה", true)
       return false
     }
     if (!b.bind()) {
       lastError.value = "החיבור ל-Shizuku נכשל"
+      logConnection("בקשת חיבור לשיזוקו נכשלה", true)
       return false
     }
     // The Shizuku server itself allows up to 30 seconds to spawn the
@@ -420,6 +450,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       waited += 200
     }
     if (!b.isBound) {
+      logConnection("תהליך שיזוקו עדיין לא חזר עם חיבור", true)
       // Still spawning. Keep watching in the background: when the binder
       // finally arrives, finish the wiring so the app starts working instead
       // of staying broken. (Bounded so a dead server doesn't leak a loop.)
@@ -447,8 +478,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private suspend fun finishShizukuBind(b: ShizukuBridge): Boolean {
     if (!b.registerProfile()) {
       lastError.value = "פרופיל הדיבורית לא זמין דרך Shizuku במכשיר זה"
+      logConnection("שיזוקו מחובר אך רישום פרופיל הדיבורית נכשל", true)
       return false
     }
+    logConnection("שיזוקו רשם את פרופיל הדיבורית", false)
     // If a device was already selected, make sure the remote profile connects to it.
     device.value?.address?.let { addr ->
       if (shizuku?.connectionState(addr) != BluetoothProfile.STATE_CONNECTED) {
@@ -474,8 +507,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   fun connectRaw(target: BluetoothDevice) {
     device.value = target
+    logConnection("מתחיל חיבור RFCOMM ישיר אל ${target.name ?: target.address}")
     backendLabel.value = "RFCOMM ישיר"
-    val r = raw ?: RawHfpClient(context, scope).also { raw = it }
+    val r = raw ?: RawHfpClient(context, scope) { message, error ->
+      logConnection(message, error)
+    }.also { raw = it }
     if (!rawCollectorsLaunched) {
       rawCollectorsLaunched = true
       scope.launch {
@@ -531,6 +567,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   fun connect(target: BluetoothDevice) {
     device.value = target
+    logConnection("מתחיל חיבור בערוץ $channelMode אל ${target.name ?: target.address}")
     when (channelMode) {
       // User forced the raw RFCOMM path - open the phone's headset port
       // directly, no profile involvement, no fallbacks.
