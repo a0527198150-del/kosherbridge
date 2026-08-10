@@ -107,6 +107,7 @@ class RawHfpClient(
   // purpose. connect() arms it, disconnect() disarms it.
   @Volatile private var targetDevice: BluetoothDevice? = null
   @Volatile private var reconnectEnabled = false
+  @Volatile private var attemptInFlight = false
   private var reconnectAttempts = 0
 
   val isConnected = MutableStateFlow(false)
@@ -138,6 +139,7 @@ class RawHfpClient(
     targetDevice = target
     onLog("נבחר מכשיר ${target.name ?: target.address}", false)
     reconnectEnabled = true
+    attemptInFlight = true
     reconnectAttempts = 0
     dropCount = 0
     quickDropCount = 0
@@ -157,6 +159,7 @@ class RawHfpClient(
   private suspend fun runConnection() {
     val target = targetDevice ?: return
     while (reconnectEnabled) {
+      attemptInFlight = true
       lastError.value = null
       try {
         beforeSocketOpen?.invoke(target)
@@ -169,6 +172,7 @@ class RawHfpClient(
         val detail = connectionDiagnostics.value ?: "לא נמצא שער RFCOMM"
         Log.w(tag, "connect failed on all gateways: $detail")
         lastError.value = "החיבור הישיר נכשל: $detail - מנסה שוב..."
+        attemptInFlight = false
         if (!waitBeforeRetry()) return
         continue
       }
@@ -178,6 +182,7 @@ class RawHfpClient(
         if (t is java.util.concurrent.CancellationException) throw t
         runCatching { sock.close() }
         onLog("פתיחת זרמי RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
+        attemptInFlight = false
         if (!waitBeforeRetry()) return
         continue
       }
@@ -219,10 +224,12 @@ class RawHfpClient(
         rotateGateway()
         lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית - מנסה שוב..."
         teardown()
+        attemptInFlight = false
         if (!waitBeforeRetry()) return
         continue
       }
       reconnectAttempts = 0
+      attemptInFlight = false
       connectedAt = System.currentTimeMillis()
       isConnected.value = true
       startPolling()
@@ -252,6 +259,7 @@ class RawHfpClient(
       // The phone dropped the link - reconnect unless the user disconnected
       // on purpose. This is the fix for "connects for a few seconds then
       // immediately disconnects" on cheap stacks.
+      attemptInFlight = false
       if (!waitBeforeRetry()) return
     }
   }
@@ -575,12 +583,14 @@ class RawHfpClient(
 
   fun disconnect() {
     reconnectEnabled = false
+    attemptInFlight = false
     readJob?.cancel()
     teardown()
   }
 
   /** True while the client wants the link up but is currently down. */
-  val reconnectArmed: Boolean get() = reconnectEnabled && targetDevice != null && !isConnected.value
+  val reconnectArmed: Boolean
+    get() = reconnectEnabled && targetDevice != null && !isConnected.value && !attemptInFlight
 
   /**
    * Relaunches the connection loop right away (e.g. the ACL link just came
@@ -588,6 +598,7 @@ class RawHfpClient(
    */
   fun nudge() {
     if (!reconnectArmed) return
+    attemptInFlight = true
     readJob?.cancel()
     teardown()
     readJob = scope.launch(Dispatchers.IO) { runConnection() }
