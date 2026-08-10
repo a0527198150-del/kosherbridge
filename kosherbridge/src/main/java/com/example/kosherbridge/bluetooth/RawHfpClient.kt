@@ -97,6 +97,8 @@ class RawHfpClient(
   private val hfFeatures = 0x0004 or 0x0020
 
   @Volatile private var socket: BluetoothSocket? = null
+  /** Socket currently inside BluetoothSocket.connect(), before it becomes socket. */
+  @Volatile private var connectingSocket: BluetoothSocket? = null
   @Volatile private var input: BufferedReader? = null
   @Volatile private var output: OutputStream? = null
   private var readJob: Job? = null
@@ -334,7 +336,7 @@ class RawHfpClient(
 
     for ((uuid, label) in order) {
       if (!isCurrentGeneration(generation)) return null
-      val sock = openGateway(target, uuid)
+      val sock = openGateway(target, uuid, generation)
       attempts += "$label=$uuid:${if (sock != null) "OK" else "נכשל"}"
       if (sock != null) {
         lastGateway = label
@@ -351,7 +353,7 @@ class RawHfpClient(
     val channels = (channelCursor..8).toList() + (1 until channelCursor).toList()
     for (channel in channels.distinct()) {
       if (!isCurrentGeneration(generation)) return null
-      val sock = openChannelSocket(target, channel)
+      val sock = openChannelSocket(target, channel, generation)
       attempts += "RFCOMM:$channel:${if (sock != null) "OK" else "נכשל"}"
       channelCursor = if (channel >= 8) 1 else channel + 1
       if (sock != null) {
@@ -427,11 +429,15 @@ class RawHfpClient(
    * link, so fall back to the insecure variant. Every attempt is bounded by
    * a watchdog so an unreachable phone can't stall the reconnect loop.
    */
-  private suspend fun openGateway(target: BluetoothDevice, uuid: UUID): BluetoothSocket? {
-    val secure = connectBounded(target, uuid, secure = true)
+  private suspend fun openGateway(
+    target: BluetoothDevice,
+    uuid: UUID,
+    generation: Long,
+  ): BluetoothSocket? {
+    val secure = connectBounded(target, uuid, generation, secure = true)
     if (secure != null) return secure
     Log.w(tag, "secure connect failed for $uuid")
-    val insecure = connectBounded(target, uuid, secure = false)
+    val insecure = connectBounded(target, uuid, generation, secure = false)
     if (insecure != null) {
       Log.i(tag, "insecure socket accepted for $uuid")
     } else {
@@ -445,23 +451,42 @@ class RawHfpClient(
    * unreachable (the stack keeps retrying). Close the socket after 6s to
    * abort a stuck connect, so one dead gateway can't hang the whole loop.
    */
-  private suspend fun connectBounded(target: BluetoothDevice, uuid: UUID, secure: Boolean): BluetoothSocket? =
-    connectSocketBounded {
+  private suspend fun connectBounded(
+    target: BluetoothDevice,
+    uuid: UUID,
+    generation: Long,
+    secure: Boolean,
+  ): BluetoothSocket? = connectSocketBounded(generation) {
       if (secure) target.createRfcommSocketToServiceRecord(uuid)
       else target.createInsecureRfcommSocketToServiceRecord(uuid)
     }
 
   /** Best-effort direct-channel fallback for phones with broken SDP. */
-  private suspend fun openChannelSocket(target: BluetoothDevice, channel: Int): BluetoothSocket? =
-    connectSocketBounded {
+  private suspend fun openChannelSocket(
+    target: BluetoothDevice,
+    channel: Int,
+    generation: Long,
+  ): BluetoothSocket? = connectSocketBounded(generation) {
       runCatching {
         val method = target.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
         method.invoke(target, channel) as? BluetoothSocket
       }.getOrNull()
     }
 
-  private suspend fun connectSocketBounded(create: () -> BluetoothSocket?): BluetoothSocket? {
+  private suspend fun connectSocketBounded(
+    generation: Long,
+    create: () -> BluetoothSocket?,
+  ): BluetoothSocket? {
     val sock = runCatching { create() }.getOrNull() ?: return null
+    synchronized(writeLock) {
+      if (!isCurrentGeneration(generation)) {
+        runCatching { sock.close() }
+        return null
+      }
+      // Keep the in-flight socket visible so nudge()/disconnect() can abort
+      // BluetoothSocket.connect() instead of merely cancelling its coroutine.
+      connectingSocket = sock
+    }
     // withTimeoutOrNull + runInterruptible: if connect() blocks longer than
     // 8s, cancellation interrupts the same worker instead of racing a second
     // watchdog thread that could close a newly connected socket.
@@ -473,9 +498,18 @@ class RawHfpClient(
       // A refused RFCOMM channel is a normal connection outcome, not a fatal
       // coroutine error. Previously IOException escaped here and killed the
       // entire reconnect loop after the first failed gateway.
-      if (t is java.util.concurrent.CancellationException) throw t
+      if (t is java.util.concurrent.CancellationException) {
+        synchronized(writeLock) {
+          if (connectingSocket === sock) connectingSocket = null
+        }
+        runCatching { sock.close() }
+        throw t
+      }
       onLog("פתיחת ערוץ RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
       null
+    }
+    synchronized(writeLock) {
+      if (connectingSocket === sock) connectingSocket = null
     }
     return if (connected != null && runCatching { sock.isConnected }.getOrDefault(false)) sock else {
       runCatching { sock.close() }
@@ -885,7 +919,9 @@ class RawHfpClient(
       pollJob?.cancel()
       pollJob = null
       runCatching { socket?.close() }
+      runCatching { connectingSocket?.close() }
       socket = null
+      connectingSocket = null
       input = null
       output = null
     }
