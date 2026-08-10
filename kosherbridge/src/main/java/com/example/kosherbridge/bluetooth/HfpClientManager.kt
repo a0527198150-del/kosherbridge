@@ -487,20 +487,26 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   fun connect(target: BluetoothDevice) {
     device.value = target
-    // Stop the OS from auto-connecting its own profiles to this phone on any
-    // path (direct, Shizuku or raw) - a competing system link makes the AG
-    // drop the app's link.
-    scope.launch { disableSystemProfiles(target) }
     when (channelMode) {
       // User forced the raw RFCOMM path - open the phone's headset port
       // directly, no profile involvement, no fallbacks.
       "RAW" -> {
+        // The raw RFCOMM socket bypasses the system profile entirely;
+        // still disable the OS profiles so they don't auto-connect and
+        // compete for the phone's sole hands-free slot.
+        scope.launch { disableSystemProfiles(target) }
         connectRaw(target)
         return
       }
       // User forced the Shizuku path - bind on demand and connect through the
       // remote privileged process.
       "SHIZUKU" -> {
+        // CRITICAL: do NOT call disableSystemProfiles here. The Shizuku
+        // connection itself goes through the system HFP profile (just in
+        // the privileged shell process). disableSystemProfiles forces a
+        // disconnect on that same profile - which kills the Shizuku link
+        // a fraction of a second after it was established, producing the
+        // "connects then immediately disconnects" symptom.
         if (useShizuku) {
           if (profileReady.value) {
             if (!shizuku!!.connect(target.address)) {
@@ -523,16 +529,23 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
       // User forced the in-process hidden-API path - no automatic fallbacks.
       "DIRECT" -> {
-        val c = client
-        if (c != null) {
-          if (HiddenHfp.connect(c, target)) return
-          lastError.value = if (HiddenHfp.privilegedBlocked) {
-            "הגישה הישירה נחסמה על ידי המערכת - שנה ערוץ חיבור לאוטומטי או Shizuku"
+        // For the in-process path, the system profile is in this process.
+        // Wait for the OS profiles to be disabled first, then connect -
+        // otherwise the auto-connect may race ahead and claim the slot.
+        scope.launch {
+          disableSystemProfiles(target)
+          val c = client
+          if (c != null) {
+            if (!HiddenHfp.connect(c, target)) {
+              lastError.value = if (HiddenHfp.privilegedBlocked) {
+                "הגישה הישירה נחסמה על ידי המערכת - שנה ערוץ חיבור לאוטומטי או Shizuku"
+              } else {
+                "חיבור הדיבורית נכשל"
+              }
+            }
           } else {
-            "חיבור הדיבורית נכשל"
+            lastError.value = "פרופיל הדיבורית לא זמין - שנה ערוץ חיבור בהגדרות"
           }
-        } else {
-          lastError.value = "פרופיל הדיבורית לא זמין - שנה ערוץ חיבור בהגדרות"
         }
         return
       }
@@ -545,6 +558,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       // background (register()) and can be used as manual fallback via the
       // channel selector in Settings.
       "AUTO" -> {
+        // Raw RFCOMM bypasses the system profile - disable the OS profiles
+        // so they don't auto-connect and compete for the phone's sole slot.
+        scope.launch { disableSystemProfiles(target) }
         connectRaw(target)
         return
       }
