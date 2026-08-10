@@ -14,6 +14,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Minimal HFP Hands-Free (HF) client implemented directly over RFCOMM with AT
@@ -198,7 +200,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
   }
 
   /** Tries each gateway in order; the order adapts when one keeps dropping. */
-  private fun openSocket(target: BluetoothDevice): BluetoothSocket? {
+  private suspend fun openSocket(target: BluetoothDevice): BluetoothSocket? {
     val order = gatewayOrder.toList()
     for ((uuid, label) in order) {
       val sock = openGateway(target, uuid)
@@ -217,7 +219,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
    * link, so fall back to the insecure variant. Every attempt is bounded by
    * a watchdog so an unreachable phone can't stall the reconnect loop.
    */
-  private fun openGateway(target: BluetoothDevice, uuid: UUID): BluetoothSocket? {
+  private suspend fun openGateway(target: BluetoothDevice, uuid: UUID): BluetoothSocket? {
     val secure = connectBounded(target, uuid, secure = true)
     if (secure != null) return secure
     Log.w(tag, "secure connect failed for $uuid")
@@ -235,19 +237,25 @@ class RawHfpClient(private val scope: CoroutineScope) {
    * unreachable (the stack keeps retrying). Close the socket after 6s to
    * abort a stuck connect, so one dead gateway can't hang the whole loop.
    */
-  private fun connectBounded(target: BluetoothDevice, uuid: UUID, secure: Boolean): BluetoothSocket? {
+  private suspend fun connectBounded(target: BluetoothDevice, uuid: UUID, secure: Boolean): BluetoothSocket? {
     val sock = if (secure) {
       target.createRfcommSocketToServiceRecord(uuid)
     } else {
       target.createInsecureRfcommSocketToServiceRecord(uuid)
     }
-    val watchdog = scope.launch(Dispatchers.IO) {
-      delay(6_000)
-      runCatching { sock.close() } // unblocks a stuck connect()
+    // withTimeoutOrNull + runInterruptible: if connect() blocks longer than
+    // 8s (unreachable phone, dead stack), the coroutine is cancelled and the
+    // blocking connect() receives a thread interrupt. This is race-free:
+    // unlike a manual watchdog that closes the socket from a second thread,
+    // the interrupt arrives on the same thread and connect() either succeeds
+    // or throws — never both at once.
+    val connected = withTimeoutOrNull(8_000) {
+      runInterruptible(Dispatchers.IO) { sock.connect() }
     }
-    val ok = runCatching { sock.connect(); true }.getOrDefault(false)
-    watchdog.cancel()
-    return if (ok) sock else null
+    return if (connected != null && sock.isConnected) sock else {
+      runCatching { sock.close() }
+      null
+    }
   }
 
   /** Moves the gateway that just failed to the back of the order. */
