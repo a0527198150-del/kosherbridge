@@ -102,15 +102,29 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(ctx: Context, intent: Intent) {
-        if (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
-          != BluetoothDevice.BOND_BONDED
-        ) return
         val dev = if (Build.VERSION.SDK_INT >= 33)
           intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
         else
           @Suppress("DEPRECATION")
           intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-        if (dev != null) scope.launch { disableSystemProfiles(dev) }
+        val addr = dev?.address ?: return
+        when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)) {
+          BluetoothDevice.BOND_BONDED -> {
+            // Re-enable the system-profile disable for this device so a
+            // re-pair (delete + pair again) doesn't find a stale cache hit
+            // that would leave the profiles fighting for the phone's slot.
+            systemProfilesDisabled.remove(addr)
+            if (dev != null) scope.launch { disableSystemProfiles(dev) }
+          }
+          BluetoothDevice.BOND_NONE -> {
+            // Un-paired: clear both the cached disable guard and the
+            // learned channel so a future re-pair starts fresh.
+            systemProfilesDisabled.remove(addr)
+            scope.launch {
+              ServiceLocator.settings.learnChannel(Build.FINGERPRINT, "")
+            }
+          }
+        }
       }
     }
     bondReceiver = receiver
@@ -490,11 +504,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     when (channelMode) {
       // User forced the raw RFCOMM path - open the phone's headset port
       // directly, no profile involvement, no fallbacks.
+      // (connectRaw disables the system profiles internally before opening
+      // the socket, so there is no need to call disableSystemProfiles here.)
       "RAW" -> {
-        // The raw RFCOMM socket bypasses the system profile entirely;
-        // still disable the OS profiles so they don't auto-connect and
-        // compete for the phone's sole hands-free slot.
-        scope.launch { disableSystemProfiles(target) }
         connectRaw(target)
         return
       }
@@ -557,10 +569,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       // retrying; meanwhile the system profile is still registered in the
       // background (register()) and can be used as manual fallback via the
       // channel selector in Settings.
+      // (connectRaw disables the system profiles internally before opening
+      // the socket, so there is no need to call disableSystemProfiles here.)
       "AUTO" -> {
-        // Raw RFCOMM bypasses the system profile - disable the OS profiles
-        // so they don't auto-connect and compete for the phone's sole slot.
-        scope.launch { disableSystemProfiles(target) }
         connectRaw(target)
         return
       }
