@@ -265,7 +265,16 @@ class RawHfpClient(private val scope: CoroutineScope) {
       // without current indicator values; +CIEV events still arrive.
       Log.w(tag, "AT+CIND rejected - continuing without indicator values")
     }
-    if (!sendAndWait("AT+CMER=3,0,0,1")) return false
+    if (!sendAndWait("AT+CMER=3,0,0,1") && !sendAndWait("AT+CMER=3,0,0,0")) {
+      // CMER mode 3 is needed for unsolicited +CIEV events. Some basic
+      // AGs (feature phones) reject it entirely - skip CMER; CLCC polling
+      // still works, and some AGs send CIEV unsolicited regardless.
+      Log.w(tag, "CMER rejected - continuing without call progress events")
+    }
+    // AT+CHLD=? completes the standard SLC (Service Level Connection); some
+    // AGs drop the link if the HF doesn't query this capability.
+    sendCommand("AT+CHLD=?")
+    readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
     sendCommand("AT+CLIP=1")
     readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
     sendCommand("AT+CCWA=1")

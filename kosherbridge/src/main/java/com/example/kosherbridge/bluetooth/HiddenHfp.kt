@@ -224,13 +224,18 @@ object HiddenHfp {
     }
     val started = runCatching { adapter.getProfileProxy(context, listener, profileId) }.getOrDefault(false)
     if (!started) return false
-    if (!latch.await(2, TimeUnit.SECONDS)) return false
+    if (!latch.await(3, TimeUnit.SECONDS)) {
+      Log.w(TAG, "setProfilePriority: timeout waiting for profile $profileId")
+      return false
+    }
     val p = proxy
     if (p != null) runCatching { adapter.closeProfileProxy(profileId, p) }
     if (p == null) return false
     return runCatching {
       val m = p.javaClass.getMethod("setPriority", BluetoothDevice::class.java, Int::class.javaPrimitiveType)
       (m.invoke(p, device, priority) as? Boolean) ?: false
+    }.onFailure { e ->
+      Log.w(TAG, "setProfilePriority($profileId, $priority) failed: ${e.message}")
     }.getOrDefault(false)
   }
 }
