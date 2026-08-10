@@ -145,11 +145,13 @@ class RawHfpClient(private val scope: CoroutineScope) {
 
       // Some AGs accept the socket but never answer AT commands. Close the
       // socket after 12s so a silent handshake can't hang the reconnect loop.
+      val handshakeWatchdogFired = java.util.concurrent.atomic.AtomicBoolean(false)
       val watchdog = scope.launch(Dispatchers.IO) {
         delay(12_000)
+        handshakeWatchdogFired.set(true)
         runCatching { sock.close() }
       }
-      val handshakeOk = handshake()
+      val handshakeOk = handshake() && !handshakeWatchdogFired.get() && sock.isConnected
       watchdog.cancel()
       if (!handshakeOk) {
         // The AG rejected our AT negotiation on this gateway - try another one.
