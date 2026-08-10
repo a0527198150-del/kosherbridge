@@ -207,24 +207,28 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(ctx: Context, intent: Intent) {
         val r = raw ?: return
-        if (!r.reconnectArmed) return
 
-        // If the adapter was toggled back on, restart immediately instead of
-        // waiting for the normal retry delay.
         if (intent.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
-          if (intent.getIntExtra(
-              BluetoothAdapter.EXTRA_STATE,
-              BluetoothAdapter.ERROR,
-            ) != BluetoothAdapter.STATE_ON
-          ) return
-        } else {
-          val dev = if (Build.VERSION.SDK_INT >= 33)
-            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-          else
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-          if (dev == null || dev.address != device.value?.address) return
+          when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+            BluetoothAdapter.STATE_OFF -> r.onAdapterOff()
+            BluetoothAdapter.STATE_ON -> {
+              if (!r.reconnectArmed) return
+              val now = System.currentTimeMillis()
+              if (now - lastAclNudge < 5000) return
+              lastAclNudge = now
+              r.nudge()
+            }
+          }
+          return
         }
+
+        if (!r.reconnectArmed) return
+        val dev = if (Build.VERSION.SDK_INT >= 33)
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        else
+          @Suppress("DEPRECATION")
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        if (dev == null || dev.address != device.value?.address) return
 
         val now = System.currentTimeMillis()
         if (now - lastAclNudge < 5000) return // rate-limit: don't hammer the phone

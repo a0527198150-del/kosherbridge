@@ -596,6 +596,15 @@ class RawHfpClient(
     teardown()
   }
 
+  /** Bluetooth was turned off by the system. Keep the desired target armed,
+   * but discard the stale socket so the next STATE_ON event can start cleanly. */
+  fun onAdapterOff() {
+    if (!reconnectEnabled) return
+    attemptInFlight = false
+    readJob?.cancel()
+    teardown()
+  }
+
   /** True while this raw client owns the connection lifecycle, whether it is
    * connecting, connected, or waiting for its next retry. */
   val ownsConnectionLoop: Boolean
