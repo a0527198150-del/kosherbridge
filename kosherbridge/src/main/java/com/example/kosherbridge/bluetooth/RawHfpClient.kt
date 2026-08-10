@@ -129,6 +129,12 @@ class RawHfpClient(
   // ----------------------------------------------------------------- connect
 
   fun connect(target: BluetoothDevice) {
+    val sameTarget = targetDevice?.address == target.address
+    // Selecting the already-connected device is a no-op. Selecting a
+    // different device must first tear down the old socket; otherwise the
+    // target address changes while the old RFCOMM link remains alive and the
+    // phone can reject both connections.
+    if (isConnected.value && sameTarget && reconnectEnabled) return
     targetDevice = target
     onLog("נבחר מכשיר ${target.name ?: target.address}", false)
     reconnectEnabled = true
@@ -138,7 +144,6 @@ class RawHfpClient(
     lastDropMs = 0L
     dropInfo.value = null
     connectionDiagnostics.value = null
-    if (isConnected.value) return
     // Tear down the previous connection attempt before starting a new one.
     // readJob?.cancel() only cancels the coroutine, leaving the socket open;
     // if connect() is called twice in quick succession (e.g. auto-connect +
