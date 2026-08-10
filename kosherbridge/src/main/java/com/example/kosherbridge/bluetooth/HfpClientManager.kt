@@ -553,6 +553,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * player; call audio (SCO) only on stacks that cooperate.
    */
   fun connectRaw(target: BluetoothDevice) {
+    // The Settings shortcut can call RAW directly without register(). Ensure
+    // its bond/ACL recovery listeners are still installed on that path.
+    startBondWatch()
+    startAclWatch()
     device.value = target
     logConnection("מתחיל חיבור RFCOMM ישיר אל ${target.name ?: target.address}")
     backendLabel.value = "RFCOMM ישיר"
