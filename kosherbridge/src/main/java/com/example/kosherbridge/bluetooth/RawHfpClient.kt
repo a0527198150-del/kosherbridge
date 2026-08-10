@@ -110,7 +110,13 @@ class RawHfpClient(private val scope: CoroutineScope) {
     lastDropMs = 0L
     dropInfo.value = null
     if (isConnected.value) return
+    // Tear down the previous connection attempt before starting a new one.
+    // readJob?.cancel() only cancels the coroutine, leaving the socket open;
+    // if connect() is called twice in quick succession (e.g. auto-connect +
+    // manual selection), two sockets end up alive at once — the phone sees
+    // a second incoming RFCOMM and drops both.
     readJob?.cancel()
+    teardown()
     readJob = scope.launch(Dispatchers.IO) { runConnection() }
   }
 
@@ -371,6 +377,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
   fun nudge() {
     if (!reconnectArmed) return
     readJob?.cancel()
+    teardown()
     readJob = scope.launch(Dispatchers.IO) { runConnection() }
   }
 
