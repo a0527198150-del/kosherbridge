@@ -331,6 +331,14 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
           style = MaterialTheme.typography.bodySmall,
         )
       }
+      state.permissionHint?.let {
+        Spacer(Modifier.height(4.dp))
+        Text(
+          it,
+          color = MaterialTheme.colorScheme.error,
+          style = MaterialTheme.typography.bodySmall,
+        )
+      }
       SettingRow(
         "העתק דוח אבחון",
         "מעתיק דוח מלא של המכשיר והחיבור - הדבק אותו בתמיכה",

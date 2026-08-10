@@ -19,6 +19,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +39,15 @@ fun MainScreen() {
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
   var tab by rememberSaveable { mutableIntStateOf(0) }
+
+  // One-time snackbar when a required runtime permission is missing (e.g. the
+  // user denied BLUETOOTH_CONNECT) - the Settings tab shows it persistently too.
+  LaunchedEffect(state.permissionHint) {
+    state.permissionHint?.let {
+      snackbarHostState.showSnackbar(it)
+      BridgeHub.update { s -> s.copy(permissionHint = null) }
+    }
+  }
 
   Scaffold(
     bottomBar = {

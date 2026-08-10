@@ -4,8 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,9 +20,31 @@ import com.example.kosherbridge.ui.theme.ThemeMode
 class MainActivity : ComponentActivity() {
 
   private val permissionLauncher =
-    registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { /* handled per feature */ }
+    registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+      // Start the bridge only after the user actually answered the permission
+      // dialog - not on a fixed delay. Android 14+ crashes the whole process
+      // if the foreground service (type connectedDevice) starts before
+      // BLUETOOTH_CONNECT is granted, so the permission result drives the start.
+      if (pendingServiceStart) {
+        pendingServiceStart = false
+        val btOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+          grants[Manifest.permission.BLUETOOTH_CONNECT] == true
+        if (btOk) {
+          runCatching { BridgeService.start(this) }
+        } else {
+          BridgeHub.update {
+            it.copy(
+              permissionHint =
+                "אין הרשאת בלוטוס - האפליקציה לא יכולה להתחבר לטלפון הכשר. " +
+                  "אשר אותה בהגדרות המערכת → אפליקציות → גשר כשר → הרשאות.",
+            )
+          }
+        }
+      }
+    }
 
   private var serviceStartScheduled = false
+  private var pendingServiceStart = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -45,19 +65,21 @@ class MainActivity : ComponentActivity() {
 
   override fun onResume() {
     super.onResume()
-    // Start the foreground service only once the activity is actually visible.
-    // Starting it from onCreate can be killed on Android 8-9 when the app is
-    // still considered "idle" (fresh install / stopped state).
+    // Start the foreground service only once the activity is actually visible
+    // (starting from onCreate can be killed on Android 8-9 when the app is
+    // still considered idle). If runtime permissions are still missing, the
+    // permission dialog's result drives the start; otherwise start now.
     if (!serviceStartScheduled) {
       serviceStartScheduled = true
-      Handler(Looper.getMainLooper()).postDelayed(
-        { runCatching { BridgeService.start(this) } },
-        1500,
-      )
+      if (neededPermissions().isEmpty()) {
+        runCatching { BridgeService.start(this) }
+      } else {
+        pendingServiceStart = true
+      }
     }
   }
 
-  private fun requestNeededPermissions() {
+  private fun neededPermissions(): List<String> {
     val needed = mutableListOf<String>()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
@@ -74,6 +96,11 @@ class MainActivity : ComponentActivity() {
     ) {
       needed += Manifest.permission.POST_NOTIFICATIONS
     }
+    return needed
+  }
+
+  private fun requestNeededPermissions() {
+    val needed = neededPermissions()
     if (needed.isNotEmpty()) {
       permissionLauncher.launch(needed.toTypedArray())
     }

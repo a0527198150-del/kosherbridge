@@ -1,14 +1,17 @@
 package com.example.kosherbridge
 
+import android.Manifest
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.kosherbridge.bluetooth.CallDirection
@@ -35,6 +38,7 @@ import kotlinx.coroutines.launch
 class BridgeService : Service() {
 
   companion object {
+    private const val TAG = "BridgeService"
     private const val NOTIF_BRIDGE = 1
 
     const val ACTION_START = "com.example.kosherbridge.action.START"
@@ -87,17 +91,18 @@ class BridgeService : Service() {
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    when (intent?.action) {
-      ACTION_CONNECT -> intent.getStringExtra(EXTRA_DEVICE)?.let { connectTo(it) }
-      ACTION_DISCONNECT -> disconnect()
-      ACTION_DIAL -> intent.getStringExtra(EXTRA_NUMBER)?.let { dial(it) }
-      ACTION_ANSWER -> manager.answer()
-      ACTION_REJECT -> manager.reject()
-      ACTION_HANGUP -> manager.hangup()
-      ACTION_TOGGLE_AUDIO -> manager.toggleAudio()
-    }
-    ensureForeground()
-    if (intent?.action == ACTION_START || intent?.action == null) {
+    try {
+      when (intent?.action) {
+        ACTION_CONNECT -> intent.getStringExtra(EXTRA_DEVICE)?.let { connectTo(it) }
+        ACTION_DISCONNECT -> disconnect()
+        ACTION_DIAL -> intent.getStringExtra(EXTRA_NUMBER)?.let { dial(it) }
+        ACTION_ANSWER -> manager.answer()
+        ACTION_REJECT -> manager.reject()
+        ACTION_HANGUP -> manager.hangup()
+        ACTION_TOGGLE_AUDIO -> manager.toggleAudio()
+      }
+      ensureForeground()
+      if (intent?.action == ACTION_START || intent?.action == null) {
       scope.launch {
         // Apply the channel for THIS player first (the user's manual choice,
         // or the channel that worked on this exact device before), then
@@ -124,6 +129,13 @@ class BridgeService : Service() {
           }
         }
       }
+    }
+    } catch (t: Throwable) {
+      // A single bad command must never take the whole bridge down (on
+      // Android 14+ even startForeground can throw SecurityException when
+      // BLUETOOTH_CONNECT isn't granted yet) - log it and keep the service
+      // alive instead of crashing the process.
+      Log.e(TAG, "onStartCommand failed", t)
     }
     return START_STICKY
   }
@@ -192,12 +204,28 @@ class BridgeService : Service() {
 
   private fun ensureForeground() {
     val notification = Notifications.bridgeNotification(this, stateText())
-    val type = if (Build.VERSION.SDK_INT >= 34) {
+    // Android 14+ enforces that an FGS of type connectedDevice can only be
+    // started while BLUETOOTH_CONNECT is actually granted - otherwise the
+    // system throws SecurityException and kills the whole process ("opens and
+    // just doesn't work"). When the permission is missing, start a typeless
+    // foreground service instead; the bridge can't run without Bluetooth
+    // anyway, but it must never crash over a notification.
+    val canUseConnectedDeviceType = Build.VERSION.SDK_INT < 34 ||
+      checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    val type = if (canUseConnectedDeviceType && Build.VERSION.SDK_INT >= 34) {
       ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
     } else {
       0
     }
-    ServiceCompat.startForeground(this, NOTIF_BRIDGE, notification, type)
+    try {
+      ServiceCompat.startForeground(this, NOTIF_BRIDGE, notification, type)
+    } catch (e: Throwable) {
+      // Safety net: last resort is a typeless foreground service; if even
+      // that fails, stop the service instead of crashing the process.
+      Log.w(TAG, "startForeground(type=$type) failed", e)
+      runCatching { ServiceCompat.startForeground(this, NOTIF_BRIDGE, notification, 0) }
+        .onFailure { runCatching { stopSelf() } }
+    }
   }
 
   private fun stateText(): String {
