@@ -135,7 +135,7 @@ class RawHfpClient(
     // different device must first tear down the old socket; otherwise the
     // target address changes while the old RFCOMM link remains alive and the
     // phone can reject both connections.
-    if (isConnected.value && sameTarget && reconnectEnabled) return
+    if (sameTarget && reconnectEnabled && (isConnected.value || attemptInFlight)) return
     targetDevice = target
     onLog("נבחר מכשיר ${target.name ?: target.address}", false)
     reconnectEnabled = true
