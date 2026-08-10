@@ -310,6 +310,9 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       state.scoTechnique?.let {
         DiagRow("טכניקת שמע אחרונה", it, true)
       }
+      state.rawDropInfo?.let {
+        DiagRow("ניתוקי קישור", it, it.startsWith("אין") || it.startsWith("ניתוק אחד"))
+      }
       SettingRow("בדיקת מיקרופון", micResult ?: "מוודא שהמיקרופון קולט קול לשיחה") {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
           PackageManager.PERMISSION_GRANTED
@@ -595,6 +598,8 @@ private fun buildGuidance(state: BridgeUiState): String? = when {
         "המכשיר חוסם את פרופיל הדיבורית. שתי דרכים:\n" +
           "1) התקן Shizuku והפעל אותו פעם אחת (adb אלחוטי), ואז לחץ 'התחבר דרך Shizuku'.\n" +
           "2) בלי התקנות: זווג את הטלפון הכשר ובחר אותו באפליקציה - החיבור הישיר ינסה לבד."
+      !state.profileReady && state.rawDropInfo != null ->
+        "הקישור נופל שוב ושוב. מחק את זיווג הטלפון וזווג אותו מחדש - עכשיו האפליקציה תכבה אוטומטית את החיבורים המערכתיים שמתחרים על הקישור."
       !state.profileReady ->
         "זווג את הטלפון הכשר ('צימוד מכשיר חדש' או הגדרות בלוטוס) ובחר אותו ב'בחר מכשיר'."
       else -> "בחר את הטלפון הכשר ב'בחר מכשיר'."
@@ -653,5 +658,6 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
   state.audioRoute?.let { appendLine("ניתוב שמע: $it") }
   state.scoSupport?.let { appendLine("שמע (SCO): $it") }
   state.scoTechnique?.let { appendLine("טכניקת שמע אחרונה: $it") }
+  state.rawDropInfo?.let { appendLine("ניתוקי קישור: $it") }
   state.lastError?.let { appendLine("שגיאה אחרונה: $it") }
 }

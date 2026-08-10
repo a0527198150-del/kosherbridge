@@ -52,6 +52,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var raw: RawHfpClient? = null
   private var shizukuFallbackLaunched = false
 
+  /** Raw-link drop stats (count + last duration) for the diagnostics report. */
+  val rawDropInfo = MutableStateFlow<String?>(null)
+
   // ------------------------------------------------------------------ system profiles
 
   /**
@@ -414,6 +417,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       scope.launch {
         r.lastError.collect { e -> if (e != null) lastError.value = e }
       }
+      scope.launch {
+        r.dropInfo.collect { rawDropInfo.value = it }
+      }
     }
     // Disable the OS's competing profile links first, then open the raw
     // RFCOMM link - otherwise the phone (single-slot AG) drops our link the
@@ -621,6 +627,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     raw?.disconnect()
     raw = null
     rawCollectorsLaunched = false
+    rawDropInfo.value = null
     bondReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }
     bondReceiver = null
     bondWatchStarted = false

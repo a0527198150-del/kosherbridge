@@ -61,6 +61,13 @@ class RawHfpClient(private val scope: CoroutineScope) {
   @Volatile private var lastGateway: String? = null
   @Volatile private var connectedAt = 0L
 
+  // Drop statistics for the diagnostics report: how often and how fast the
+  // link keeps dying. Lets testers tell us exactly what the player does.
+  val dropInfo = MutableStateFlow<String?>(null)
+  private var dropCount = 0
+  private var quickDropCount = 0
+  @Volatile private var lastDropMs = 0L
+
   // HF features advertised in AT+BRSF: CLI, enhanced call status, enhanced call control
   private val hfFeatures = 0x0004 or 0x0020 or 0x0040
 
@@ -97,6 +104,10 @@ class RawHfpClient(private val scope: CoroutineScope) {
     targetDevice = target
     reconnectEnabled = true
     reconnectAttempts = 0
+    dropCount = 0
+    quickDropCount = 0
+    lastDropMs = 0L
+    dropInfo.value = null
     if (isConnected.value) return
     readJob?.cancel()
     readJob = scope.launch(Dispatchers.IO) { runConnection() }
@@ -131,10 +142,21 @@ class RawHfpClient(private val scope: CoroutineScope) {
       startPolling()
       readLoop() // blocks until the link dies (teardown() happens inside)
       val lastedMs = System.currentTimeMillis() - connectedAt
-      Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway)")
+      dropCount++
+      lastDropMs = lastedMs
+      if (lastedMs < 4000) quickDropCount++ else quickDropCount = 0
+      Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway) [drop #$dropCount]")
+      dropInfo.value = buildDropInfo()
       // A link that dies within a few seconds usually means this gateway is
       // being rejected - move it to the back and try a different one.
       if (lastedMs < 4000) rotateGateway()
+      // Repeated fast drops: a stale bond or a competing system link is the
+      // usual culprit - tell the user to re-pair (the app now disables the
+      // system profiles the moment the bond completes).
+      if (quickDropCount >= 2 && reconnectAttempts <= 3) {
+        lastError.value =
+          "הקישור נופל שוב ושוב. מחק את זיווג הטלפון וזווג אותו מחדש - האפליקציה תכבה עכשיו את החיבורים המערכתיים שמתחרים על הקישור."
+      }
       // The phone dropped the link - reconnect unless the user disconnected
       // on purpose. This is the fix for "connects for a few seconds then
       // immediately disconnects" on cheap stacks.
@@ -191,6 +213,12 @@ class RawHfpClient(private val scope: CoroutineScope) {
 
   /** HFP negotiation: BRSF, CIND, CMER, CLIP, CCWA - the handshake every AG accepts. */
   private suspend fun handshake(): Boolean {
+    // The legacy headset gateway speaks HSP - there is no BRSF/CIND/CMER
+    // negotiation. Accept the link as-is and let the read loop watch it
+    // (HSP carries call audio but has no call indicators; AT+CLCC polling
+    // will simply get ERROR on a pure-HSP phone). Without this, an HSP-only
+    // phone drops us the moment we send AT+BRSF - "connects then disconnects".
+    if (lastGateway == "HSP") return true
     // Claim the common feature set; some AGs reject feature bits they don't
     // understand, so retry with the minimal set before giving up.
     if (!sendAndWait("AT+BRSF=$hfFeatures") && !sendAndWait("AT+BRSF=0")) return false
@@ -430,6 +458,12 @@ class RawHfpClient(private val scope: CoroutineScope) {
       handleLine(l)
       if (pred(l)) return l.startsWith("OK")
     }
+  }
+
+  private fun buildDropInfo(): String {
+    if (dropCount == 0) return "אין ניתוקים"
+    val last = if (lastDropMs > 0) "האחרון אחרי ${String.format("%.1f", lastDropMs / 1000.0)} שניות" else ""
+    return if (dropCount == 1) "ניתוק אחד ($last)" else "$dropCount ניתוקים ($last)"
   }
 
   private fun teardown() {

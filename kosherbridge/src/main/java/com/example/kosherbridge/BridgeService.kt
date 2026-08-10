@@ -324,6 +324,9 @@ class BridgeService : Service() {
       manager.backendLabel.collect { r -> BridgeHub.update { it.copy(backendLabel = r) } }
     }
     scope.launch {
+      manager.rawDropInfo.collect { d -> BridgeHub.update { it.copy(rawDropInfo = d) } }
+    }
+    scope.launch {
       manager.lastError.collect { e -> BridgeHub.update { it.copy(lastError = e) } }
     }
     scope.launch {
