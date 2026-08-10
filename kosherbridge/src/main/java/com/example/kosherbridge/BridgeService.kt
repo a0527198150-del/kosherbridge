@@ -474,7 +474,7 @@ class BridgeService : Service() {
     // RawHfpClient already owns a bounded reconnect loop. Starting a second
     // loop here resets its socket/statistics and can create two competing
     // RFCOMM attempts, which makes the phone drop both links.
-    if (manager.rawReconnectArmed) return
+    if (manager.rawOwnsConnectionLoop) return
     if (System.currentTimeMillis() - lastManualDisconnectAt < 60_000) return
     val settings = ServiceLocator.settings
     val dev = settings.lastDevice.first() ?: return
@@ -482,6 +482,9 @@ class BridgeService : Service() {
     reconnecting = true
     delay(8000)
     reconnecting = false
+    // Re-check after the delay: RAW may have started between the initial
+    // state event and this delayed callback. Never reset an active RAW loop.
+    if (manager.rawOwnsConnectionLoop) return
     if (manager.connectionState.value == BluetoothProfile.STATE_DISCONNECTED && manager.adapterOn) {
       runCatching { adapter()?.getRemoteDevice(dev.address) }?.getOrNull()?.let {
         manager.connect(it)

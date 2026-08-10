@@ -300,7 +300,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private val rawActive: Boolean get() = raw?.isConnected?.value == true
 
   /** The raw client owns its own reconnect loop; the service must not launch a
-   * second reconnect loop while that client is still armed. */
+   * second reconnect loop while that client is still active. */
+  val rawOwnsConnectionLoop: Boolean get() = raw?.ownsConnectionLoop == true
   val rawReconnectArmed: Boolean get() = raw?.reconnectArmed == true
 
   /**

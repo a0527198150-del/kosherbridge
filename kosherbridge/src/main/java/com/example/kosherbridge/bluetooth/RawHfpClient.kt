@@ -234,9 +234,12 @@ class RawHfpClient(
         continue
       }
       reconnectAttempts = 0
-      attemptInFlight = false
       connectedAt = System.currentTimeMillis()
+      // Publish CONNECTED before allowing ACL recovery callbacks to intervene.
+      // Otherwise there is a small window where a valid socket looks both
+      // disconnected and no longer in-flight, so a second socket can be opened.
       isConnected.value = true
+      attemptInFlight = false
       startPolling()
       readLoop() // blocks until the link dies (teardown() happens inside)
       val lastedMs = System.currentTimeMillis() - connectedAt
@@ -593,9 +596,14 @@ class RawHfpClient(
     teardown()
   }
 
+  /** True while this raw client owns the connection lifecycle, whether it is
+   * connecting, connected, or waiting for its next retry. */
+  val ownsConnectionLoop: Boolean
+    get() = reconnectEnabled && targetDevice != null
+
   /** True while the client wants the link up but is currently down. */
   val reconnectArmed: Boolean
-    get() = reconnectEnabled && targetDevice != null && !isConnected.value && !attemptInFlight
+    get() = ownsConnectionLoop && !isConnected.value && !attemptInFlight
 
   /**
    * Relaunches the connection loop right away (e.g. the ACL link just came
