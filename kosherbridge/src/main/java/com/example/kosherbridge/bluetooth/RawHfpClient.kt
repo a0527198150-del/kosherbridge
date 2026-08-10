@@ -326,16 +326,27 @@ class RawHfpClient(private val scope: CoroutineScope) {
       // HF starts sending AT+CLCC right after the SLC completes.
       delay(1500)
       if (!isConnected.value) return@launch
-      sendCommand("AT")  // lightweight keep-alive for short AG timeouts
+      sendCommand("AT")
       delay(1500)
       if (!isConnected.value) return@launch
       sendCommand("AT")
+      var writeFailures = 0
       while (isActive && isConnected.value) {
-        // Some AGs never terminate a +CLCC batch with OK; clear the batch
-        // before each poll so stale entries can't accumulate and break
-        // call-state detection.
         synchronized(clccLock) { clccCalls.clear() }
-        sendCommand("AT+CLCC")
+        if (sendCommand("AT+CLCC")) {
+          writeFailures = 0
+        } else {
+          writeFailures++
+          // The output stream is dead (half-open socket): the phone will
+          // drop the link soon anyway. Tear it down now so the reconnect
+          // loop picks it up immediately instead of waiting for readLoop
+          // to detect the closure.
+          if (writeFailures >= 3) {
+            Log.w(tag, "output stream dead after $writeFailures write failures - forcing reconnect")
+            teardown()
+            return@launch
+          }
+        }
         delay(800)
       }
     }
@@ -546,12 +557,13 @@ class RawHfpClient(private val scope: CoroutineScope) {
 
   // ------------------------------------------------------------------- helpers
 
-  private fun sendCommand(cmd: String) {
+  /** Returns true if the write was delivered to the output stream. */
+  private fun sendCommand(cmd: String): Boolean {
     synchronized(writeLock) {
       runCatching {
         output?.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
         output?.flush()
-      }
+      }.isSuccess
     }
   }
 
