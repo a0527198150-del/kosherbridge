@@ -80,6 +80,7 @@ class BridgeService : Service() {
   override fun onCreate() {
     super.onCreate()
     instance = this
+    BridgeHub.service = this
     // Keep the CPU awake while the bridge is running. Without a partial
     // wake lock, the CPU enters deep sleep on battery-powered devices (like
     // the Jelly2 phone) — the RFCOMM socket stops processing data, the
@@ -150,6 +151,7 @@ class BridgeService : Service() {
 
   override fun onDestroy() {
     instance = null
+    BridgeHub.service = null
     manager.shutdown()
     scope.cancel()
     wakeLock?.let { if (it.isHeld) it.release() }
