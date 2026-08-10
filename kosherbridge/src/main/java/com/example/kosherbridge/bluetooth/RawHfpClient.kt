@@ -459,8 +459,9 @@ class RawHfpClient(
     // disconnect when an unsupported CHLD query is sent.
     sendCommand("AT+CLIP=1")
     readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
-    sendCommand("AT+CCWA=1")
-    readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
+    // Call-waiting notification is optional and is not needed for ordinary
+    // incoming calls. Leave it disabled during SLC so basic AG firmware does
+    // not reject an otherwise valid connection.
     return true
   }
 
