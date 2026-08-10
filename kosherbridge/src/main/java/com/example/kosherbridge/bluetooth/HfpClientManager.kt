@@ -536,38 +536,19 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         }
         return
       }
-      // AUTO - probe everything in order (existing behavior).
-      else -> Unit
-    }
-    if (rawActive) {
-      raw?.connect(target)
-      return
-    }
-    if (useShizuku) {
-      if (profileReady.value) {
-        if (shizuku!!.connect(target.address)) return
-        lastError.value = "חיבור הדיבורית נכשל - מנסה חיבור ישיר לשער הטלפון"
+      // AUTO — raw RFCOMM is the primary (and most stable) path: it opens the
+      // phone's headset gateway directly over a socket, bypassing the system
+      // HFP profile entirely. No competition for the phone's single hands-free
+      // slot, no privileged permissions needed. If raw fails (unbonded device,
+      // unsupported controller), the reconnect loop inside RawHfpClient keeps
+      // retrying; meanwhile the system profile is still registered in the
+      // background (register()) and can be used as manual fallback via the
+      // channel selector in Settings.
+      "AUTO" -> {
         connectRaw(target)
         return
       }
-      // Shizuku is bound but the profile never registered - the stack lacks it.
-      lastError.value = "פרופיל הדיבורית לא זמין בנגן - מתחבר ישירות לשער הדיבורית של הטלפון"
-      connectRaw(target)
-      return
     }
-    val c = client
-    if (c != null) {
-      if (HiddenHfp.connect(c, target)) return
-      if (HiddenHfp.privilegedBlocked) {
-        fallbackToShizuku("גישה ישירה לפרופיל נחסמה על ידי המערכת - עוברים אוטומטית ל-Shizuku")
-        return
-      }
-      lastError.value = "חיבור הדיבורית נכשל - מנסה חיבור ישיר לשער הטלפון"
-      connectRaw(target)
-      return
-    }
-    lastError.value = "פרופיל הדיבורית לא זמין בנגן - מתחבר ישירות לשער הדיבורית של הטלפון"
-    connectRaw(target)
   }
 
   fun disconnect() {
