@@ -108,6 +108,7 @@ class RawHfpClient(
   @Volatile private var targetDevice: BluetoothDevice? = null
   @Volatile private var reconnectEnabled = false
   @Volatile private var attemptInFlight = false
+  @Volatile private var connectionGeneration = 0L
   private var reconnectAttempts = 0
 
   val isConnected = MutableStateFlow(false)
@@ -129,6 +130,7 @@ class RawHfpClient(
 
   // ----------------------------------------------------------------- connect
 
+  @Synchronized
   fun connect(target: BluetoothDevice) {
     val sameTarget = targetDevice?.address == target.address
     // Selecting the already-connected device is a no-op. Selecting a
@@ -140,6 +142,7 @@ class RawHfpClient(
     onLog("נבחר מכשיר ${target.name ?: target.address}", false)
     reconnectEnabled = true
     attemptInFlight = true
+    val generation = ++connectionGeneration
     reconnectAttempts = 0
     dropCount = 0
     quickDropCount = 0
@@ -153,12 +156,15 @@ class RawHfpClient(
     // a second incoming RFCOMM and drops both.
     readJob?.cancel()
     teardown()
-    readJob = scope.launch(Dispatchers.IO) { runConnection() }
+    readJob = scope.launch(Dispatchers.IO) { runConnection(generation) }
   }
 
-  private suspend fun runConnection() {
+  private fun isCurrentGeneration(generation: Long): Boolean =
+    reconnectEnabled && generation == connectionGeneration
+
+  private suspend fun runConnection(generation: Long) {
     val target = targetDevice ?: return
-    while (reconnectEnabled) {
+    while (isCurrentGeneration(generation)) {
       attemptInFlight = true
       lastError.value = null
       try {
@@ -167,13 +173,18 @@ class RawHfpClient(
         if (t is java.util.concurrent.CancellationException) throw t
         onLog("הכנת חיבור RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
       }
-      val sock = openSocket(target)
+      if (!isCurrentGeneration(generation)) return
+      val sock = openSocket(target, generation)
+      if (!isCurrentGeneration(generation)) {
+        runCatching { sock?.close() }
+        return
+      }
       if (sock == null) {
         val detail = connectionDiagnostics.value ?: "לא נמצא שער RFCOMM"
         Log.w(tag, "connect failed on all gateways: $detail")
         lastError.value = "החיבור הישיר נכשל: $detail - מנסה שוב..."
         attemptInFlight = false
-        if (!waitBeforeRetry()) return
+        if (!waitBeforeRetry(generation)) return
         continue
       }
       val streams = try {
@@ -183,12 +194,18 @@ class RawHfpClient(
         runCatching { sock.close() }
         onLog("פתיחת זרמי RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
         attemptInFlight = false
-        if (!waitBeforeRetry()) return
+        if (!waitBeforeRetry(generation)) return
         continue
       }
-      socket = sock
-      input = streams.first
-      output = streams.second
+      synchronized(writeLock) {
+        if (!isCurrentGeneration(generation)) {
+          runCatching { sock.close() }
+          return
+        }
+        socket = sock
+        input = streams.first
+        output = streams.second
+      }
 
       // Some embedded AG stacks (feature phones) need a moment after the
       // RFCOMM channel opens before they're ready for AT commands.
@@ -210,7 +227,7 @@ class RawHfpClient(
         }
       }
       val handshakeResult = try {
-        handshake()
+        handshake(sock)
       } catch (t: Throwable) {
         if (t is java.util.concurrent.CancellationException) {
           // The watchdog belongs to the service scope rather than the
@@ -222,15 +239,19 @@ class RawHfpClient(
       }
       val handshakeWon = handshakeClaimed.compareAndSet(false, true)
       watchdog.cancel()
+      if (!isCurrentGeneration(generation)) {
+        runCatching { sock.close() }
+        return
+      }
       val handshakeOk = handshakeWon && handshakeResult && runCatching { sock.isConnected }.getOrDefault(false)
       if (!handshakeOk) {
         onLog("משא ומתן הדיבורית נכשל דרך ${lastGateway ?: "שער לא ידוע"}", true)
         // The AG rejected our AT negotiation on this gateway - try another one.
         rotateGateway()
         lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית - מנסה שוב..."
-        teardown()
+        teardown(sock)
         attemptInFlight = false
-        if (!waitBeforeRetry()) return
+        if (!waitBeforeRetry(generation)) return
         continue
       }
       reconnectAttempts = 0
@@ -241,7 +262,8 @@ class RawHfpClient(
       isConnected.value = true
       attemptInFlight = false
       startPolling()
-      readLoop() // blocks until the link dies (teardown() happens inside)
+      readLoop(sock) // blocks until this link dies
+      if (!isCurrentGeneration(generation)) return
       val lastedMs = System.currentTimeMillis() - connectedAt
       if (reconnectEnabled) {
         // The user did not disconnect - the phone dropped the link on its own.
@@ -268,15 +290,15 @@ class RawHfpClient(
       // on purpose. This is the fix for "connects for a few seconds then
       // immediately disconnects" on cheap stacks.
       attemptInFlight = false
-      if (!waitBeforeRetry()) return
+      if (!waitBeforeRetry(generation)) return
     }
   }
 
   /** Backoff between reconnect attempts: 3s, 6s, 9s, then capped at 10s. */
-  private suspend fun waitBeforeRetry(): Boolean {
+  private suspend fun waitBeforeRetry(generation: Long): Boolean {
     reconnectAttempts++
     delay(minOf(3000L * reconnectAttempts, 10_000L))
-    return reconnectEnabled
+    return isCurrentGeneration(generation)
   }
 
   /**
@@ -284,7 +306,8 @@ class RawHfpClient(
    * is broken or incomplete, falls back to the classic RFCOMM channel range
    * used by feature phones. Every attempt is recorded for diagnostics.
    */
-  private suspend fun openSocket(target: BluetoothDevice): BluetoothSocket? {
+  private suspend fun openSocket(target: BluetoothDevice, generation: Long): BluetoothSocket? {
+    if (!isCurrentGeneration(generation)) return null
     // Android explicitly recommends cancelling discovery before RFCOMM connect:
     // discovery consumes the radio and can make an otherwise valid socket fail
     // or drop immediately. This matters most after pairing from the app's scan.
@@ -298,6 +321,7 @@ class RawHfpClient(
     val attempts = mutableListOf<String>()
 
     for ((uuid, label) in order) {
+      if (!isCurrentGeneration(generation)) return null
       val sock = openGateway(target, uuid)
       attempts += "$label=$uuid:${if (sock != null) "OK" else "נכשל"}"
       if (sock != null) {
@@ -314,6 +338,7 @@ class RawHfpClient(
     // the channel directly. It is best-effort and harmless when blocked.
     val channels = (channelCursor..8).toList() + (1 until channelCursor).toList()
     for (channel in channels.distinct()) {
+      if (!isCurrentGeneration(generation)) return null
       val sock = openChannelSocket(target, channel)
       attempts += "RFCOMM:$channel:${if (sock != null) "OK" else "נכשל"}"
       channelCursor = if (channel >= 8) 1 else channel + 1
@@ -459,7 +484,7 @@ class RawHfpClient(
   }
 
   /** HFP negotiation: BRSF, CIND, CMER, CLIP, CCWA - the handshake every AG accepts. */
-  private suspend fun handshake(): Boolean {
+  private suspend fun handshake(handshakeSocket: BluetoothSocket): Boolean {
     // The legacy headset gateway speaks HSP - there is no BRSF/CIND/CMER
     // negotiation. Accept the link as-is and let the read loop watch it.
     // HSP does not understand HFP polling commands; sending AT+CLCC after an
@@ -473,15 +498,19 @@ class RawHfpClient(
     agFeaturesKnown = false
     // Claim the common feature set; some AGs reject feature bits they don't
     // understand, so retry with the minimal set before giving up.
-    if (!sendAndWait("AT+BRSF=$hfFeatures") && !sendAndWait("AT+BRSF=0")) return false
-    sendCommand("AT+CIND=?")
-    if (!readUntil { it.startsWith("OK") || it.startsWith("ERROR") }) return false
-    if (!sendAndWait("AT+CIND")) {
+    if (!sendAndWait("AT+BRSF=$hfFeatures", handshakeSocket) &&
+      !sendAndWait("AT+BRSF=0", handshakeSocket)
+    ) return false
+    sendCommand("AT+CIND=?", handshakeSocket)
+    if (!readUntil(handshakeSocket) { it.startsWith("OK") || it.startsWith("ERROR") }) return false
+    if (!sendAndWait("AT+CIND", handshakeSocket)) {
       // Some AGs only support AT+CIND=? (not the value query) - continue
       // without current indicator values; +CIEV events still arrive.
       Log.w(tag, "AT+CIND rejected - continuing without indicator values")
     }
-    if (!sendAndWait("AT+CMER=3,0,0,1") && !sendAndWait("AT+CMER=3,0,0,0")) {
+    if (!sendAndWait("AT+CMER=3,0,0,1", handshakeSocket) &&
+      !sendAndWait("AT+CMER=3,0,0,0", handshakeSocket)
+    ) {
       // CMER mode 3 is needed for unsolicited +CIEV events. Some basic
       // AGs (feature phones) reject it entirely - skip CMER; CLCC polling
       // still works, and some AGs send CIEV unsolicited regardless.
@@ -490,18 +519,20 @@ class RawHfpClient(
     // CHLD is intentionally not queried: this client does not advertise or
     // implement the three-way/call-hold procedures, and basic AGs sometimes
     // disconnect when an unsupported CHLD query is sent.
-    sendCommand("AT+CLIP=1")
-    readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
+    sendCommand("AT+CLIP=1", handshakeSocket)
+    readUntil(handshakeSocket) { it.startsWith("OK") || it.startsWith("ERROR") }
     // Call-waiting notification is optional and is not needed for ordinary
     // incoming calls. Leave it disabled during SLC so basic AG firmware does
     // not reject an otherwise valid connection.
     return true
   }
 
-  private fun readLoop() {
-    val r = input
+  private fun readLoop(ownedSocket: BluetoothSocket) {
+    val r = synchronized(writeLock) {
+      if (socket === ownedSocket) input else null
+    }
     if (r == null) {
-      teardown()
+      teardown(ownedSocket)
       return
     }
     while (true) {
@@ -509,7 +540,9 @@ class RawHfpClient(
       handleLine(line.trim())
     }
     Log.w(tag, "link closed")
-    teardown()
+    // An old read loop can finish after a new generation has already started.
+    // Only the socket it owns may be torn down; never close the replacement.
+    teardown(ownedSocket)
   }
 
   private fun startPolling() {
@@ -580,18 +613,22 @@ class RawHfpClient(
 
   fun hangup(): Boolean = sendCommand("AT+CHUP")
 
+  @Synchronized
   fun disconnect() {
     reconnectEnabled = false
     attemptInFlight = false
+    connectionGeneration++
     readJob?.cancel()
     teardown()
   }
 
   /** Bluetooth was turned off by the system. Keep the desired target armed,
    * but discard the stale socket so the next STATE_ON event can start cleanly. */
+  @Synchronized
   fun onAdapterOff() {
     if (!reconnectEnabled) return
     attemptInFlight = false
+    connectionGeneration++
     readJob?.cancel()
     teardown()
   }
@@ -609,12 +646,14 @@ class RawHfpClient(
    * Relaunches the connection loop right away (e.g. the ACL link just came
    * back) without resetting the drop statistics. Rate-limited by the caller.
    */
+  @Synchronized
   fun nudge() {
     if (!reconnectArmed) return
     attemptInFlight = true
+    val generation = ++connectionGeneration
     readJob?.cancel()
     teardown()
-    readJob = scope.launch(Dispatchers.IO) { runConnection() }
+    readJob = scope.launch(Dispatchers.IO) { runConnection(generation) }
   }
 
   // ------------------------------------------------------------------ parsing
@@ -779,8 +818,9 @@ class RawHfpClient(
    * sign that this RFCOMM link is half-open or already dead; close it now so
    * the reconnect loop does not wait for readLine() to notice later.
    */
-  private fun sendCommand(cmd: String): Boolean {
+  private fun sendCommand(cmd: String, expectedSocket: BluetoothSocket? = null): Boolean {
     val sent = synchronized(writeLock) {
+      if (expectedSocket != null && socket !== expectedSocket) return@synchronized false
       val stream = output ?: return@synchronized false
       runCatching {
         stream.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
@@ -788,19 +828,25 @@ class RawHfpClient(
       }.isSuccess
     }
     if (!sent) {
-      onLog("שליחת פקודת בלוטוס נכשלה — הקישור נסגר לצורך חיבור מחדש", true)
-      teardown()
+      // A cancelled old generation must never tear down the replacement socket.
+      val ownsSocket = expectedSocket == null || synchronized(writeLock) { socket === expectedSocket }
+      if (ownsSocket) {
+        onLog("שליחת פקודת בלוטוס נכשלה — הקישור נסגר לצורך חיבור מחדש", true)
+        teardown(expectedSocket)
+      }
     }
     return sent
   }
 
-  private suspend fun sendAndWait(cmd: String): Boolean {
-    if (!sendCommand(cmd)) return false
-    return readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
+  private suspend fun sendAndWait(cmd: String, expectedSocket: BluetoothSocket? = null): Boolean {
+    if (!sendCommand(cmd, expectedSocket)) return false
+    return readUntil(expectedSocket) { it.startsWith("OK") || it.startsWith("ERROR") }
   }
 
-  private suspend fun readUntil(pred: (String) -> Boolean): Boolean {
-    val r = input ?: return false
+  private suspend fun readUntil(expectedSocket: BluetoothSocket? = null, pred: (String) -> Boolean): Boolean {
+    val r = synchronized(writeLock) {
+      if (expectedSocket != null && socket !== expectedSocket) null else input
+    } ?: return false
     while (true) {
       val line = try {
         r.readLine()
@@ -821,13 +867,16 @@ class RawHfpClient(
     return if (dropCount == 1) "ניתוק אחד ($last)" else "$dropCount ניתוקים ($last)"
   }
 
-  private fun teardown() {
-    pollJob?.cancel()
-    pollJob = null
-    runCatching { socket?.close() }
-    socket = null
-    input = null
-    output = null
+  private fun teardown(expectedSocket: BluetoothSocket? = null) {
+    synchronized(writeLock) {
+      if (expectedSocket != null && socket !== expectedSocket) return
+      pollJob?.cancel()
+      pollJob = null
+      runCatching { socket?.close() }
+      socket = null
+      input = null
+      output = null
+    }
     isConnected.value = false
     call.value = null
   }
