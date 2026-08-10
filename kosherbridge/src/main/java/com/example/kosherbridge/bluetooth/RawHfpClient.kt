@@ -94,6 +94,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
 
   private val indicatorNames = mutableMapOf<Int, String>() // index -> name (from AT+CIND=?)
   private val indicatorValues = mutableMapOf<Int, Int>()   // index -> value (from +CIEV / AT+CIND)
+  private val clccLock = Any()
   private val clccCalls = mutableListOf<CallInfo>()
   @Volatile private var clipNumber: String? = null
   @Volatile private var lastDirection = CallDirection.INCOMING
@@ -290,6 +291,10 @@ class RawHfpClient(private val scope: CoroutineScope) {
     pollJob?.cancel()
     pollJob = scope.launch(Dispatchers.IO) {
       while (isActive && isConnected.value) {
+        // Some AGs never terminate a +CLCC batch with OK; clear the batch
+        // before each poll so stale entries can't accumulate and break
+        // call-state detection.
+        synchronized(clccLock) { clccCalls.clear() }
         sendCommand("AT+CLCC")
         delay(800)
       }
@@ -433,13 +438,17 @@ class RawHfpClient(private val scope: CoroutineScope) {
       else -> null
     } ?: return
     val direction = if (dir == 0) CallDirection.OUTGOING else CallDirection.INCOMING
-    clccCalls += CallInfo(state, number, direction)
+    synchronized(clccLock) { clccCalls += CallInfo(state, number, direction) }
   }
 
   private fun finishClccBatch() {
-    if (clccCalls.isEmpty()) return
-    val info = clccCalls.minByOrNull { rank(it.state) } ?: return
-    clccCalls.clear()
+    var info: CallInfo? = null
+    synchronized(clccLock) {
+      if (clccCalls.isEmpty()) return
+      info = clccCalls.minByOrNull { rank(it.state) }
+      clccCalls.clear()
+    }
+    info ?: return
     lastDirection = info.direction
     if (call.value != info) call.value = info
     if (info.state == CallState.IDLE) clipNumber = null
