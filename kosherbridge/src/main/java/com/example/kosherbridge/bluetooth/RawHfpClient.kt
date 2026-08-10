@@ -558,14 +558,13 @@ class RawHfpClient(private val scope: CoroutineScope) {
   // ------------------------------------------------------------------- helpers
 
   /** Returns true if the write was delivered to the output stream. */
-  private fun sendCommand(cmd: String): Boolean {
+  private fun sendCommand(cmd: String): Boolean =
     synchronized(writeLock) {
       runCatching {
         output?.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
         output?.flush()
       }.isSuccess
     }
-  }
 
   private suspend fun sendAndWait(cmd: String): Boolean {
     sendCommand(cmd)
