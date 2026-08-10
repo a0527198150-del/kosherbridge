@@ -20,15 +20,17 @@ import com.example.kosherbridge.ui.theme.ThemeMode
 class MainActivity : ComponentActivity() {
 
   private val permissionLauncher =
-    registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+    registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
       // Start the bridge only after the user actually answered the permission
       // dialog - not on a fixed delay. Android 14+ crashes the whole process
       // if the foreground service (type connectedDevice) starts before
       // BLUETOOTH_CONNECT is granted, so the permission result drives the start.
       if (pendingServiceStart) {
         pendingServiceStart = false
+        // Check the real state, not the grants map: BLUETOOTH_CONNECT may not
+        // have been part of this request (e.g. only SCAN was missing).
         val btOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-          grants[Manifest.permission.BLUETOOTH_CONNECT] == true
+          checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
         if (btOk) {
           runCatching { BridgeService.start(this) }
         } else {
@@ -49,7 +51,6 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     ServiceLocator.init(applicationContext)
-    requestNeededPermissions()
 
     setContent {
       val themeMode by ServiceLocator.settings.themeMode.collectAsStateWithLifecycle(ThemeMode.SYSTEM.name)
@@ -67,14 +68,18 @@ class MainActivity : ComponentActivity() {
     super.onResume()
     // Start the foreground service only once the activity is actually visible
     // (starting from onCreate can be killed on Android 8-9 when the app is
-    // still considered idle). If runtime permissions are still missing, the
-    // permission dialog's result drives the start; otherwise start now.
+    // still considered idle). If runtime permissions are missing, launch the
+    // dialog AFTER arming pendingServiceStart (the result may arrive
+    // synchronously when the system suppresses the dialog), and let the
+    // dialog's result drive the service start.
     if (!serviceStartScheduled) {
       serviceStartScheduled = true
-      if (neededPermissions().isEmpty()) {
+      val needed = neededPermissions()
+      if (needed.isEmpty()) {
         runCatching { BridgeService.start(this) }
       } else {
         pendingServiceStart = true
+        permissionLauncher.launch(needed.toTypedArray())
       }
     }
   }
@@ -97,12 +102,5 @@ class MainActivity : ComponentActivity() {
       needed += Manifest.permission.POST_NOTIFICATIONS
     }
     return needed
-  }
-
-  private fun requestNeededPermissions() {
-    val needed = neededPermissions()
-    if (needed.isNotEmpty()) {
-      permissionLauncher.launch(needed.toTypedArray())
-    }
   }
 }
