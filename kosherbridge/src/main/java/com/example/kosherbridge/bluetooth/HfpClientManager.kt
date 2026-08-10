@@ -70,21 +70,26 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       ?.toList()
       ?: emptyList(),
   )
+  private val connectionLogLock = Any()
 
   /** Adds a timestamped local entry and keeps the last 200 entries. */
   fun logConnection(message: String, error: Boolean = false) {
-    val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
-      .format(java.util.Date())
-    val prefix = if (error) "🔴 שגיאה" else "מידע"
-    val line = "$stamp · $prefix: $message"
-    val next = (connectionLog.value + line).takeLast(200)
-    connectionLog.value = next
-    connectionLogPrefs.edit().putString("lines", next.joinToString("\n")).apply()
+    synchronized(connectionLogLock) {
+      val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+        .format(java.util.Date())
+      val prefix = if (error) "🔴 שגיאה" else "מידע"
+      val line = "$stamp · $prefix: $message"
+      val next = (connectionLog.value + line).takeLast(200)
+      connectionLog.value = next
+      connectionLogPrefs.edit().putString("lines", next.joinToString("\n")).apply()
+    }
   }
 
   fun clearConnectionLog() {
-    connectionLog.value = emptyList()
-    connectionLogPrefs.edit().remove("lines").apply()
+    synchronized(connectionLogLock) {
+      connectionLog.value = emptyList()
+      connectionLogPrefs.edit().remove("lines").apply()
+    }
   }
 
   // ------------------------------------------------------------------ system profiles

@@ -213,12 +213,19 @@ object HiddenHfp {
     val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
       ?: return false
     val latch = CountDownLatch(1)
+    val callbackLock = Any()
+    var timedOut = false
     var proxy: BluetoothProfile? = null
     val listener = object : BluetoothProfile.ServiceListener {
       override fun onServiceConnected(profile: Int, p: BluetoothProfile) {
-        if (profile == profileId) {
-          proxy = p
-          latch.countDown()
+        if (profile != profileId) return
+        synchronized(callbackLock) {
+          if (timedOut) {
+            runCatching { adapter.closeProfileProxy(profileId, p) }
+          } else {
+            proxy = p
+            latch.countDown()
+          }
         }
       }
       override fun onServiceDisconnected(profile: Int) = Unit
@@ -226,6 +233,11 @@ object HiddenHfp {
     val started = runCatching { adapter.getProfileProxy(context, listener, profileId) }.getOrDefault(false)
     if (!started) return false
     if (!latch.await(PROFILE_PROXY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      val lateProxy = synchronized(callbackLock) {
+        timedOut = true
+        proxy
+      }
+      if (lateProxy != null) runCatching { adapter.closeProfileProxy(profileId, lateProxy) }
       Log.w(TAG, "setProfilePriority: timeout waiting for profile $profileId")
       return false
     }
@@ -255,10 +267,20 @@ object HiddenHfp {
     val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
       ?: return false
     val latch = CountDownLatch(1)
+    val callbackLock = Any()
+    var timedOut = false
     var proxy: BluetoothProfile? = null
     val listener = object : BluetoothProfile.ServiceListener {
       override fun onServiceConnected(profile: Int, p: BluetoothProfile) {
-        if (profile == profileId) { proxy = p; latch.countDown() }
+        if (profile != profileId) return
+        synchronized(callbackLock) {
+          if (timedOut) {
+            runCatching { adapter.closeProfileProxy(profileId, p) }
+          } else {
+            proxy = p
+            latch.countDown()
+          }
+        }
       }
       override fun onServiceDisconnected(profile: Int) = Unit
     }
@@ -268,6 +290,11 @@ object HiddenHfp {
       return false
     }
     if (!latch.await(PROFILE_PROXY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      val lateProxy = synchronized(callbackLock) {
+        timedOut = true
+        proxy
+      }
+      if (lateProxy != null) runCatching { adapter.closeProfileProxy(profileId, lateProxy) }
       Log.w(TAG, "forceDisconnectProfile: timeout waiting for profile $profileId")
       return false
     }
