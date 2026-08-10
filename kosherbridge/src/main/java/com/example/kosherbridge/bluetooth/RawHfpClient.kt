@@ -305,6 +305,10 @@ class RawHfpClient(private val scope: CoroutineScope) {
   private fun startPolling() {
     pollJob?.cancel()
     pollJob = scope.launch(Dispatchers.IO) {
+      // Let the link settle for a few seconds before polling call state -
+      // some basic AG stacks (feature phones) drop the connection when the
+      // HF starts sending AT+CLCC right after the SLC completes.
+      delay(3000)
       while (isActive && isConnected.value) {
         // Some AGs never terminate a +CLCC batch with OK; clear the batch
         // before each poll so stale entries can't accumulate and break
