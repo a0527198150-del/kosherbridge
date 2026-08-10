@@ -238,4 +238,38 @@ object HiddenHfp {
       Log.w(TAG, "setProfilePriority($profileId, $priority) failed: ${e.message}")
     }.getOrDefault(false)
   }
+
+  /**
+   * Explicitly disconnects a system profile from one device via reflection.
+   * Setting priority OFF prevents future reconnections, but an in-flight
+   * auto-connect (which fires at bond time) may race past the priority change.
+   * Calling disconnect kills any existing or pending connection immediately.
+   */
+  fun forceDisconnectProfile(context: Context, device: BluetoothDevice, profileId: Int): Boolean {
+    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+      ?: return false
+    val latch = CountDownLatch(1)
+    var proxy: BluetoothProfile? = null
+    val listener = object : BluetoothProfile.ServiceListener {
+      override fun onServiceConnected(profile: Int, p: BluetoothProfile) {
+        if (profile == profileId) { proxy = p; latch.countDown() }
+      }
+      override fun onServiceDisconnected(profile: Int) = Unit
+    }
+    runCatching { adapter.getProfileProxy(context, listener, profileId) }
+    if (!latch.await(3, TimeUnit.SECONDS)) {
+      Log.w(TAG, "forceDisconnectProfile: timeout waiting for profile $profileId")
+      return false
+    }
+    val p = proxy
+    try {
+      val m = p?.javaClass?.getMethod("disconnect", BluetoothDevice::class.java) ?: return false
+      return (m.invoke(p, device) as? Boolean) ?: false
+    } catch (e: Throwable) {
+      Log.w(TAG, "forceDisconnectProfile($profileId) failed: ${e.message}")
+      return false
+    } finally {
+      if (p != null) runCatching { adapter.closeProfileProxy(profileId, p) }
+    }
+  }
 }

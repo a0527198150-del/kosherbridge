@@ -77,12 +77,16 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private suspend fun disableSystemProfiles(device: BluetoothDevice) {
     if (!systemProfilesDisabled.add(device.address)) return
     // The hands-free profile is the main fighter - wait for it to apply
-    // before the raw link opens. The audio profiles are fire-and-forget.
+    // before the raw link opens, AND explicitly kill any in-flight connection
+    // (the auto-connect starts at bond time and may race past the priority
+    // change). The audio profiles are fire-and-forget.
     withContext(Dispatchers.IO) {
       HiddenHfp.setProfilePriority(context, device, BluetoothProfile.HEADSET, 0)
+      HiddenHfp.forceDisconnectProfile(context, device, BluetoothProfile.HEADSET)
     }
     scope.launch(Dispatchers.IO) {
       HiddenHfp.setProfilePriority(context, device, BluetoothProfile.A2DP, 0)
+      HiddenHfp.forceDisconnectProfile(context, device, BluetoothProfile.A2DP)
       runCatching { HiddenHfp.setProfilePriority(context, device, 11 /* A2DP_SINK */, 0) }
     }
   }
