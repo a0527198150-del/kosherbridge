@@ -212,7 +212,12 @@ class RawHfpClient(
       val handshakeResult = try {
         handshake()
       } catch (t: Throwable) {
-        if (t is java.util.concurrent.CancellationException) throw t
+        if (t is java.util.concurrent.CancellationException) {
+          // The watchdog belongs to the service scope rather than the
+          // connection job, so cancel it explicitly on user/service shutdown.
+          watchdog.cancel()
+          throw t
+        }
         false
       }
       val handshakeWon = handshakeClaimed.compareAndSet(false, true)
