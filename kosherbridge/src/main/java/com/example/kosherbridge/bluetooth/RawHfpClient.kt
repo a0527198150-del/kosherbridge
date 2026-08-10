@@ -201,23 +201,40 @@ class RawHfpClient(private val scope: CoroutineScope) {
   /**
    * Opens one gateway. Tries the secure socket first; some AG stacks (feature
    * phones) fail the encryption re-negotiation and only accept an insecure
-   * link, so fall back to the insecure variant.
+   * link, so fall back to the insecure variant. Every attempt is bounded by
+   * a watchdog so an unreachable phone can't stall the reconnect loop.
    */
   private fun openGateway(target: BluetoothDevice, uuid: UUID): BluetoothSocket? {
-    val secure = runCatching {
-      target.createRfcommSocketToServiceRecord(uuid).also { it.connect() }
-    }.getOrNull()
+    val secure = connectBounded(target, uuid, secure = true)
     if (secure != null) return secure
     Log.w(tag, "secure connect failed for $uuid")
-    val insecure = runCatching {
-      target.createInsecureRfcommSocketToServiceRecord(uuid).also { it.connect() }
-    }.getOrNull()
+    val insecure = connectBounded(target, uuid, secure = false)
     if (insecure != null) {
       Log.i(tag, "insecure socket accepted for $uuid")
     } else {
       Log.w(tag, "insecure connect failed for $uuid")
     }
     return insecure
+  }
+
+  /**
+   * BluetoothSocket.connect() can block for a long time when the remote is
+   * unreachable (the stack keeps retrying). Close the socket after 6s to
+   * abort a stuck connect, so one dead gateway can't hang the whole loop.
+   */
+  private fun connectBounded(target: BluetoothDevice, uuid: UUID, secure: Boolean): BluetoothSocket? {
+    val sock = if (secure) {
+      target.createRfcommSocketToServiceRecord(uuid)
+    } else {
+      target.createInsecureRfcommSocketToServiceRecord(uuid)
+    }
+    val watchdog = scope.launch(Dispatchers.IO) {
+      delay(6_000)
+      runCatching { sock.close() } // unblocks a stuck connect()
+    }
+    val ok = runCatching { sock.connect(); true }.getOrDefault(false)
+    watchdog.cancel()
+    return if (ok) sock else null
   }
 
   /** Moves the gateway that just failed to the back of the order. */
