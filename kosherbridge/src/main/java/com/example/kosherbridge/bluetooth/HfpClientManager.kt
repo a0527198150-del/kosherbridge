@@ -70,6 +70,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private val systemProfilesDisabled = mutableSetOf<String>()
   private var bondWatchStarted = false
   private var bondReceiver: BroadcastReceiver? = null
+  private var aclWatchStarted = false
+  private var aclReceiver: BroadcastReceiver? = null
+  @Volatile private var lastAclNudge = 0L
 
   private suspend fun disableSystemProfiles(device: BluetoothDevice) {
     if (!systemProfilesDisabled.add(device.address)) return
@@ -107,6 +110,43 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
     }
     bondReceiver = receiver
+    runCatching {
+      if (Build.VERSION.SDK_INT >= 33) {
+        context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+      } else {
+        @Suppress("DEPRECATION")
+        context.registerReceiver(receiver, filter)
+      }
+    }
+  }
+
+  /**
+   * Watches the ACL link of the selected phone. When the link comes back up
+   * (the phone re-establishes it, or Bluetooth toggles), jump the raw
+   * reconnect queue immediately instead of waiting out the backoff - so an
+   * incoming call that arrives right after a drop is not missed.
+   */
+  private fun startAclWatch() {
+    if (aclWatchStarted) return
+    aclWatchStarted = true
+    val filter = IntentFilter(BluetoothDevice.ACTION_ACL_CONNECTED)
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(ctx: Context, intent: Intent) {
+        val dev = if (Build.VERSION.SDK_INT >= 33)
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        else
+          @Suppress("DEPRECATION")
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        if (dev == null || dev.address != device.value?.address) return
+        val r = raw ?: return
+        if (!r.reconnectArmed) return
+        val now = System.currentTimeMillis()
+        if (now - lastAclNudge < 5000) return // rate-limit: don't hammer the phone
+        lastAclNudge = now
+        r.nudge()
+      }
+    }
+    aclReceiver = receiver
     runCatching {
       if (Build.VERSION.SDK_INT >= 33) {
         context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -207,6 +247,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // bond time regardless of the connection channel, or the phone drops the
     // app's link the moment the system's own hands-free link shows up.
     startBondWatch()
+    startAclWatch()
     when (channelMode) {
       // Raw RFCOMM has no profile to register - the link is opened in connect().
       "RAW" -> {
@@ -634,6 +675,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     bondReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }
     bondReceiver = null
     bondWatchStarted = false
+    aclReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }
+    aclReceiver = null
+    aclWatchStarted = false
     backendLabel.value = null
   }
 

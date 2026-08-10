@@ -315,6 +315,19 @@ class RawHfpClient(private val scope: CoroutineScope) {
     teardown()
   }
 
+  /** True while the client wants the link up but is currently down. */
+  val reconnectArmed: Boolean get() = reconnectEnabled && targetDevice != null && !isConnected.value
+
+  /**
+   * Relaunches the connection loop right away (e.g. the ACL link just came
+   * back) without resetting the drop statistics. Rate-limited by the caller.
+   */
+  fun nudge() {
+    if (!reconnectArmed) return
+    readJob?.cancel()
+    readJob = scope.launch(Dispatchers.IO) { runConnection() }
+  }
+
   // ------------------------------------------------------------------ parsing
 
   private fun handleLine(line: String) {
