@@ -88,8 +88,11 @@ class RawHfpClient(
   private var quickDropCount = 0
   @Volatile private var lastDropMs = 0L
 
-  // HF features advertised in AT+BRSF: CLI, enhanced call status, enhanced call control
-  private val hfFeatures = 0x0004 or 0x0020 or 0x0040
+  // HF features advertised in AT+BRSF: CLI and enhanced call status.
+  // Do not advertise enhanced call control unless the implementation also
+  // supports the CHLD procedures; falsely advertising it makes some basic AGs
+  // send an incompatible call-hold query during SLC.
+  private val hfFeatures = 0x0004 or 0x0020
 
   @Volatile private var socket: BluetoothSocket? = null
   @Volatile private var input: BufferedReader? = null
@@ -433,6 +436,8 @@ class RawHfpClient(
       return true
     }
     hspMode = false
+    agBrsfFeatures = 0
+    agFeaturesKnown = false
     // Claim the common feature set; some AGs reject feature bits they don't
     // understand, so retry with the minimal set before giving up.
     if (!sendAndWait("AT+BRSF=$hfFeatures") && !sendAndWait("AT+BRSF=0")) return false
@@ -449,10 +454,9 @@ class RawHfpClient(
       // still works, and some AGs send CIEV unsolicited regardless.
       Log.w(tag, "CMER rejected - continuing without call progress events")
     }
-    // AT+CHLD=? completes the standard SLC (Service Level Connection); some
-    // AGs drop the link if the HF doesn't query this capability.
-    sendCommand("AT+CHLD=?")
-    readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
+    // CHLD is intentionally not queried: this client does not advertise or
+    // implement the three-way/call-hold procedures, and basic AGs sometimes
+    // disconnect when an unsupported CHLD query is sent.
     sendCommand("AT+CLIP=1")
     readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
     sendCommand("AT+CCWA=1")
@@ -490,6 +494,12 @@ class RawHfpClient(
       delay(1500)
       if (!isConnected.value) return@launch
       sendCommand("AT")
+      // HFP AG feature bit 6 advertises Enhanced Call Status, which is the
+      // capability behind AT+CLCC. Do not repeatedly send that optional
+      // command to a basic feature phone that explicitly lacks it; some such
+      // phones answer once and then terminate the RFCOMM channel.
+      val supportsCurrentCalls = !agFeaturesKnown || (agBrsfFeatures and 0x40) != 0
+      if (!supportsCurrentCalls) return@launch
       var writeFailures = 0
       while (isActive && isConnected.value) {
         synchronized(clccLock) { clccCalls.clear() }
@@ -508,7 +518,9 @@ class RawHfpClient(
             return@launch
           }
         }
-        delay(800)
+        // Keep the polling gentle for low-end feature phones; unsolicited
+        // +CIEV notifications remain the primary call-state mechanism.
+        delay(1500)
       }
     }
   }
@@ -580,9 +592,11 @@ class RawHfpClient(
 
   /** Parses the AG's BRSF feature bitmap (advertised in response to AT+BRSF). */
   @Volatile private var agBrsfFeatures = 0
+  @Volatile private var agFeaturesKnown = false
 
   private fun handleBrsf(line: String) {
     agBrsfFeatures = line.substringAfter("+BRSF:").trim().toIntOrNull() ?: return
+    agFeaturesKnown = true
     Log.i(tag, "AG features: $agBrsfFeatures")
   }
 
