@@ -188,14 +188,26 @@ class RawHfpClient(
 
       // Some AGs accept the socket but never answer AT commands. Close the
       // socket after 12s so a silent handshake can't hang the reconnect loop.
-      val handshakeWatchdogFired = java.util.concurrent.atomic.AtomicBoolean(false)
+      // The atomic claim is important: without it, a watchdog waking at the
+      // same moment as a successful handshake could close a live socket after
+      // the handshake had already been accepted.
+      val handshakeClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
       val watchdog = scope.launch(Dispatchers.IO) {
         delay(12_000)
-        handshakeWatchdogFired.set(true)
-        runCatching { sock.close() }
+        if (handshakeClaimed.compareAndSet(false, true)) {
+          onLog("משא ומתן הדיבורית עבר את הזמן המותר", true)
+          runCatching { sock.close() }
+        }
       }
-      val handshakeOk = handshake() && !handshakeWatchdogFired.get() && sock.isConnected
+      val handshakeResult = try {
+        handshake()
+      } catch (t: Throwable) {
+        if (t is java.util.concurrent.CancellationException) throw t
+        false
+      }
+      val handshakeWon = handshakeClaimed.compareAndSet(false, true)
       watchdog.cancel()
+      val handshakeOk = handshakeWon && handshakeResult && runCatching { sock.isConnected }.getOrDefault(false)
       if (!handshakeOk) {
         onLog("משא ומתן הדיבורית נכשל דרך ${lastGateway ?: "שער לא ידוע"}", true)
         // The AG rejected our AT negotiation on this gateway - try another one.
