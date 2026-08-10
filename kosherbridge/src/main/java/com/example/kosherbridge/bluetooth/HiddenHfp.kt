@@ -271,15 +271,32 @@ object HiddenHfp {
       Log.w(TAG, "forceDisconnectProfile: timeout waiting for profile $profileId")
       return false
     }
-    val p = proxy
+    val p = proxy ?: return false
     try {
-      val m = p?.javaClass?.getMethod("disconnect", BluetoothDevice::class.java) ?: return false
-      return (m.invoke(p, device) as? Boolean) ?: false
+      val m = p.javaClass.getMethod("disconnect", BluetoothDevice::class.java)
+      m.invoke(p, device)
+
+      // The reflection call only means that the request was accepted. Verify
+      // the profile proxy reports DISCONNECTED before allowing RFCOMM to open;
+      // otherwise the system profile can still be tearing down its ACL link.
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+      while (System.nanoTime() < deadline) {
+        val state = runCatching { p.getConnectionState(device) }.getOrNull()
+        if (state == BluetoothProfile.STATE_DISCONNECTED) return true
+        if (state == null) return false
+        Thread.sleep(100)
+      }
+      return runCatching {
+        p.getConnectionState(device) == BluetoothProfile.STATE_DISCONNECTED
+      }.getOrDefault(false)
+    } catch (e: InterruptedException) {
+      Thread.currentThread().interrupt()
+      return false
     } catch (e: Throwable) {
       Log.w(TAG, "forceDisconnectProfile($profileId) failed: ${e.message}")
       return false
     } finally {
-      if (p != null) runCatching { adapter.closeProfileProxy(profileId, p) }
+      runCatching { adapter.closeProfileProxy(profileId, p) }
     }
   }
 }

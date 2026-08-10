@@ -101,6 +101,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   private val systemProfilesDisabled =
     java.util.Collections.synchronizedSet(mutableSetOf<String>())
+  private val systemProfilesRetry =
+    java.util.Collections.synchronizedSet(mutableSetOf<String>())
   private val systemProfilesMutex = Mutex()
   private var bondWatchStarted = false
   private var bondReceiver: BroadcastReceiver? = null
@@ -114,7 +116,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // is still being disabled, and do not cache a failed priority change as if
     // it succeeded.
     systemProfilesMutex.withLock {
-      if (systemProfilesDisabled.contains(device.address)) return@withLock
+      val alreadyDisabled = systemProfilesDisabled.contains(device.address)
+      val needsRetry = systemProfilesRetry.contains(device.address)
+      if (alreadyDisabled && !needsRetry) return@withLock
 
       val priorityApplied = withContext(Dispatchers.IO) {
         HiddenHfp.setProfilePriority(context, device, BluetoothProfile.HEADSET, 0)
@@ -124,21 +128,33 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
       if (priorityApplied) {
         systemProfilesDisabled.add(device.address)
-        logConnection("חיבור הדיבורית המערכתי נוטרל לפני RFCOMM", false)
+        if (disconnected) {
+          systemProfilesRetry.remove(device.address)
+          logConnection("חיבור הדיבורית המערכתי נוטרל ואומת לפני RFCOMM", false)
+        } else {
+          systemProfilesRetry.add(device.address)
+          logConnection("נוטרלה עדיפות הדיבורית אך ניתוקה לא אומת - יבוצע ניסיון חוזר", true)
+        }
       } else {
+        systemProfilesDisabled.remove(device.address)
+        systemProfilesRetry.add(device.address)
         logConnection(
-          "לא ניתן לנטרל את פרופיל הדיבורית המערכתי (נותק בפועל: $disconnected) - ייתכן שהוא יתחרה ב-RFCOMM",
+          "לא ניתן לנטרל את פרופיל הדיבורית המערכתי (נותק בפועל: $disconnected) - יבוצע ניסיון חוזר",
           true,
         )
       }
 
-      // A2DP does not own the HFP slot, but disabling it prevents the phone's
-      // audio profile from creating an additional ACL race. It is intentionally
-      // kept outside the critical HFP ordering above.
-      scope.launch(Dispatchers.IO) {
-        HiddenHfp.setProfilePriority(context, device, BluetoothProfile.A2DP, 0)
-        HiddenHfp.forceDisconnectProfile(context, device, BluetoothProfile.A2DP)
+      // A2DP does not own the HFP slot, but on some low-end stacks its ACL
+      // activity can still overlap the raw opening. Await the best-effort
+      // cleanup instead of launching it after this function returns.
+      val a2dpReady = withContext(Dispatchers.IO) {
+        val priority = HiddenHfp.setProfilePriority(context, device, BluetoothProfile.A2DP, 0)
+        val disconnectedA2dp = HiddenHfp.forceDisconnectProfile(context, device, BluetoothProfile.A2DP)
         runCatching { HiddenHfp.setProfilePriority(context, device, 11 /* A2DP_SINK */, 0) }
+        priority && disconnectedA2dp
+      }
+      if (!a2dpReady) {
+        logConnection("ניקוי A2DP לא אושר; ממשיך לאחר סיום הניסיון", true)
       }
     }
   }
@@ -166,12 +182,14 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
             // re-pair (delete + pair again) doesn't find a stale cache hit
             // that would leave the profiles fighting for the phone's slot.
             systemProfilesDisabled.remove(addr)
+            systemProfilesRetry.remove(addr)
             if (dev != null) scope.launch { disableSystemProfiles(dev) }
           }
           BluetoothDevice.BOND_NONE -> {
             // Un-paired: clear both the cached disable guard and the
             // learned channel so a future re-pair starts fresh.
             systemProfilesDisabled.remove(addr)
+            systemProfilesRetry.remove(addr)
             scope.launch {
               ServiceLocator.settings.learnChannel(Build.FINGERPRINT, "")
             }
@@ -217,6 +235,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
               // the restart; the next raw attempt must apply the protection
               // again before opening RFCOMM.
               systemProfilesDisabled.clear()
+              systemProfilesRetry.clear()
               if (!r.reconnectArmed) return
               val now = System.currentTimeMillis()
               if (now - lastAclNudge < 5000) return

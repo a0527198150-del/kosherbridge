@@ -53,6 +53,8 @@ class RawHfpClient(
   var beforeSocketOpen: (suspend (BluetoothDevice) -> Unit)? = null
 
   private val tag = "RawHfp"
+  private val gatewayRotationDropWindowMs = 10_000L
+  private val stableLinkWindowMs = 15_000L
 
   // HFP Audio Gateway UUID (HandsfreeAudioGateway = 0x111F). The kosher phone
   // plays the Audio Gateway (AG) role and publishes THIS service record, so
@@ -254,7 +256,6 @@ class RawHfpClient(
         if (!waitBeforeRetry(generation)) return
         continue
       }
-      reconnectAttempts = 0
       connectedAt = System.currentTimeMillis()
       // Publish CONNECTED before allowing ACL recovery callbacks to intervene.
       // Otherwise there is a small window where a valid socket looks both
@@ -269,13 +270,17 @@ class RawHfpClient(
         // The user did not disconnect - the phone dropped the link on its own.
         dropCount++
         lastDropMs = lastedMs
-        if (lastedMs < 4000) quickDropCount++ else quickDropCount = 0
+        if (lastedMs < gatewayRotationDropWindowMs) quickDropCount++ else quickDropCount = 0
         onLog("הקישור נותק אחרי ${lastedMs}ms דרך ${lastGateway ?: "שער לא ידוע"}", true)
         Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway) [drop #$dropCount]")
         dropInfo.value = buildDropInfo()
         // A link that dies within a few seconds usually means this gateway is
         // being rejected - move it to the back and try a different one.
-        if (lastedMs < 4000) rotateGateway()
+        if (lastedMs < gatewayRotationDropWindowMs) rotateGateway()
+        // Only a link that stayed up for a meaningful window earns a clean
+        // backoff slate. A handshake followed by a 1-6 second drop must not
+        // reset the delay and hammer a fragile phone every three seconds.
+        if (lastedMs >= stableLinkWindowMs) reconnectAttempts = 0
         // Repeated fast drops: a stale bond or a competing system link is the
         // usual culprit - tell the user to re-pair (the app now disables the
         // system profiles the moment the bond completes).
@@ -294,10 +299,17 @@ class RawHfpClient(
     }
   }
 
-  /** Backoff between reconnect attempts: 3s, 6s, 9s, then capped at 10s. */
+  /** Backoff grows after repeated failures and resets only after a stable link. */
   private suspend fun waitBeforeRetry(generation: Long): Boolean {
     reconnectAttempts++
-    delay(minOf(3000L * reconnectAttempts, 10_000L))
+    val delayMs = when (reconnectAttempts) {
+      1 -> 3_000L
+      2 -> 6_000L
+      3 -> 10_000L
+      4 -> 15_000L
+      else -> 30_000L
+    }
+    delay(delayMs)
     return isCurrentGeneration(generation)
   }
 

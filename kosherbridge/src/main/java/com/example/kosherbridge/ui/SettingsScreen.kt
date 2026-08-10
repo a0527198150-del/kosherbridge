@@ -726,7 +726,10 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
   state.rawConnectionDiagnostics?.let { appendLine("ניסיונות SDP/RFCOMM: $it") }
   if (state.connectionLog.isNotEmpty()) {
     appendLine("יומן חיבור:")
-    state.connectionLog.takeLast(100).forEach { appendLine(it) }
+    // connectionLog already contains the complete persisted journal (up to
+    // its configured 200-entry limit). Do not truncate the copied report;
+    // the on-screen preview is shorter, but support needs every saved line.
+    state.connectionLog.forEach { appendLine(it) }
   }
   state.lastError?.let { appendLine("שגיאה אחרונה: $it") }
 }
