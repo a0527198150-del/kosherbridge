@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -74,10 +75,21 @@ class BridgeService : Service() {
   private var activeCallDirection: CallDirection? = null
   private var reconnecting = false
   private var lastManualDisconnectAt = 0L
+  private var wakeLock: PowerManager.WakeLock? = null
 
   override fun onCreate() {
     super.onCreate()
     instance = this
+    // Keep the CPU awake while the bridge is running. Without a partial
+    // wake lock, the CPU enters deep sleep on battery-powered devices (like
+    // the Jelly2 phone) — the RFCOMM socket stops processing data, the
+    // kosher phone sees an idle link and drops it. The foreground-service
+    // notification keeps the process alive, but only a wake lock keeps the
+    // CPU from sleeping.
+    val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+    wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kosherbridge:hfp")
+    wakeLock?.setReferenceCounted(false)
+    wakeLock?.acquire()
     Notifications.createChannels(this)
     manager = HfpClientManager(this, scope)
     // Remember which connection channel actually worked on this exact player
@@ -140,6 +152,8 @@ class BridgeService : Service() {
     instance = null
     manager.shutdown()
     scope.cancel()
+    wakeLock?.let { if (it.isHeld) it.release() }
+    wakeLock = null
     super.onDestroy()
   }
 
