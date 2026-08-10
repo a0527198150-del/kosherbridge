@@ -212,6 +212,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
             BluetoothAdapter.STATE_OFF -> r.onAdapterOff()
             BluetoothAdapter.STATE_ON -> {
+              // Vendor Bluetooth services may reset profile priorities when the
+              // adapter restarts. Do not trust the in-memory guard from before
+              // the restart; the next raw attempt must apply the protection
+              // again before opening RFCOMM.
+              systemProfilesDisabled.clear()
               if (!r.reconnectArmed) return
               val now = System.currentTimeMillis()
               if (now - lastAclNudge < 5000) return
