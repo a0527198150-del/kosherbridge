@@ -25,6 +25,7 @@ class ShizukuBridge(private val context: Context) {
   private val tag = "ShizukuBridge"
 
   @Volatile private var remote: IHfpBridge? = null
+  @Volatile private var bindRequested = false
   private var args: Shizuku.UserServiceArgs? = null
   private var conn: ServiceConnection? = null
 
@@ -45,11 +46,17 @@ class ShizukuBridge(private val context: Context) {
    * The connection arrives asynchronously via [ServiceConnection] (main thread).
    */
   fun bind(): Boolean {
-    if (remote != null) return true
-    if (!isAvailable) return false
-    if (!permissionGranted) {
-      Log.w(tag, "Shizuku permission not granted for this app")
-      return false
+    if (remote != null || bindRequested) return true
+    synchronized(this) {
+      // Binding is asynchronous. A second caller can arrive before
+      // onServiceConnected and otherwise create a second remote process.
+      if (remote != null || bindRequested) return true
+      if (!isAvailable) return false
+      if (!permissionGranted) {
+        Log.w(tag, "Shizuku permission not granted for this app")
+        return false
+      }
+      bindRequested = true
     }
     val component = ComponentName(context, HfpUserService::class.java)
     val a = Shizuku.UserServiceArgs(component)
@@ -60,21 +67,25 @@ class ShizukuBridge(private val context: Context) {
     val connection = object : ServiceConnection {
       override fun onServiceConnected(name: ComponentName, binder: IBinder) {
         remote = IHfpBridge.Stub.asInterface(binder)
+        bindRequested = true
         Log.i(tag, "user service connected")
       }
 
       override fun onServiceDisconnected(name: ComponentName) {
         Log.w(tag, "user service disconnected")
         remote = null
+        bindRequested = false
       }
     }
     args = a
     conn = connection
     Log.i(tag, "requesting user service bind (${component.flattenToString()})")
-    return runCatching {
+    val started = runCatching {
       Shizuku.bindUserService(a, connection)
       true
     }.getOrDefault(false)
+    if (!started) bindRequested = false
+    return started
   }
 
   /** Stops and removes the remote user service (triggers HfpUserService.destroy()). */
@@ -87,6 +98,7 @@ class ShizukuBridge(private val context: Context) {
     conn = null
     args = null
     remote = null
+    bindRequested = false
   }
 
   // ------------------------------------------------------------- remote calls
