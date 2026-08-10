@@ -128,7 +128,15 @@ class RawHfpClient(private val scope: CoroutineScope) {
       input = BufferedReader(InputStreamReader(sock.inputStream, Charsets.ISO_8859_1))
       output = sock.outputStream
 
-      if (!handshake()) {
+      // Some AGs accept the socket but never answer AT commands. Close the
+      // socket after 12s so a silent handshake can't hang the reconnect loop.
+      val watchdog = scope.launch(Dispatchers.IO) {
+        delay(12_000)
+        runCatching { sock.close() }
+      }
+      val handshakeOk = handshake()
+      watchdog.cancel()
+      if (!handshakeOk) {
         // The AG rejected our AT negotiation on this gateway - try another one.
         rotateGateway()
         lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית - מנסה שוב..."
@@ -224,7 +232,11 @@ class RawHfpClient(private val scope: CoroutineScope) {
     if (!sendAndWait("AT+BRSF=$hfFeatures") && !sendAndWait("AT+BRSF=0")) return false
     sendCommand("AT+CIND=?")
     if (!readUntil { it.startsWith("OK") || it.startsWith("ERROR") }) return false
-    if (!sendAndWait("AT+CIND")) return false
+    if (!sendAndWait("AT+CIND")) {
+      // Some AGs only support AT+CIND=? (not the value query) - continue
+      // without current indicator values; +CIEV events still arrive.
+      Log.w(tag, "AT+CIND rejected - continuing without indicator values")
+    }
     if (!sendAndWait("AT+CMER=3,0,0,1")) return false
     sendCommand("AT+CLIP=1")
     readUntil { it.startsWith("OK") || it.startsWith("ERROR") }

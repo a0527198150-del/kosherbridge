@@ -203,6 +203,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   /** Binds the HFP client profile proxy. */
   fun register() {
+    // Always watch for new pairings - the system profiles must be disabled at
+    // bond time regardless of the connection channel, or the phone drops the
+    // app's link the moment the system's own hands-free link shows up.
+    startBondWatch()
     when (channelMode) {
       // Raw RFCOMM has no profile to register - the link is opened in connect().
       "RAW" -> {
@@ -217,7 +221,6 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
       else -> Unit
     }
-    startBondWatch()
     HiddenHfp.init()
     if (!HiddenHfp.isAvailable) {
       profileReady.value = false
