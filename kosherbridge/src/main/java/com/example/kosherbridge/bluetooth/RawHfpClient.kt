@@ -150,20 +150,25 @@ class RawHfpClient(private val scope: CoroutineScope) {
       startPolling()
       readLoop() // blocks until the link dies (teardown() happens inside)
       val lastedMs = System.currentTimeMillis() - connectedAt
-      dropCount++
-      lastDropMs = lastedMs
-      if (lastedMs < 4000) quickDropCount++ else quickDropCount = 0
-      Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway) [drop #$dropCount]")
-      dropInfo.value = buildDropInfo()
-      // A link that dies within a few seconds usually means this gateway is
-      // being rejected - move it to the back and try a different one.
-      if (lastedMs < 4000) rotateGateway()
-      // Repeated fast drops: a stale bond or a competing system link is the
-      // usual culprit - tell the user to re-pair (the app now disables the
-      // system profiles the moment the bond completes).
-      if (quickDropCount >= 2 && reconnectAttempts <= 3) {
-        lastError.value =
-          "הקישור נופל שוב ושוב. מחק את זיווג הטלפון וזווג אותו מחדש - האפליקציה תכבה עכשיו את החיבורים המערכתיים שמתחרים על הקישור."
+      if (reconnectEnabled) {
+        // The user did not disconnect - the phone dropped the link on its own.
+        dropCount++
+        lastDropMs = lastedMs
+        if (lastedMs < 4000) quickDropCount++ else quickDropCount = 0
+        Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway) [drop #$dropCount]")
+        dropInfo.value = buildDropInfo()
+        // A link that dies within a few seconds usually means this gateway is
+        // being rejected - move it to the back and try a different one.
+        if (lastedMs < 4000) rotateGateway()
+        // Repeated fast drops: a stale bond or a competing system link is the
+        // usual culprit - tell the user to re-pair (the app now disables the
+        // system profiles the moment the bond completes).
+        if (quickDropCount >= 2 && reconnectAttempts <= 3) {
+          lastError.value =
+            "הקישור נופל שוב ושוב. מחק את זיווג הטלפון וזווג אותו מחדש - האפליקציה תכבה עכשיו את החיבורים המערכתיים שמתחרים על הקישור."
+        }
+      } else {
+        Log.i(tag, "link closed by user")
       }
       // The phone dropped the link - reconnect unless the user disconnected
       // on purpose. This is the fix for "connects for a few seconds then
@@ -203,10 +208,15 @@ class RawHfpClient(private val scope: CoroutineScope) {
       target.createRfcommSocketToServiceRecord(uuid).also { it.connect() }
     }.getOrNull()
     if (secure != null) return secure
+    Log.w(tag, "secure connect failed for $uuid")
     val insecure = runCatching {
       target.createInsecureRfcommSocketToServiceRecord(uuid).also { it.connect() }
     }.getOrNull()
-    if (insecure != null) Log.i(tag, "insecure socket accepted for $uuid")
+    if (insecure != null) {
+      Log.i(tag, "insecure socket accepted for $uuid")
+    } else {
+      Log.w(tag, "insecure connect failed for $uuid")
+    }
     return insecure
   }
 
