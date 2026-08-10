@@ -1,6 +1,7 @@
 package com.example.kosherbridge.bluetooth
 
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -47,6 +48,10 @@ class RawHfpClient(
   private val onLog: (String, Boolean) -> Unit = { _, _ -> },
 ) {
 
+  /** Optional preparation run before every socket attempt (for example,
+   * disabling the platform's competing Bluetooth profile). */
+  var beforeSocketOpen: (suspend (BluetoothDevice) -> Unit)? = null
+
   private val tag = "RawHfp"
 
   // HFP Audio Gateway UUID (HandsfreeAudioGateway = 0x111F). The kosher phone
@@ -58,10 +63,10 @@ class RawHfpClient(
   // this (nominally HF-side) record for compatibility, so it is worth probing.
   private val hfUuid: UUID = UUID.fromString("0000111e-0000-1000-8000-00805f9b34fb")
 
-  // HSP (legacy "headset") Audio Gateway UUID (HeadsetAudioGateway = 0x1108).
-  // Some phones only recognize the player as a headset ("אוזנייה") through
-  // this older profile - it still carries call audio (SCO).
-  private val hspAgUuid: UUID = UUID.fromString("00001108-0000-1000-8000-00805f9b34fb")
+  // HSP (legacy "headset") Audio Gateway UUID (HeadsetAudioGateway = 0x1112).
+  // 0x1108 is the Headset-side UUID; using it here asks the phone for the
+  // wrong role and can open a non-AG service before the phone closes it.
+  private val hspAgUuid: UUID = UUID.fromString("00001112-0000-1000-8000-00805f9b34fb")
 
   // Gateways tried in order. The order adapts at runtime: when a link dies a
   // few seconds after connecting, that gateway is moved to the back so the
@@ -73,6 +78,7 @@ class RawHfpClient(
   )
 
   @Volatile private var lastGateway: String? = null
+  @Volatile private var hspMode = false
   @Volatile private var connectedAt = 0L
 
   // Drop statistics for the diagnostics report: how often and how fast the
@@ -144,6 +150,12 @@ class RawHfpClient(
     val target = targetDevice ?: return
     while (reconnectEnabled) {
       lastError.value = null
+      try {
+        beforeSocketOpen?.invoke(target)
+      } catch (t: Throwable) {
+        if (t is java.util.concurrent.CancellationException) throw t
+        onLog("הכנת חיבור RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
+      }
       val sock = openSocket(target)
       if (sock == null) {
         val detail = connectionDiagnostics.value ?: "לא נמצא שער RFCOMM"
@@ -152,9 +164,18 @@ class RawHfpClient(
         if (!waitBeforeRetry()) return
         continue
       }
+      val streams = try {
+        BufferedReader(InputStreamReader(sock.inputStream, Charsets.ISO_8859_1)) to sock.outputStream
+      } catch (t: Throwable) {
+        if (t is java.util.concurrent.CancellationException) throw t
+        runCatching { sock.close() }
+        onLog("פתיחת זרמי RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
+        if (!waitBeforeRetry()) return
+        continue
+      }
       socket = sock
-      input = BufferedReader(InputStreamReader(sock.inputStream, Charsets.ISO_8859_1))
-      output = sock.outputStream
+      input = streams.first
+      output = streams.second
 
       // Some embedded AG stacks (feature phones) need a moment after the
       // RFCOMM channel opens before they're ready for AT commands.
@@ -228,6 +249,10 @@ class RawHfpClient(
    * used by feature phones. Every attempt is recorded for diagnostics.
    */
   private suspend fun openSocket(target: BluetoothDevice): BluetoothSocket? {
+    // Android explicitly recommends cancelling discovery before RFCOMM connect:
+    // discovery consumes the radio and can make an otherwise valid socket fail
+    // or drop immediately. This matters most after pairing from the app's scan.
+    cancelDiscovery()
     discoveredUuids = discoverUuids(target)
     val known = gatewayOrder.toList()
     val advertised = discoveredUuids
@@ -267,6 +292,17 @@ class RawHfpClient(
     connectionDiagnostics.value = "SDP=[${discoveredUuids.joinToString()}], ניסיון=${attempts.joinToString("; ")}"
     onLog("כל ניסיונות החיבור נכשלו: ${attempts.joinToString("; ")}", true)
     return null
+  }
+
+  private fun cancelDiscovery() {
+    runCatching {
+      val adapter =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+      if (adapter?.isDiscovering == true) {
+        adapter.cancelDiscovery()
+        onLog("סריקת בלוטוס בוטלה לפני פתיחת החיבור", false)
+      }
+    }
   }
 
   private fun discoverUuids(target: BluetoothDevice): Set<UUID> {
@@ -356,10 +392,19 @@ class RawHfpClient(
     // withTimeoutOrNull + runInterruptible: if connect() blocks longer than
     // 8s, cancellation interrupts the same worker instead of racing a second
     // watchdog thread that could close a newly connected socket.
-    val connected = withTimeoutOrNull(8_000) {
-      runInterruptible(Dispatchers.IO) { sock.connect() }
+    val connected = try {
+      withTimeoutOrNull(8_000) {
+        runInterruptible(Dispatchers.IO) { sock.connect() }
+      }
+    } catch (t: Throwable) {
+      // A refused RFCOMM channel is a normal connection outcome, not a fatal
+      // coroutine error. Previously IOException escaped here and killed the
+      // entire reconnect loop after the first failed gateway.
+      if (t is java.util.concurrent.CancellationException) throw t
+      onLog("פתיחת ערוץ RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
+      null
     }
-    return if (connected != null && sock.isConnected) sock else {
+    return if (connected != null && runCatching { sock.isConnected }.getOrDefault(false)) sock else {
       runCatching { sock.close() }
       null
     }
@@ -380,11 +425,14 @@ class RawHfpClient(
   /** HFP negotiation: BRSF, CIND, CMER, CLIP, CCWA - the handshake every AG accepts. */
   private suspend fun handshake(): Boolean {
     // The legacy headset gateway speaks HSP - there is no BRSF/CIND/CMER
-    // negotiation. Accept the link as-is and let the read loop watch it
-    // (HSP carries call audio but has no call indicators; AT+CLCC polling
-    // will simply get ERROR on a pure-HSP phone). Without this, an HSP-only
-    // phone drops us the moment we send AT+BRSF - "connects then disconnects".
-    if (lastGateway == "HSP") return true
+    // negotiation. Accept the link as-is and let the read loop watch it.
+    // HSP does not understand HFP polling commands; sending AT+CLCC after an
+    // HSP connection can make simple feature phones close the RFCOMM channel.
+    if (lastGateway == "HSP") {
+      hspMode = true
+      return true
+    }
+    hspMode = false
     // Claim the common feature set; some AGs reject feature bits they don't
     // understand, so retry with the minimal set before giving up.
     if (!sendAndWait("AT+BRSF=$hfFeatures") && !sendAndWait("AT+BRSF=0")) return false
@@ -428,6 +476,10 @@ class RawHfpClient(
 
   private fun startPolling() {
     pollJob?.cancel()
+    // HSP has no HFP call-status channel. Keep the RFCOMM link alive, but do
+    // not send AT+CLCC/AT polling commands that the HSP AG may reject by
+    // disconnecting the link.
+    if (hspMode) return
     pollJob = scope.launch(Dispatchers.IO) {
       // Let the link settle for a few seconds before polling call state -
       // some basic AG stacks (feature phones) drop the connection when the
@@ -684,7 +736,12 @@ class RawHfpClient(
   private suspend fun readUntil(pred: (String) -> Boolean): Boolean {
     val r = input ?: return false
     while (true) {
-      val line = r.readLine() ?: return false
+      val line = try {
+        r.readLine()
+      } catch (t: Throwable) {
+        if (t is java.util.concurrent.CancellationException) throw t
+        return false
+      } ?: return false
       val l = line.trim()
       if (l.isEmpty()) continue
       handleLine(l)

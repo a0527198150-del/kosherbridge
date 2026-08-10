@@ -228,15 +228,20 @@ object HiddenHfp {
       Log.w(TAG, "setProfilePriority: timeout waiting for profile $profileId")
       return false
     }
-    val p = proxy
-    if (p != null) runCatching { adapter.closeProfileProxy(profileId, p) }
-    if (p == null) return false
-    return runCatching {
+    val p = proxy ?: return false
+    // The proxy must remain open while setPriority is invoked. The previous
+    // order closed it first, so many Android Bluetooth stacks silently ignored
+    // the priority change and immediately reconnected their own profile,
+    // competing with the raw RFCOMM socket.
+    return try {
       val m = p.javaClass.getMethod("setPriority", BluetoothDevice::class.java, Int::class.javaPrimitiveType)
       (m.invoke(p, device, priority) as? Boolean) ?: false
-    }.onFailure { e ->
+    } catch (e: Throwable) {
       Log.w(TAG, "setProfilePriority($profileId, $priority) failed: ${e.message}")
-    }.getOrDefault(false)
+      false
+    } finally {
+      runCatching { adapter.closeProfileProxy(profileId, p) }
+    }
   }
 
   /**

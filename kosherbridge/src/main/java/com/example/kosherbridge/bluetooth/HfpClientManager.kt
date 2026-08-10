@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Owns the HFP client (hands-free) profile. Exposes flows for UI/service and
@@ -97,7 +99,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * accept them, leaving the field to the app's raw RFCOMM link. Applied once
    * per device; runs before the raw link opens so the fight never starts.
    */
-  private val systemProfilesDisabled = mutableSetOf<String>()
+  private val systemProfilesDisabled =
+    java.util.Collections.synchronizedSet(mutableSetOf<String>())
+  private val systemProfilesMutex = Mutex()
   private var bondWatchStarted = false
   private var bondReceiver: BroadcastReceiver? = null
   private var aclWatchStarted = false
@@ -105,19 +109,37 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   @Volatile private var lastAclNudge = 0L
 
   private suspend fun disableSystemProfiles(device: BluetoothDevice) {
-    if (!systemProfilesDisabled.add(device.address)) return
-    // The hands-free profile is the main fighter - wait for it to apply
-    // before the raw link opens, AND explicitly kill any in-flight connection
-    // (the auto-connect starts at bond time and may race past the priority
-    // change). The audio profiles are fire-and-forget.
-    withContext(Dispatchers.IO) {
-      HiddenHfp.setProfilePriority(context, device, BluetoothProfile.HEADSET, 0)
-      HiddenHfp.forceDisconnectProfile(context, device, BluetoothProfile.HEADSET)
-    }
-    scope.launch(Dispatchers.IO) {
-      HiddenHfp.setProfilePriority(context, device, BluetoothProfile.A2DP, 0)
-      HiddenHfp.forceDisconnectProfile(context, device, BluetoothProfile.A2DP)
-      runCatching { HiddenHfp.setProfilePriority(context, device, 11 /* A2DP_SINK */, 0) }
+    // Pairing broadcasts and a manual connect can arrive together. Serialize
+    // this operation so the raw socket never starts while the system profile
+    // is still being disabled, and do not cache a failed priority change as if
+    // it succeeded.
+    systemProfilesMutex.withLock {
+      if (systemProfilesDisabled.contains(device.address)) return@withLock
+
+      val priorityApplied = withContext(Dispatchers.IO) {
+        HiddenHfp.setProfilePriority(context, device, BluetoothProfile.HEADSET, 0)
+      }
+      val disconnected = withContext(Dispatchers.IO) {
+        HiddenHfp.forceDisconnectProfile(context, device, BluetoothProfile.HEADSET)
+      }
+      if (priorityApplied) {
+        systemProfilesDisabled.add(device.address)
+        logConnection("חיבור הדיבורית המערכתי נוטרל לפני RFCOMM", false)
+      } else {
+        logConnection(
+          "לא ניתן לנטרל את פרופיל הדיבורית המערכתי (נותק בפועל: $disconnected) - ייתכן שהוא יתחרה ב-RFCOMM",
+          true,
+        )
+      }
+
+      // A2DP does not own the HFP slot, but disabling it prevents the phone's
+      // audio profile from creating an additional ACL race. It is intentionally
+      // kept outside the critical HFP ordering above.
+      scope.launch(Dispatchers.IO) {
+        HiddenHfp.setProfilePriority(context, device, BluetoothProfile.A2DP, 0)
+        HiddenHfp.forceDisconnectProfile(context, device, BluetoothProfile.A2DP)
+        runCatching { HiddenHfp.setProfilePriority(context, device, 11 /* A2DP_SINK */, 0) }
+      }
     }
   }
 
@@ -260,6 +282,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   /** Raw RFCOMM mode, opted-in from Settings ("חיבור ישיר"). */
   private val rawActive: Boolean get() = raw?.isConnected?.value == true
+
+  /** The raw client owns its own reconnect loop; the service must not launch a
+   * second reconnect loop while that client is still armed. */
+  val rawReconnectArmed: Boolean get() = raw?.reconnectArmed == true
 
   /**
    * True once a real privileged call was rejected with SecurityException -
@@ -512,6 +538,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     val r = raw ?: RawHfpClient(context, scope) { message, error ->
       logConnection(message, error)
     }.also { raw = it }
+    // Re-apply the profile guard before every retry, not only before the first
+    // connection. If a vendor stack refuses setPriority once, its automatic
+    // profile may come back during a later retry and steal the phone's slot.
+    r.beforeSocketOpen = { target -> disableSystemProfiles(target) }
     if (!rawCollectorsLaunched) {
       rawCollectorsLaunched = true
       scope.launch {
@@ -549,13 +579,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         r.connectionDiagnostics.collect { rawConnectionDiagnostics.value = it }
       }
     }
-    // Disable the OS's competing profile links first, then open the raw
-    // RFCOMM link - otherwise the phone (single-slot AG) drops our link the
-    // moment the system's own hands-free connection shows up.
-    scope.launch {
-      disableSystemProfiles(target)
-      r.connect(target)
-    }
+    // RawHfpClient runs the same guard before every socket attempt, including
+    // reconnects after a drop. This avoids a second uncoordinated connection
+    // loop and prevents the system profile from reclaiming the slot between
+    // retries.
+    r.connect(target)
   }
 
   /**
@@ -646,14 +674,16 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   fun disconnect() {
-    if (rawActive) {
-      raw?.disconnect()
-    } else if (useShizuku) {
+    // Disconnect an armed raw client even when it is currently between retry
+    // attempts. Checking only rawActive left its reconnect loop running after a
+    // user disconnect, which could reopen the socket moments later.
+    raw?.disconnect()
+    if (useShizuku) {
       device.value?.address?.let { shizuku?.disconnect(it) }
     } else {
-      val c = client ?: return
-      val d = device.value ?: return
-      HiddenHfp.disconnect(c, d)
+      val c = client
+      val d = device.value
+      if (c != null && d != null) HiddenHfp.disconnect(c, d)
     }
     ignorePollUntil = System.currentTimeMillis() + 3000
     device.value = null

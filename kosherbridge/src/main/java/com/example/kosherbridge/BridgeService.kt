@@ -471,6 +471,10 @@ class BridgeService : Service() {
 
   private suspend fun maybeReconnect(state: Int) {
     if (state != BluetoothProfile.STATE_DISCONNECTED || reconnecting) return
+    // RawHfpClient already owns a bounded reconnect loop. Starting a second
+    // loop here resets its socket/statistics and can create two competing
+    // RFCOMM attempts, which makes the phone drop both links.
+    if (manager.rawReconnectArmed) return
     if (System.currentTimeMillis() - lastManualDisconnectAt < 60_000) return
     val settings = ServiceLocator.settings
     val dev = settings.lastDevice.first() ?: return
