@@ -308,7 +308,12 @@ class RawHfpClient(private val scope: CoroutineScope) {
       // Let the link settle for a few seconds before polling call state -
       // some basic AG stacks (feature phones) drop the connection when the
       // HF starts sending AT+CLCC right after the SLC completes.
-      delay(3000)
+      delay(1500)
+      if (!isConnected.value) return@launch
+      sendCommand("AT")  // lightweight keep-alive for short AG timeouts
+      delay(1500)
+      if (!isConnected.value) return@launch
+      sendCommand("AT")
       while (isActive && isConnected.value) {
         // Some AGs never terminate a +CLCC batch with OK; clear the batch
         // before each poll so stale entries can't accumulate and break
