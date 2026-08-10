@@ -37,15 +37,29 @@ class RawHfpClient(private val scope: CoroutineScope) {
 
   // HFP Audio Gateway UUID (HandsfreeAudioGateway = 0x111F). The kosher phone
   // plays the Audio Gateway (AG) role and publishes THIS service record, so
-  // createRfcommSocketToServiceRecord() finds it in the phone's SDP. (0x111E is
-  // the Handsfree/HF side - the role *this* player plays - which the phone does
-  // not publish; searching with it fails to find any record.)
+  // createRfcommSocketToServiceRecord() finds it in the phone's SDP.
   private val hfpAgUuid: UUID = UUID.fromString("0000111f-0000-1000-8000-00805f9b34fb")
+
+  // Handsfree UUID (0x111E) - some stacks also publish the AG service under
+  // this (nominally HF-side) record for compatibility, so it is worth probing.
+  private val hfUuid: UUID = UUID.fromString("0000111e-0000-1000-8000-00805f9b34fb")
 
   // HSP (legacy "headset") Audio Gateway UUID (HeadsetAudioGateway = 0x1108).
   // Some phones only recognize the player as a headset ("אוזנייה") through
   // this older profile - it still carries call audio (SCO).
   private val hspAgUuid: UUID = UUID.fromString("00001108-0000-1000-8000-00805f9b34fb")
+
+  // Gateways tried in order. The order adapts at runtime: when a link dies a
+  // few seconds after connecting, that gateway is moved to the back so the
+  // next attempt opens a different one (some phones accept only one of them).
+  private val gatewayOrder = mutableListOf<Pair<UUID, String>>(
+    hfpAgUuid to "HFP-AG",
+    hfUuid to "HFP-HF",
+    hspAgUuid to "HSP",
+  )
+
+  @Volatile private var lastGateway: String? = null
+  @Volatile private var connectedAt = 0L
 
   // HF features advertised in AT+BRSF: CLI, enhanced call status, enhanced call control
   private val hfFeatures = 0x0004 or 0x0020 or 0x0040
@@ -94,7 +108,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
       lastError.value = null
       val sock = openSocket(target)
       if (sock == null) {
-        Log.w(tag, "connect failed on both HFP and HSP gateways - retrying")
+        Log.w(tag, "connect failed on all gateways - retrying")
         lastError.value = "החיבור הישיר נכשל - מנסה שוב..."
         if (!waitBeforeRetry()) return
         continue
@@ -104,15 +118,23 @@ class RawHfpClient(private val scope: CoroutineScope) {
       output = sock.outputStream
 
       if (!handshake()) {
+        // The AG rejected our AT negotiation on this gateway - try another one.
+        rotateGateway()
         lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית - מנסה שוב..."
         teardown()
         if (!waitBeforeRetry()) return
         continue
       }
       reconnectAttempts = 0
+      connectedAt = System.currentTimeMillis()
       isConnected.value = true
       startPolling()
       readLoop() // blocks until the link dies (teardown() happens inside)
+      val lastedMs = System.currentTimeMillis() - connectedAt
+      Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway)")
+      // A link that dies within a few seconds usually means this gateway is
+      // being rejected - move it to the back and try a different one.
+      if (lastedMs < 4000) rotateGateway()
       // The phone dropped the link - reconnect unless the user disconnected
       // on purpose. This is the fix for "connects for a few seconds then
       // immediately disconnects" on cheap stacks.
@@ -127,13 +149,13 @@ class RawHfpClient(private val scope: CoroutineScope) {
     return reconnectEnabled
   }
 
-  /** Tries the HFP gateway port first, then the older HSP (headset) port. */
+  /** Tries each gateway in order; the order adapts when one keeps dropping. */
   private fun openSocket(target: BluetoothDevice): BluetoothSocket? {
-    for ((uuid, label) in listOf(hfpAgUuid to "HFP", hspAgUuid to "HSP")) {
-      val sock = runCatching {
-        target.createRfcommSocketToServiceRecord(uuid).also { it.connect() }
-      }.getOrNull()
+    val order = gatewayOrder.toList()
+    for ((uuid, label) in order) {
+      val sock = openGateway(target, uuid)
       if (sock != null) {
+        lastGateway = label
         Log.i(tag, "connected via $label gateway")
         return sock
       }
@@ -141,9 +163,37 @@ class RawHfpClient(private val scope: CoroutineScope) {
     return null
   }
 
+  /**
+   * Opens one gateway. Tries the secure socket first; some AG stacks (feature
+   * phones) fail the encryption re-negotiation and only accept an insecure
+   * link, so fall back to the insecure variant.
+   */
+  private fun openGateway(target: BluetoothDevice, uuid: UUID): BluetoothSocket? {
+    val secure = runCatching {
+      target.createRfcommSocketToServiceRecord(uuid).also { it.connect() }
+    }.getOrNull()
+    if (secure != null) return secure
+    val insecure = runCatching {
+      target.createInsecureRfcommSocketToServiceRecord(uuid).also { it.connect() }
+    }.getOrNull()
+    if (insecure != null) Log.i(tag, "insecure socket accepted for $uuid")
+    return insecure
+  }
+
+  /** Moves the gateway that just failed to the back of the order. */
+  private fun rotateGateway() {
+    val g = lastGateway ?: return
+    val idx = gatewayOrder.indexOfFirst { it.second == g }
+    if (idx >= 0 && gatewayOrder.size > 1) {
+      gatewayOrder.add(gatewayOrder.removeAt(idx))
+    }
+  }
+
   /** HFP negotiation: BRSF, CIND, CMER, CLIP, CCWA - the handshake every AG accepts. */
   private suspend fun handshake(): Boolean {
-    if (!sendAndWait("AT+BRSF=$hfFeatures")) return false
+    // Claim the common feature set; some AGs reject feature bits they don't
+    // understand, so retry with the minimal set before giving up.
+    if (!sendAndWait("AT+BRSF=$hfFeatures") && !sendAndWait("AT+BRSF=0")) return false
     sendCommand("AT+CIND=?")
     if (!readUntil { it.startsWith("OK") || it.startsWith("ERROR") }) return false
     if (!sendAndWait("AT+CIND")) return false

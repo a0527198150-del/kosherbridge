@@ -1,9 +1,13 @@
 package com.example.kosherbridge.bluetooth
 
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.content.Context
 import android.util.Log
 import java.lang.reflect.Method
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -189,4 +193,44 @@ object HiddenHfp {
     try { m?.invoke(recv) as? List<*> ?: emptyList<Any>() }
     catch (e: SecurityException) { markPrivilegedBlocked(); emptyList<Any>() }
     catch (e: Throwable) { emptyList<Any>() }
+
+  // ------------------------------------------------------ system profile priorities
+
+  /**
+   * Sets the hidden BluetoothProfile.setPriority for one profile/device via
+   * reflection. Used to stop the OS from auto-connecting its own hands-free /
+   * audio links to the kosher phone: the phone (AG) accepts a single HFP link,
+   * and when the system's profile connects at the same time as our raw RFCOMM
+   * link, the AG drops one of them ("connects then immediately disconnects").
+   * PRIORITY_OFF (0) makes the stack neither initiate nor accept the profile
+   * for that device, while a direct RFCOMM socket is unaffected.
+   *
+   * Best-effort: newer Android versions guard setPriority behind
+   * BLUETOOTH_PRIVILEGED; failures are silent and harmless.
+   */
+  fun setProfilePriority(context: Context, device: BluetoothDevice, profileId: Int, priority: Int): Boolean {
+    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+      ?: return false
+    val latch = CountDownLatch(1)
+    var proxy: BluetoothProfile? = null
+    val listener = object : BluetoothProfile.ServiceListener {
+      override fun onServiceConnected(profile: Int, p: BluetoothProfile) {
+        if (profile == profileId) {
+          proxy = p
+          latch.countDown()
+        }
+      }
+      override fun onServiceDisconnected(profile: Int) = Unit
+    }
+    val started = runCatching { adapter.getProfileProxy(context, listener, profileId) }.getOrDefault(false)
+    if (!started) return false
+    if (!latch.await(2, TimeUnit.SECONDS)) return false
+    val p = proxy
+    if (p != null) runCatching { adapter.closeProfileProxy(profileId, p) }
+    if (p == null) return false
+    return runCatching {
+      val m = p.javaClass.getMethod("setPriority", BluetoothDevice::class.java, Int::class.javaPrimitiveType)
+      (m.invoke(p, device, priority) as? Boolean) ?: false
+    }.getOrDefault(false)
+  }
 }

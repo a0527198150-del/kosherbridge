@@ -12,11 +12,13 @@ import android.os.Build
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Owns the HFP client (hands-free) profile. Exposes flows for UI/service and
@@ -49,6 +51,68 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var shizuku: ShizukuBridge? = null
   private var raw: RawHfpClient? = null
   private var shizukuFallbackLaunched = false
+
+  // ------------------------------------------------------------------ system profiles
+
+  /**
+   * The kosher phone (AG) accepts a single hands-free link. Android, however,
+   * auto-connects its own profiles (BluetoothHeadset + A2DP) to every bonded
+   * device - so right after pairing the system's own HFP link competes with
+   * the app's link, and the phone drops one of them ("connects for a few
+   * seconds then immediately disconnects"). Setting the profiles to
+   * PRIORITY_OFF for the kosher phone makes the stack neither initiate nor
+   * accept them, leaving the field to the app's raw RFCOMM link. Applied once
+   * per device; runs before the raw link opens so the fight never starts.
+   */
+  private val systemProfilesDisabled = mutableSetOf<String>()
+  private var bondWatchStarted = false
+  private var bondReceiver: BroadcastReceiver? = null
+
+  private suspend fun disableSystemProfiles(device: BluetoothDevice) {
+    if (!systemProfilesDisabled.add(device.address)) return
+    // The hands-free profile is the main fighter - wait for it to apply
+    // before the raw link opens. The audio profiles are fire-and-forget.
+    withContext(Dispatchers.IO) {
+      HiddenHfp.setProfilePriority(context, device, BluetoothProfile.HEADSET, 0)
+    }
+    scope.launch(Dispatchers.IO) {
+      HiddenHfp.setProfilePriority(context, device, BluetoothProfile.A2DP, 0)
+      runCatching { HiddenHfp.setProfilePriority(context, device, 11 /* A2DP_SINK */, 0) }
+    }
+  }
+
+  /**
+   * Watches for new pairings and disables the fighting profiles the moment a
+   * device becomes bonded - before the system's auto-connect can start the
+   * connection dance that drops the app's link.
+   */
+  private fun startBondWatch() {
+    if (bondWatchStarted) return
+    bondWatchStarted = true
+    val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(ctx: Context, intent: Intent) {
+        if (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+          != BluetoothDevice.BOND_BONDED
+        ) return
+        val dev = if (Build.VERSION.SDK_INT >= 33)
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        else
+          @Suppress("DEPRECATION")
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        if (dev != null) scope.launch { disableSystemProfiles(dev) }
+      }
+    }
+    bondReceiver = receiver
+    runCatching {
+      if (Build.VERSION.SDK_INT >= 33) {
+        context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+      } else {
+        @Suppress("DEPRECATION")
+        context.registerReceiver(receiver, filter)
+      }
+    }
+  }
 
   /**
    * Active call-audio techniques (SCO routing, communication mode, focus,
@@ -150,6 +214,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
       else -> Unit
     }
+    startBondWatch()
     HiddenHfp.init()
     if (!HiddenHfp.isAvailable) {
       profileReady.value = false
@@ -350,7 +415,13 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         r.lastError.collect { e -> if (e != null) lastError.value = e }
       }
     }
-    r.connect(target)
+    // Disable the OS's competing profile links first, then open the raw
+    // RFCOMM link - otherwise the phone (single-slot AG) drops our link the
+    // moment the system's own hands-free connection shows up.
+    scope.launch {
+      disableSystemProfiles(target)
+      r.connect(target)
+    }
   }
 
   /**
@@ -362,6 +433,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   fun connect(target: BluetoothDevice) {
     device.value = target
+    // Stop the OS from auto-connecting its own profiles to this phone on any
+    // path (direct, Shizuku or raw) - a competing system link makes the AG
+    // drop the app's link.
+    scope.launch { disableSystemProfiles(target) }
     when (channelMode) {
       // User forced the raw RFCOMM path - open the phone's headset port
       // directly, no profile involvement, no fallbacks.
@@ -546,6 +621,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     raw?.disconnect()
     raw = null
     rawCollectorsLaunched = false
+    bondReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }
+    bondReceiver = null
+    bondWatchStarted = false
     backendLabel.value = null
   }
 
