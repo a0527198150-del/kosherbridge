@@ -273,12 +273,23 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         lastError.value = null
         return
       }
+      // AUTO also uses raw RFCOMM as the primary path; registering the
+      // system HFP profile here would tell the Bluetooth service "there is
+      // an HFP Client running" — and the service would try to auto-connect
+      // to the bonded phone through that profile, competing for the phone's
+      // sole hands-free slot. Skip registration; only DIRECT needs it.
+      "AUTO" -> {
+        lastError.value = null
+        return
+      }
       // Shizuku binding is started lazily from connect() so it is never
       // launched twice during startup.
       "SHIZUKU" -> {
         lastError.value = null
         return
       }
+      // Only the DIRECT (in-process hidden-API) path needs the system
+      // profile proxy registered here.
       else -> Unit
     }
     HiddenHfp.init()

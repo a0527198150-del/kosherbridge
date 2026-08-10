@@ -111,15 +111,11 @@ class BridgeService : Service() {
         manager.setChannelMode(mode)
         manager.register()
         maybeAutoConnect()
-        // Fall back to the privileged Shizuku user service ONLY when the
-        // system actually blocked the direct path (SecurityException - the
-        // proof this device needs Shizuku), and only in AUTO mode: a manual
-        // override or a remembered channel must be respected. Slow players
-        // can take several seconds to bring the direct profile up, so wait
-        // for it to settle first instead of jumping to Shizuku after a fixed
-        // delay. connect()/dial() also trigger this immediately; this
-        // delayed check is the boot-time backstop.
-        if (mode == "AUTO") {
+        // Fall back to Shizuku only in DIRECT mode where the system profile
+        // is actually in play (RAW/AUTO bypass it entirely, SHIZUKU uses its
+        // own privileged binding). Only auto-trigger when the system blocked
+        // the direct path with a SecurityException.
+        if (mode == "DIRECT") {
           for (i in 0 until 30) {
             if (manager.profileReady.value || manager.privilegedBlocked) break
             delay(250)
