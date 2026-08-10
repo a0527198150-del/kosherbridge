@@ -603,10 +603,10 @@ class RawHfpClient(
       // HF starts sending AT+CLCC right after the SLC completes.
       delay(1500)
       if (!isConnected.value) return@launch
-      sendCommand("AT")
+      sendCommand("AT", socket)
       delay(1500)
       if (!isConnected.value) return@launch
-      sendCommand("AT")
+      sendCommand("AT", socket)
       // HFP AG feature bit 6 advertises Enhanced Call Status, which is the
       // capability behind AT+CLCC. Do not repeatedly send that optional
       // command to a basic feature phone that explicitly lacks it; some such
@@ -615,11 +615,17 @@ class RawHfpClient(
       if (!supportsCurrentCalls) return@launch
       var writeFailures = 0
       while (isActive && isConnected.value) {
+        val ownedSocket = socket // capture before possible generation switch
         synchronized(clccLock) { clccCalls.clear() }
-        if (sendCommand("AT+CLCC")) {
+        if (sendCommand("AT+CLCC", ownedSocket)) {
           writeFailures = 0
         } else {
           writeFailures++
+          // A cancelled old generation must never tear down the replacement.
+          if (ownedSocket != null && socket !== ownedSocket) {
+            // Socket was replaced by a newer generation - stop polling.
+            return@launch
+          }
           // The output stream is dead (half-open socket): the phone will
           // drop the link soon anyway. Tear it down now so the reconnect
           // loop picks it up immediately instead of waiting for readLoop
@@ -627,7 +633,7 @@ class RawHfpClient(
           if (writeFailures >= 3) {
             onLog("זרם הכתיבה מת אחרי $writeFailures כשלונות — מתחבר מחדש", true)
             Log.w(tag, "output stream dead after $writeFailures write failures - forcing reconnect")
-            teardown()
+            teardown(ownedSocket)
             return@launch
           }
         }
@@ -642,22 +648,33 @@ class RawHfpClient(
 
   fun dial(number: String): Boolean {
     if (number.isBlank()) return false
-    val sent = sendCommand("ATD$number;")
+    val ownedSocket = socket
+    val sent = sendCommand("ATD$number;", ownedSocket)
     if (sent) lastDirection = CallDirection.OUTGOING
     return sent
   }
 
   fun redial(): Boolean {
-    val sent = sendCommand("AT+BLDN")
+    val ownedSocket = socket
+    val sent = sendCommand("AT+BLDN", ownedSocket)
     if (sent) lastDirection = CallDirection.OUTGOING
     return sent
   }
 
-  fun answer(): Boolean = sendCommand("ATA")
+  fun answer(): Boolean {
+    val ownedSocket = socket ?: return false
+    return sendCommand("ATA", ownedSocket)
+  }
 
-  fun reject(): Boolean = sendCommand("AT+CHUP")
+  fun reject(): Boolean {
+    val ownedSocket = socket ?: return false
+    return sendCommand("AT+CHUP", ownedSocket)
+  }
 
-  fun hangup(): Boolean = sendCommand("AT+CHUP")
+  fun hangup(): Boolean {
+    val ownedSocket = socket ?: return false
+    return sendCommand("AT+CHUP", ownedSocket)
+  }
 
   @Synchronized
   fun disconnect() {
@@ -875,7 +892,10 @@ class RawHfpClient(
     }
     if (!sent) {
       // A cancelled old generation must never tear down the replacement socket.
-      val ownsSocket = expectedSocket == null || synchronized(writeLock) { socket === expectedSocket }
+      // Only tear down when the caller identified the specific socket it owns -
+      // a null expectedSocket means the caller doesn't own any particular
+      // socket and must not trigger a teardown on a socket it doesn't own.
+      val ownsSocket = expectedSocket != null && synchronized(writeLock) { socket === expectedSocket }
       if (ownsSocket) {
         onLog("שליחת פקודת בלוטוס נכשלה — הקישור נסגר לצורך חיבור מחדש", true)
         teardown(expectedSocket)
