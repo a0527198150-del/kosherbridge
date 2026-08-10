@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import com.example.kosherbridge.data.ServiceLocator
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
 import kotlinx.coroutines.CoroutineScope
