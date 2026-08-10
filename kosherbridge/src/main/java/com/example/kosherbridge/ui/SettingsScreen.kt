@@ -59,6 +59,7 @@ import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ChannelState
 import com.example.kosherbridge.ui.theme.ThemeMode
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -313,6 +314,9 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       state.rawDropInfo?.let {
         DiagRow("ניתוקי קישור", it, it.startsWith("אין") || it.startsWith("ניתוק אחד"))
       }
+      state.rawConnectionDiagnostics?.let {
+        DiagRow("ניסיונות SDP/RFCOMM", it, false)
+      }
       SettingRow("בדיקת מיקרופון", micResult ?: "מוודא שהמיקרופון קולט קול לשיחה") {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
           PackageManager.PERMISSION_GRANTED
@@ -366,23 +370,44 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
     if (!scanning) return@DisposableEffect onDispose { }
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(c: Context?, i: Intent?) {
-        if (i?.action == BluetoothDevice.ACTION_FOUND) {
-          val d = if (Build.VERSION.SDK_INT >= 33) {
-            i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-          } else {
-            @Suppress("DEPRECATION")
-            i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-          }
-          if (d != null) {
+        val intent = i ?: return
+        val d = if (Build.VERSION.SDK_INT >= 33) {
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+          @Suppress("DEPRECATION")
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        }
+        if (d == null) return
+        when (intent.action) {
+          BluetoothDevice.ACTION_FOUND -> {
             val entry = (d.name ?: d.address) to d.address
             if (discovered.none { it.second == entry.second }) {
               discovered = discovered + entry
             }
           }
+          BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+            val state = intent.getIntExtra(
+              BluetoothDevice.EXTRA_BOND_STATE,
+              BluetoothDevice.BOND_NONE,
+            )
+            if (state == BluetoothDevice.BOND_BONDED) {
+              // Pairing is not the end of the flow: immediately ask the
+              // bridge to connect to the newly bonded phone. Previously the
+              // UI only showed "pairing started", leaving the device bonded
+              // but unused until the user manually opened "בחר מכשיר".
+              scope.launch {
+                delay(700)
+                BridgeHub.service?.connectTo(d.address)
+                onSnackbar("הזיווג הושלם — מנסה להתחבר לטלפון")
+              }
+            }
+          }
         }
       }
     }
-    val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
+    val filter = IntentFilter(BluetoothDevice.ACTION_FOUND).apply {
+      addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+    }
     runCatching {
       if (Build.VERSION.SDK_INT >= 33) {
         context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -667,5 +692,6 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
   state.scoSupport?.let { appendLine("שמע (SCO): $it") }
   state.scoTechnique?.let { appendLine("טכניקת שמע אחרונה: $it") }
   state.rawDropInfo?.let { appendLine("ניתוקי קישור: $it") }
+  state.rawConnectionDiagnostics?.let { appendLine("ניסיונות SDP/RFCOMM: $it") }
   state.lastError?.let { appendLine("שגיאה אחרונה: $it") }
 }

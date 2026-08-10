@@ -35,5 +35,6 @@ data class BridgeUiState(
   val scoSupport: String? = null, // does this player expose SCO at all?
   val scoTechnique: String? = null, // last SCO technique the stack was asked for
   val rawDropInfo: String? = null, // raw RFCOMM link drop stats (count + last duration)
+  val rawConnectionDiagnostics: String? = null, // SDP/channel attempts before connection
   val permissionHint: String? = null, // shown when a required runtime permission is missing
 )

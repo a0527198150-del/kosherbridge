@@ -56,6 +56,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   /** Raw-link drop stats (count + last duration) for the diagnostics report. */
   val rawDropInfo = MutableStateFlow<String?>(null)
+  /** SDP and direct-channel attempts, including the exact failure reason. */
+  val rawConnectionDiagnostics = MutableStateFlow<String?>(null)
 
   // ------------------------------------------------------------------ system profiles
 
@@ -473,7 +475,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun connectRaw(target: BluetoothDevice) {
     device.value = target
     backendLabel.value = "RFCOMM ישיר"
-    val r = raw ?: RawHfpClient(scope).also { raw = it }
+    val r = raw ?: RawHfpClient(context, scope).also { raw = it }
     if (!rawCollectorsLaunched) {
       rawCollectorsLaunched = true
       scope.launch {
@@ -506,6 +508,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
       scope.launch {
         r.dropInfo.collect { rawDropInfo.value = it }
+      }
+      scope.launch {
+        r.connectionDiagnostics.collect { rawConnectionDiagnostics.value = it }
       }
     }
     // Disable the OS's competing profile links first, then open the raw
@@ -709,6 +714,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     raw = null
     rawCollectorsLaunched = false
     rawDropInfo.value = null
+    rawConnectionDiagnostics.value = null
     bondReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }
     bondReceiver = null
     bondWatchStarted = false

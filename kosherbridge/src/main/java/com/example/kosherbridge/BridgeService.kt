@@ -365,6 +365,11 @@ class BridgeService : Service() {
       manager.rawDropInfo.collect { d -> BridgeHub.update { it.copy(rawDropInfo = d) } }
     }
     scope.launch {
+      manager.rawConnectionDiagnostics.collect { d ->
+        BridgeHub.update { it.copy(rawConnectionDiagnostics = d) }
+      }
+    }
+    scope.launch {
       manager.lastError.collect { e -> BridgeHub.update { it.copy(lastError = e) } }
     }
     scope.launch {

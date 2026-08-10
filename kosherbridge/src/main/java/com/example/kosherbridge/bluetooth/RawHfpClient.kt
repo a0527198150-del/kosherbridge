@@ -2,11 +2,19 @@ package com.example.kosherbridge.bluetooth
 
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import android.os.ParcelUuid
 import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,7 +41,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  * link, so on stock Android the call voice usually stays on the phone itself.
  * Some cooperative stacks may route it - hence this is a best effort.
  */
-class RawHfpClient(private val scope: CoroutineScope) {
+class RawHfpClient(
+  private val context: Context,
+  private val scope: CoroutineScope,
+) {
 
   private val tag = "RawHfp"
 
@@ -91,6 +102,10 @@ class RawHfpClient(private val scope: CoroutineScope) {
   val isConnected = MutableStateFlow(false)
   val call = MutableStateFlow<CallInfo?>(null)
   val lastError = MutableStateFlow<String?>(null)
+  /** Exact SDP/RFCOMM attempts, shown in diagnostics when no link is made. */
+  val connectionDiagnostics = MutableStateFlow<String?>(null)
+  private var discoveredUuids: Set<UUID> = emptySet()
+  private var channelCursor = 1
 
   // ------------------------------------------------------------- indicator state
 
@@ -111,6 +126,7 @@ class RawHfpClient(private val scope: CoroutineScope) {
     quickDropCount = 0
     lastDropMs = 0L
     dropInfo.value = null
+    connectionDiagnostics.value = null
     if (isConnected.value) return
     // Tear down the previous connection attempt before starting a new one.
     // readJob?.cancel() only cancels the coroutine, leaving the socket open;
@@ -128,8 +144,9 @@ class RawHfpClient(private val scope: CoroutineScope) {
       lastError.value = null
       val sock = openSocket(target)
       if (sock == null) {
-        Log.w(tag, "connect failed on all gateways - retrying")
-        lastError.value = "החיבור הישיר נכשל - מנסה שוב..."
+        val detail = connectionDiagnostics.value ?: "לא נמצא שער RFCOMM"
+        Log.w(tag, "connect failed on all gateways: $detail")
+        lastError.value = "החיבור הישיר נכשל: $detail - מנסה שוב..."
         if (!waitBeforeRetry()) return
         continue
       }
@@ -201,18 +218,88 @@ class RawHfpClient(private val scope: CoroutineScope) {
     return reconnectEnabled
   }
 
-  /** Tries each gateway in order; the order adapts when one keeps dropping. */
+  /**
+   * Tries SDP-advertised HFP/HSP records first. If the phone's SDP database
+   * is broken or incomplete, falls back to the classic RFCOMM channel range
+   * used by feature phones. Every attempt is recorded for diagnostics.
+   */
   private suspend fun openSocket(target: BluetoothDevice): BluetoothSocket? {
-    val order = gatewayOrder.toList()
+    discoveredUuids = discoverUuids(target)
+    val known = gatewayOrder.toList()
+    val advertised = discoveredUuids
+      .mapNotNull { uuid -> known.firstOrNull { it.first == uuid } }
+      .distinct()
+    val order = (advertised + known).distinctBy { it.first }
+    val attempts = mutableListOf<String>()
+
     for ((uuid, label) in order) {
       val sock = openGateway(target, uuid)
+      attempts += "$label=$uuid:${if (sock != null) "OK" else "נכשל"}"
       if (sock != null) {
         lastGateway = label
+        connectionDiagnostics.value = "SDP=[${discoveredUuids.joinToString()}], ניסיון=${attempts.joinToString("; ")}"
         Log.i(tag, "connected via $label gateway")
         return sock
       }
     }
+
+    // Some feature phones expose the HFP service but fail to answer SDP. On
+    // Android the hidden createRfcommSocket(channel) is the only way to try
+    // the channel directly. It is best-effort and harmless when blocked.
+    val channels = (channelCursor..8).toList() + (1 until channelCursor).toList()
+    for (channel in channels.distinct()) {
+      val sock = openChannelSocket(target, channel)
+      attempts += "RFCOMM:$channel:${if (sock != null) "OK" else "נכשל"}"
+      channelCursor = if (channel >= 8) 1 else channel + 1
+      if (sock != null) {
+        lastGateway = "RFCOMM:$channel"
+        connectionDiagnostics.value = "SDP=[${discoveredUuids.joinToString()}], ניסיון=${attempts.joinToString("; ")}"
+        Log.i(tag, "connected via direct RFCOMM channel $channel")
+        return sock
+      }
+    }
+    connectionDiagnostics.value = "SDP=[${discoveredUuids.joinToString()}], ניסיון=${attempts.joinToString("; ")}"
     return null
+  }
+
+  private fun discoverUuids(target: BluetoothDevice): Set<UUID> {
+    val latch = CountDownLatch(1)
+    var found: Array<ParcelUuid>? = null
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(ctx: Context?, intent: Intent?) {
+        if (intent?.action != BluetoothDevice.ACTION_UUID) return
+        val device = if (Build.VERSION.SDK_INT >= 33) {
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+          @Suppress("DEPRECATION")
+          intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        }
+        if (device?.address != target.address) return
+        found = if (Build.VERSION.SDK_INT >= 33) {
+          intent.getParcelableArrayExtra(BluetoothDevice.EXTRA_UUID, ParcelUuid::class.java)
+        } else {
+          @Suppress("DEPRECATION")
+          intent.getParcelableArrayExtra(BluetoothDevice.EXTRA_UUID)?.mapNotNull { it as? ParcelUuid }?.toTypedArray()
+        }
+        latch.countDown()
+      }
+    }
+    return try {
+      val filter = IntentFilter(BluetoothDevice.ACTION_UUID)
+      if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+      else {
+        @Suppress("DEPRECATION")
+        context.registerReceiver(receiver, filter)
+      }
+      val requested = runCatching { target.fetchUuidsWithSdp() }.getOrDefault(false)
+      if (requested) latch.await(2500, TimeUnit.MILLISECONDS)
+      found.orEmpty().map { it.uuid }.toSet()
+    } catch (t: Throwable) {
+      Log.w(tag, "SDP discovery failed: ${t.message}")
+      emptySet()
+    } finally {
+      runCatching { context.unregisterReceiver(receiver) }
+    }
   }
 
   /**
@@ -239,18 +326,26 @@ class RawHfpClient(private val scope: CoroutineScope) {
    * unreachable (the stack keeps retrying). Close the socket after 6s to
    * abort a stuck connect, so one dead gateway can't hang the whole loop.
    */
-  private suspend fun connectBounded(target: BluetoothDevice, uuid: UUID, secure: Boolean): BluetoothSocket? {
-    val sock = if (secure) {
-      target.createRfcommSocketToServiceRecord(uuid)
-    } else {
-      target.createInsecureRfcommSocketToServiceRecord(uuid)
+  private suspend fun connectBounded(target: BluetoothDevice, uuid: UUID, secure: Boolean): BluetoothSocket? =
+    connectSocketBounded {
+      if (secure) target.createRfcommSocketToServiceRecord(uuid)
+      else target.createInsecureRfcommSocketToServiceRecord(uuid)
     }
+
+  /** Best-effort direct-channel fallback for phones with broken SDP. */
+  private suspend fun openChannelSocket(target: BluetoothDevice, channel: Int): BluetoothSocket? =
+    connectSocketBounded {
+      runCatching {
+        val method = target.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+        method.invoke(target, channel) as? BluetoothSocket
+      }.getOrNull()
+    }
+
+  private suspend fun connectSocketBounded(create: () -> BluetoothSocket?): BluetoothSocket? {
+    val sock = runCatching { create() }.getOrNull() ?: return null
     // withTimeoutOrNull + runInterruptible: if connect() blocks longer than
-    // 8s (unreachable phone, dead stack), the coroutine is cancelled and the
-    // blocking connect() receives a thread interrupt. This is race-free:
-    // unlike a manual watchdog that closes the socket from a second thread,
-    // the interrupt arrives on the same thread and connect() either succeeds
-    // or throws — never both at once.
+    // 8s, cancellation interrupts the same worker instead of racing a second
+    // watchdog thread that could close a newly connected socket.
     val connected = withTimeoutOrNull(8_000) {
       runInterruptible(Dispatchers.IO) { sock.connect() }
     }
@@ -266,6 +361,9 @@ class RawHfpClient(private val scope: CoroutineScope) {
     val idx = gatewayOrder.indexOfFirst { it.second == g }
     if (idx >= 0 && gatewayOrder.size > 1) {
       gatewayOrder.add(gatewayOrder.removeAt(idx))
+    }
+    if (g.startsWith("RFCOMM:")) {
+      g.substringAfter(':').toIntOrNull()?.let { channelCursor = if (it >= 8) 1 else it + 1 }
     }
   }
 
@@ -560,14 +658,15 @@ class RawHfpClient(private val scope: CoroutineScope) {
   /** Returns true if the write was delivered to the output stream. */
   private fun sendCommand(cmd: String): Boolean =
     synchronized(writeLock) {
+      val stream = output ?: return@synchronized false
       runCatching {
-        output?.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
-        output?.flush()
+        stream.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
+        stream.flush()
       }.isSuccess
     }
 
   private suspend fun sendAndWait(cmd: String): Boolean {
-    sendCommand(cmd)
+    if (!sendCommand(cmd)) return false
     return readUntil { it.startsWith("OK") || it.startsWith("ERROR") }
   }
 
