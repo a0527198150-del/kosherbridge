@@ -51,7 +51,11 @@ fun DevicePickerDialog(onDismiss: () -> Unit, onPick: (String) -> Unit) {
       Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (devices.isEmpty()) {
           Text(
-            "אין מכשירים מזווגים.\nזווג קודם את הטלפון הכשר מהגדרות הבלוטוס שלו, ואז לחץ על \"רענון\".",
+            "לא נמצאו מכשירים מזווגים.\n\n" +
+            "אם זווגת בעבר:\n" +
+            "• ודא שהרשאת הבלוטוס מאושרת (הגדרות ← אפליקציות ← גשר כשר ← הרשאות)\n" +
+            "• נסה לבטל ולהפעיל בלוטוס בנגן\n" +
+            "• או: השתמש ב'צימוד מכשיר חדש (סריקה)' כדי למצוא אותו מחדש",
             style = MaterialTheme.typography.bodyMedium,
           )
         } else {

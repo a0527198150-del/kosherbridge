@@ -373,7 +373,7 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
             @Suppress("DEPRECATION")
             i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
           }
-          if (d != null && d.bondState != BluetoothDevice.BOND_BONDED) {
+          if (d != null) {
             val entry = (d.name ?: d.address) to d.address
             if (discovered.none { it.second == entry.second }) {
               discovered = discovered + entry

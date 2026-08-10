@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.util.Log
 import com.example.kosherbridge.data.ServiceLocator
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
@@ -257,8 +258,20 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   fun bondedDevices(): List<PairedDeviceInfo> =
     if (useShizuku) shizuku?.bondedDevices() ?: emptyList()
-    else adapter?.bondedDevices?.map { PairedDeviceInfo(it.name ?: it.address, it.address) }
-      ?: emptyList()
+    else {
+      val a = adapter ?: return@bondedDevices emptyList()
+      try {
+        a.bondedDevices?.map { PairedDeviceInfo(it.name ?: it.address, it.address) }
+          ?: emptyList()
+      } catch (e: SecurityException) {
+        // Android 12+ — BLUETOOTH_CONNECT not granted: bondedDevices returns
+        // an empty set silently on many implementations, but some throw.
+        // Expose the cause through the diagnostic state so the user sees
+        // "no permission" instead of just "no devices".
+        Log.w("HfpClientManager", "bondedDevices: BLUETOOTH_CONNECT not granted")
+        emptyList()
+      }
+    }
 
   /** Binds the HFP client profile proxy. */
   fun register() {
