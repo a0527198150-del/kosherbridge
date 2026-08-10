@@ -563,31 +563,22 @@ class RawHfpClient(
 
   fun dial(number: String): Boolean {
     if (number.isBlank()) return false
-    sendCommand("ATD$number;")
-    lastDirection = CallDirection.OUTGOING
-    return true
+    val sent = sendCommand("ATD$number;")
+    if (sent) lastDirection = CallDirection.OUTGOING
+    return sent
   }
 
   fun redial(): Boolean {
-    sendCommand("AT+BLDN")
-    lastDirection = CallDirection.OUTGOING
-    return true
+    val sent = sendCommand("AT+BLDN")
+    if (sent) lastDirection = CallDirection.OUTGOING
+    return sent
   }
 
-  fun answer(): Boolean {
-    sendCommand("ATA")
-    return true
-  }
+  fun answer(): Boolean = sendCommand("ATA")
 
-  fun reject(): Boolean {
-    sendCommand("AT+CHUP")
-    return true
-  }
+  fun reject(): Boolean = sendCommand("AT+CHUP")
 
-  fun hangup(): Boolean {
-    sendCommand("AT+CHUP")
-    return true
-  }
+  fun hangup(): Boolean = sendCommand("AT+CHUP")
 
   fun disconnect() {
     reconnectEnabled = false
@@ -783,15 +774,25 @@ class RawHfpClient(
 
   // ------------------------------------------------------------------- helpers
 
-  /** Returns true if the write was delivered to the output stream. */
-  private fun sendCommand(cmd: String): Boolean =
-    synchronized(writeLock) {
+  /**
+   * Returns true if the write was delivered. A failed write is a definitive
+   * sign that this RFCOMM link is half-open or already dead; close it now so
+   * the reconnect loop does not wait for readLine() to notice later.
+   */
+  private fun sendCommand(cmd: String): Boolean {
+    val sent = synchronized(writeLock) {
       val stream = output ?: return@synchronized false
       runCatching {
         stream.write((cmd + "\r").toByteArray(Charsets.US_ASCII))
         stream.flush()
       }.isSuccess
     }
+    if (!sent) {
+      onLog("שליחת פקודת בלוטוס נכשלה — הקישור נסגר לצורך חיבור מחדש", true)
+      teardown()
+    }
+    return sent
+  }
 
   private suspend fun sendAndWait(cmd: String): Boolean {
     if (!sendCommand(cmd)) return false

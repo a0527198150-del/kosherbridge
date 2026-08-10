@@ -24,6 +24,7 @@ object HiddenHfp {
   const val PROFILE_ID = 16 // BluetoothProfile.HEADSET_CLIENT (hidden constant)
 
   private const val TAG = "HiddenHfp"
+  private const val PROFILE_PROXY_TIMEOUT_SECONDS = 6L
 
   private var clientClass: Class<*>? = null
   var callClass: Class<*>? = null
@@ -224,7 +225,7 @@ object HiddenHfp {
     }
     val started = runCatching { adapter.getProfileProxy(context, listener, profileId) }.getOrDefault(false)
     if (!started) return false
-    if (!latch.await(3, TimeUnit.SECONDS)) {
+    if (!latch.await(PROFILE_PROXY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
       Log.w(TAG, "setProfilePriority: timeout waiting for profile $profileId")
       return false
     }
@@ -261,8 +262,12 @@ object HiddenHfp {
       }
       override fun onServiceDisconnected(profile: Int) = Unit
     }
-    runCatching { adapter.getProfileProxy(context, listener, profileId) }
-    if (!latch.await(3, TimeUnit.SECONDS)) {
+    val started = runCatching { adapter.getProfileProxy(context, listener, profileId) }.getOrDefault(false)
+    if (!started) {
+      Log.w(TAG, "forceDisconnectProfile: could not request profile $profileId")
+      return false
+    }
+    if (!latch.await(PROFILE_PROXY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
       Log.w(TAG, "forceDisconnectProfile: timeout waiting for profile $profileId")
       return false
     }
