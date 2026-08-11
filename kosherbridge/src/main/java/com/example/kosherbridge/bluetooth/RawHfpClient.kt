@@ -716,17 +716,20 @@ class RawHfpClient(
 
   fun answer(): Boolean {
     val ownedSocket = socket ?: return false
-    return sendCommand("ATA", ownedSocket)
+    return if (hspMode) sendCommand("AT+CKPD=200", ownedSocket)
+    else sendCommand("ATA", ownedSocket)
   }
 
   fun reject(): Boolean {
     val ownedSocket = socket ?: return false
-    return sendCommand("AT+CHUP", ownedSocket)
+    return if (hspMode) sendCommand("AT+CKPD=200", ownedSocket)
+    else sendCommand("AT+CHUP", ownedSocket)
   }
 
   fun hangup(): Boolean {
     val ownedSocket = socket ?: return false
-    return sendCommand("AT+CHUP", ownedSocket)
+    return if (hspMode) sendCommand("AT+CKPD=200", ownedSocket)
+    else sendCommand("AT+CHUP", ownedSocket)
   }
 
   @Synchronized
@@ -782,9 +785,28 @@ class RawHfpClient(
       line.startsWith("+CIND:") -> handleCind(line)
       line.startsWith("+BRSF:") -> handleBrsf(line)
       line == "OK" || line == "ERROR" -> finishClccBatch()
+      // In HSP mode the primary incoming-call signal is an unsolicited RING
+      // event. HFP devices send +CIEV (callsetup=1) instead and never reach
+      // this branch, so the guard is safe for both profiles.
+      line == "RING" -> handleRing()
+      // HSP call-end indicators: a basic AG signals the end of a call with
+      // one of these unsolicited strings (no CIEV in HSP). Without this the
+      // app would show the incoming-call UI indefinitely after the call ends.
+      line == "NO CARRIER" || line == "BUSY" || line == "NO ANSWER" -> handleCallEnd()
       // everything else is either an ack or an unsolicited event we don't need
       else -> Unit
     }
+  }
+
+  private fun handleRing() {
+    lastDirection = CallDirection.INCOMING
+    val info = CallInfo(CallState.INCOMING, clipNumber, lastDirection)
+    if (call.value != info) call.value = info
+  }
+
+  private fun handleCallEnd() {
+    clipNumber = null
+    call.value = null
   }
 
   /** Parses the AG's BRSF feature bitmap (advertised in response to AT+BRSF). */
