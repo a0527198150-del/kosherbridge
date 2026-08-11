@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.ParcelUuid
+import android.os.PowerManager
 import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -53,6 +54,16 @@ class RawHfpClient(
   var beforeSocketOpen: (suspend (BluetoothDevice) -> Unit)? = null
 
   private val tag = "RawHfp"
+
+  /**
+   * Keeps the CPU (and on MediaTek players, the Bluetooth controller) awake
+   * while a raw connection is in progress. On the Jelly2 and similar devices
+   * the vendor firmware suspends Bluetooth scanning when the screen turns off
+   * even with a PARTIAL_WAKE_LOCK held, so a device-level wake-up during each
+   * connection attempt prevents the RFCOMM socket from dying mid-handshake.
+   */
+  private var connectionWakeLock: PowerManager.WakeLock? = null
+
   private val gatewayRotationDropWindowMs = 10_000L
   private val stableLinkWindowMs = 15_000L
 
@@ -168,6 +179,21 @@ class RawHfpClient(
 
   private suspend fun runConnection(generation: Long) {
     val target = targetDevice ?: return
+    // On MediaTek firmware (Jelly2, many Chinese Android boxes) the Bluetooth
+    // controller is suspended when the device enters deep sleep - even with a
+    // persistent PARTIAL_WAKE_LOCK in BridgeService. Acquire a fresh wake lock
+    // at the start of every connection attempt so the RFCOMM socket does not
+    // die mid-handshake when the screen timeout fires.
+    acquireConnectionWakeLock()
+    try {
+      runConnectionInternal(generation)
+    } finally {
+      tryReleaseConnectionWakeLock()
+    }
+  }
+
+  private suspend fun runConnectionInternal(generation: Long) {
+    val target = targetDevice ?: return
     while (isCurrentGeneration(generation)) {
       attemptInFlight = true
       lastError.value = null
@@ -258,6 +284,9 @@ class RawHfpClient(
         if (!waitBeforeRetry(generation)) return
         continue
       }
+      // Link established - release the temporary wake lock; the persistent
+      // one in BridgeService takes over for the stable link.
+      tryReleaseConnectionWakeLock()
       connectedAt = System.currentTimeMillis()
       // Publish CONNECTED before allowing ACL recovery callbacks to intervene.
       // Otherwise there is a small window where a valid socket looks both
@@ -945,7 +974,33 @@ class RawHfpClient(
       input = null
       output = null
     }
+    tryReleaseConnectionWakeLock()
     isConnected.value = false
     call.value = null
+  }
+
+  private fun acquireConnectionWakeLock() {
+    try {
+      val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+      if (connectionWakeLock?.isHeld == true) return
+      connectionWakeLock = pm.newWakeLock(
+        PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+        "kosherbridge:raw_connect",
+      )
+      connectionWakeLock?.setReferenceCounted(false)
+      connectionWakeLock?.acquire(30_000L) // 30 seconds max per attempt
+    } catch (t: Throwable) {
+      // best-effort; the persistent wake lock in BridgeService is the fallback
+    }
+  }
+
+  private fun tryReleaseConnectionWakeLock() {
+    try {
+      connectionWakeLock?.let {
+        if (it.isHeld) it.release()
+      }
+    } catch (t: Throwable) {
+      // safe to ignore
+    }
   }
 }
