@@ -320,6 +320,10 @@ class CallAudioManager(private val context: Context) {
     // profile callback can be slow) and try again.
     Thread {
       val hs = acquireHeadsetProxy() ?: return@Thread
+      // The call may have ended while we were waiting for the proxy.
+      // Starting virtual SCO on a device no longer in a call keeps the
+      // voice link open and can prevent audio from working later.
+      if (!inCall) return@Thread
       val ok = invokeVirtualSco(hs, d, start = true)
       if (ok) {
         virtualScoOn = true
