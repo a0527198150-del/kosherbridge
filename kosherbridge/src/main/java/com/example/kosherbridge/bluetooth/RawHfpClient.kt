@@ -622,10 +622,20 @@ class RawHfpClient(
 
   private fun startPolling() {
     pollJob?.cancel()
-    // HSP has no HFP call-status channel. Keep the RFCOMM link alive, but do
-    // not send AT+CLCC/AT polling commands that the HSP AG may reject by
-    // disconnecting the link.
-    if (hspMode) return
+    if (hspMode) {
+      // HSP (Headset Profile) has no HFP call-status channel (no CLCC,
+      // no CIEV). The link would be completely silent after the handshake,
+      // and many basic AGs drop a silent RFCOMM link after 20-60s. Send a
+      // minimal AT keep-alive every 10s to hold the link up.
+      pollJob = scope.launch(Dispatchers.IO) {
+        while (isActive && isConnected.value) {
+          val ownedSocket = socket
+          sendCommand("AT", ownedSocket)
+          delay(10_000)
+        }
+      }
+      return
+    }
     pollJob = scope.launch(Dispatchers.IO) {
       // Let the link settle for a few seconds before polling call state -
       // some basic AG stacks (feature phones) drop the connection when the
@@ -641,34 +651,48 @@ class RawHfpClient(
       // command to a basic feature phone that explicitly lacks it; some such
       // phones answer once and then terminate the RFCOMM channel.
       val supportsCurrentCalls = !agFeaturesKnown || (agBrsfFeatures and 0x40) != 0
-      if (!supportsCurrentCalls) return@launch
-      var writeFailures = 0
-      while (isActive && isConnected.value) {
-        val ownedSocket = socket // capture before possible generation switch
-        synchronized(clccLock) { clccCalls.clear() }
-        if (sendCommand("AT+CLCC", ownedSocket)) {
-          writeFailures = 0
-        } else {
-          writeFailures++
-          // A cancelled old generation must never tear down the replacement.
-          if (ownedSocket != null && socket !== ownedSocket) {
-            // Socket was replaced by a newer generation - stop polling.
-            return@launch
+      if (supportsCurrentCalls) {
+        var writeFailures = 0
+        while (isActive && isConnected.value) {
+          val ownedSocket = socket // capture before possible generation switch
+          synchronized(clccLock) { clccCalls.clear() }
+          if (sendCommand("AT+CLCC", ownedSocket)) {
+            writeFailures = 0
+          } else {
+            writeFailures++
+            // A cancelled old generation must never tear down the replacement.
+            if (ownedSocket != null && socket !== ownedSocket) {
+              // Socket was replaced by a newer generation - stop polling.
+              return@launch
+            }
+            // The output stream is dead (half-open socket): the phone will
+            // drop the link soon anyway. Tear it down now so the reconnect
+            // loop picks it up immediately instead of waiting for readLoop
+            // to detect the closure.
+            if (writeFailures >= 3) {
+              onLog("זרם הכתיבה מת אחרי $writeFailures כשלונות — מתחבר מחדש", true)
+              Log.w(tag, "output stream dead after $writeFailures write failures - forcing reconnect")
+              teardown(ownedSocket)
+              return@launch
+            }
           }
-          // The output stream is dead (half-open socket): the phone will
-          // drop the link soon anyway. Tear it down now so the reconnect
-          // loop picks it up immediately instead of waiting for readLoop
-          // to detect the closure.
-          if (writeFailures >= 3) {
-            onLog("זרם הכתיבה מת אחרי $writeFailures כשלונות — מתחבר מחדש", true)
-            Log.w(tag, "output stream dead after $writeFailures write failures - forcing reconnect")
-            teardown(ownedSocket)
-            return@launch
-          }
+          // Keep the polling gentle for low-end feature phones; unsolicited
+          // +CIEV notifications remain the primary call-state mechanism.
+          delay(1500)
         }
-        // Keep the polling gentle for low-end feature phones; unsolicited
-        // +CIEV notifications remain the primary call-state mechanism.
-        delay(1500)
+      } else {
+        // The AG does not advertise Enhanced Call Status (or we could not
+        // determine its features). CLCC polling is skipped, but a silent
+        // RFCOMM link will be dropped by many feature phones after a 20-60s
+        // inactivity timeout. Send a minimal AT keep-alive every 10s so the
+        // phone sees activity and holds the line up.
+        while (isActive && isConnected.value) {
+          val ownedSocket = socket
+          if (!sendCommand("AT", ownedSocket)) {
+            if (ownedSocket != null && socket !== ownedSocket) return@launch
+          }
+          delay(10_000)
+        }
       }
     }
   }
