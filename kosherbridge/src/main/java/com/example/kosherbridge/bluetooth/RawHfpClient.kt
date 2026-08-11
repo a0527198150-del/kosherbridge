@@ -507,6 +507,11 @@ class RawHfpClient(
     create: () -> BluetoothSocket?,
   ): BluetoothSocket? {
     val sock = runCatching { create() }.getOrNull() ?: return null
+    // On some MediaTek stacks (SDK 28-30) insecure RFCOMM sockets must be
+    // explicitly enabled before connect(). Deprecated in API 33 but harmless
+    // on all versions - the newer stack just ignores the call.
+    @Suppress("DEPRECATION")
+    runCatching { sock.enable() }
     synchronized(writeLock) {
       if (!isCurrentGeneration(generation)) {
         runCatching { sock.close() }
