@@ -133,6 +133,8 @@ class RawHfpClient(
   val connectionDiagnostics = MutableStateFlow<String?>(null)
   private var discoveredUuids: Set<UUID> = emptySet()
   private var channelCursor = 1
+  /** Last connection-level error, for per-attempt diagnostics. */
+  @Volatile private var lastConnectError: String? = null
 
   // ------------------------------------------------------------- indicator state
 
@@ -366,7 +368,9 @@ class RawHfpClient(
     for ((uuid, label) in order) {
       if (!isCurrentGeneration(generation)) return null
       val sock = openGateway(target, uuid, generation)
-      attempts += "$label=$uuid:${if (sock != null) "OK" else "נכשל"}"
+      val errInfo = lastConnectError?.let { " ($it)" } ?: ""
+      lastConnectError = null
+      attempts += "$label=$uuid:${if (sock != null) "OK" else "נכשל$errInfo"}"
       if (sock != null) {
         lastGateway = label
         connectionDiagnostics.value = "SDP=[${discoveredUuids.joinToString()}], ניסיון=${attempts.joinToString("; ")}"
@@ -383,7 +387,9 @@ class RawHfpClient(
     for (channel in channels.distinct()) {
       if (!isCurrentGeneration(generation)) return null
       val sock = openChannelSocket(target, channel, generation)
-      attempts += "RFCOMM:$channel:${if (sock != null) "OK" else "נכשל"}"
+      val errInfo = lastConnectError?.let { " ($it)" } ?: ""
+      lastConnectError = null
+      attempts += "RFCOMM:$channel:${if (sock != null) "OK" else "נכשל$errInfo"}"
       channelCursor = if (channel >= 8) 1 else channel + 1
       if (sock != null) {
         lastGateway = "RFCOMM:$channel"
@@ -398,13 +404,18 @@ class RawHfpClient(
     return null
   }
 
-  private fun cancelDiscovery() {
+  private suspend fun cancelDiscovery() {
     runCatching {
       val adapter =
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
       if (adapter?.isDiscovering == true) {
         adapter.cancelDiscovery()
         onLog("סריקת בלוטוס בוטלה לפני פתיחת החיבור", false)
+        // On MediaTek stacks (Jelly2, many Chinese boxes) discovery takes a
+        // moment to fully release the radio after cancelDiscovery() returns.
+        // A brief pause before the first RFCOMM connect prevents the common
+        // "radio not ready yet → connect fails → entire SDP loop fails" chain.
+        delay(300)
       }
     }
   }
@@ -506,7 +517,11 @@ class RawHfpClient(
     generation: Long,
     create: () -> BluetoothSocket?,
   ): BluetoothSocket? {
-    val sock = runCatching { create() }.getOrNull() ?: return null
+    val sock = runCatching { create() }.getOrNull()
+    if (sock == null) {
+      lastConnectError = "socket creation rejected"
+      return null
+    }
     synchronized(writeLock) {
       if (!isCurrentGeneration(generation)) {
         runCatching { sock.close() }
@@ -534,6 +549,7 @@ class RawHfpClient(
         runCatching { sock.close() }
         throw t
       }
+      lastConnectError = t.message ?: "connect error"
       onLog("פתיחת ערוץ RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
       null
     }
@@ -541,6 +557,8 @@ class RawHfpClient(
       if (connectingSocket === sock) connectingSocket = null
     }
     return if (connected != null && runCatching { sock.isConnected }.getOrDefault(false)) sock else {
+      if (connected == null) lastConnectError = "connect timeout"
+      else lastConnectError = "socket not connected after accept"
       runCatching { sock.close() }
       null
     }

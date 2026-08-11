@@ -31,6 +31,10 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Prevent Doze from suspending Bluetooth when the screen is off on
+         MediaTek devices (Jelly2). Without this, the system can put the app
+         in a standby bucket that freezes network and radio access. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Call audio techniques: routing the conversation (mic + speaker) to the
          hands-free device, and recording briefly for the mic diagnostic. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
