@@ -674,7 +674,19 @@ class RawHfpClient(
         while (isActive && isConnected.value) {
           val ownedSocket = socket // capture before possible generation switch
           synchronized(clccLock) { clccCalls.clear() }
-          if (sendCommand("AT+CLCC", ownedSocket)) {
+          // Wait for the AG to finish the previous command before sending
+          // the next one. Simple feature phones use a synchronous AT parser
+          // that cannot handle overlapping commands and may drop the RFCOMM
+          // link. A 3-second timeout prevents the loop from hanging when the
+          // AG is silent (some AGs don't respond to CLCC when idle).
+          val clccOk = try {
+            withTimeout(3_000L) { sendAndWait("AT+CLCC", ownedSocket) }
+          } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            // No response within 3 seconds is not a failure - the AG may
+            // simply be idle and not answering CLCC polls.
+            false
+          }
+          if (clccOk) {
             writeFailures = 0
           } else {
             writeFailures++
