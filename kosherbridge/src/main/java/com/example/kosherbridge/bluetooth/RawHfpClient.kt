@@ -980,6 +980,10 @@ class RawHfpClient(
 
     val state: CallState = when {
       callInd == 1 && held == 1 -> CallState.HELD
+      // call=1 + callsetup=1 means an active call with a new incoming call
+      // (call waiting). It must be matched before the generic ACTIVE case, or
+      // a waiting call is always reported as ACTIVE and never surfaces.
+      callInd == 1 && setup == 1 -> CallState.WAITING
       callInd == 1 -> CallState.ACTIVE
       setup == 1 -> CallState.INCOMING
       setup == 2 -> CallState.DIALING
@@ -1003,8 +1007,24 @@ class RawHfpClient(
   }
 
   private fun handleClip(line: String) {
-    val num = line.substringAfter("+CLIP:").substringAfter('"').substringBefore('"').trim()
+    // "+CLIP: <number>,<type>[,...]". A withheld/unknown number arrives either
+    // without quotes ("+CLIP: ,145") or as an empty quoted field; both must
+    // leave clipNumber null so the incoming-call UI shows the caller's name or
+    // "unknown" instead of raw garbage like ",145".
+    val body = line.substringAfter("+CLIP:").trim()
+    val num = if (body.contains('"')) {
+      body.substringAfter('"').substringBefore('"').trim()
+    } else {
+      body.substringBefore(',').trim()
+    }
     if (num.isNotEmpty()) clipNumber = num
+    // Some AGs send the callsetup CIEV before the CLIP, so the ringing call
+    // was first shown without a number. Refresh it now that the number is known.
+    val current = call.value
+    if (current?.state == CallState.INCOMING || current?.state == CallState.WAITING) {
+      val refreshed = current.copy(number = clipNumber)
+      if (call.value != refreshed) call.value = refreshed
+    }
   }
 
   private fun handleCind(line: String) {
@@ -1064,10 +1084,14 @@ class RawHfpClient(
 
   private fun nameIndex(name: String): Int? =
     indicatorNames.entries.firstOrNull { it.value == name }?.key
-      ?: when (name) { // fallback to the HFP standard order
-        "call" -> 1
-        "callsetup" -> 2
-        "callheld" -> 3
+      ?: when (name) { // fallback to the HFP/3GPP indicator order (1-based)
+        "service" -> 1
+        "call" -> 2
+        "callsetup" -> 3
+        "callheld" -> 4
+        "battchg" -> 5
+        "signal" -> 6
+        "roam" -> 7
         else -> null
       }
 
