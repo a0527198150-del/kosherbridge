@@ -45,6 +45,7 @@ class BridgeService : Service() {
     const val ACTION_START = "com.example.kosherbridge.action.START"
     const val ACTION_CONNECT = "com.example.kosherbridge.action.CONNECT"
     const val EXTRA_DEVICE = "com.example.kosherbridge.extra.DEVICE"
+    const val EXTRA_RAW = "com.example.kosherbridge.extra.RAW"
     const val ACTION_DISCONNECT = "com.example.kosherbridge.action.DISCONNECT"
     const val ACTION_DIAL = "com.example.kosherbridge.action.DIAL"
     const val EXTRA_NUMBER = "com.example.kosherbridge.extra.NUMBER"
@@ -60,6 +61,39 @@ class BridgeService : Service() {
     fun start(context: Context) {
       val intent = Intent(context, BridgeService::class.java).setAction(ACTION_START)
       ContextCompat.startForegroundService(context, intent)
+    }
+
+    /**
+     * Connects to a device whether or not the service is already running.
+     * Tapping "בחר מכשיר" previously went through BridgeHub.service?.connectTo,
+     * which silently did nothing when the service was dead - no connection,
+     * no log, no feedback. This starts the service with the connect intent
+     * when needed so the tap always does something observable.
+     */
+    fun requestConnect(context: Context, address: String) {
+      val svc = instance
+      if (svc != null) {
+        svc.connectTo(address)
+      } else {
+        val intent = Intent(context, BridgeService::class.java)
+          .setAction(ACTION_CONNECT)
+          .putExtra(EXTRA_DEVICE, address)
+        ContextCompat.startForegroundService(context, intent)
+      }
+    }
+
+    /** Force the raw RFCOMM path even when the service is not running yet. */
+    fun requestConnectRaw(context: Context, address: String) {
+      val svc = instance
+      if (svc != null) {
+        svc.connectRaw(address)
+      } else {
+        val intent = Intent(context, BridgeService::class.java)
+          .setAction(ACTION_CONNECT)
+          .putExtra(EXTRA_DEVICE, address)
+          .putExtra(EXTRA_RAW, true)
+        ContextCompat.startForegroundService(context, intent)
+      }
     }
   }
 
@@ -93,6 +127,11 @@ class BridgeService : Service() {
     wakeLock?.acquire()
     Notifications.createChannels(this)
     manager = HfpClientManager(this, scope)
+    // Service lifecycle is part of the connection journal so a diagnostic
+    // report can always prove whether the bridge was even alive when the
+    // user tapped connect. (An empty journal used to mean either "no attempt"
+    // or "the service was silently dead" - now the two are distinguishable.)
+    manager.logConnection("שירות הגשר עלה (process=${android.os.Process.myPid()})", false)
     // Remember which connection channel actually worked on this exact player
     // (keyed by Build.FINGERPRINT) so the next launch can jump straight to it.
     manager.onBackendWorked = { backend ->
@@ -106,7 +145,12 @@ class BridgeService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     try {
       when (intent?.action) {
-        ACTION_CONNECT -> intent.getStringExtra(EXTRA_DEVICE)?.let { connectTo(it) }
+        ACTION_CONNECT -> {
+          val addr = intent.getStringExtra(EXTRA_DEVICE)
+          if (addr != null) {
+            if (intent.getBooleanExtra(EXTRA_RAW, false)) connectRaw(addr) else connectTo(addr)
+          }
+        }
         ACTION_DISCONNECT -> disconnect()
         ACTION_DIAL -> intent.getStringExtra(EXTRA_NUMBER)?.let { dial(it) }
         ACTION_ANSWER -> manager.answer()
@@ -150,6 +194,7 @@ class BridgeService : Service() {
   }
 
   override fun onDestroy() {
+    runCatching { manager.logConnection("שירות הגשר נסגר", true) }
     instance = null
     BridgeHub.service = null
     manager.shutdown()
@@ -167,13 +212,18 @@ class BridgeService : Service() {
 
   fun connectTo(address: String) {
     val adapter = adapter()
-    if (adapter == null) return
-    val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull()
-    if (device != null) {
-      manager.register()
-      manager.connect(device)
-      scope.launch { ServiceLocator.settings.rememberDevice(device.name ?: address, address) }
+    if (adapter == null) {
+      manager.logConnection("לא נמצא מתאם בלוטוס - לא ניתן להתחבר", true)
+      return
     }
+    val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull()
+    if (device == null) {
+      manager.logConnection("לא ניתן לפתור את המכשיר $address", true)
+      return
+    }
+    manager.register()
+    manager.connect(device)
+    scope.launch { ServiceLocator.settings.rememberDevice(device.name ?: address, address) }
   }
 
   fun dial(number: String): Boolean = manager.dial(number)
@@ -181,12 +231,17 @@ class BridgeService : Service() {
   /** Direct HFP over RFCOMM - no permissions needed; audio depends on the player. */
   fun connectRaw(address: String) {
     val adapter = adapter()
-    if (adapter == null) return
-    val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull()
-    if (device != null) {
-      manager.connectRaw(device)
-      scope.launch { ServiceLocator.settings.rememberDevice(device.name ?: address, address) }
+    if (adapter == null) {
+      manager.logConnection("לא נמצא מתאם בלוטוס - לא ניתן להתחבר (RAW)", true)
+      return
     }
+    val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull()
+    if (device == null) {
+      manager.logConnection("לא ניתן לפתור את המכשיר $address (RAW)", true)
+      return
+    }
+    manager.connectRaw(device)
+    scope.launch { ServiceLocator.settings.rememberDevice(device.name ?: address, address) }
   }
 
   fun disconnect() {

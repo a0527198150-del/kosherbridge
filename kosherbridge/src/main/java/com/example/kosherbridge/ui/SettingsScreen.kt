@@ -55,6 +55,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeHub
+import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ChannelState
@@ -185,7 +186,7 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       ) {
         val addr = state.deviceAddress
         if (addr != null) {
-          BridgeHub.service?.connectRaw(addr)
+          BridgeService.requestConnectRaw(context, addr)
         } else {
           showDevices = true
         }
@@ -428,7 +429,7 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
               // but unused until the user manually opened "בחר מכשיר".
               scope.launch {
                 delay(700)
-                BridgeHub.service?.connectTo(d.address)
+                BridgeService.requestConnect(context, d.address)
                 onSnackbar("הזיווג הושלם — מנסה להתחבר לטלפון")
               }
             }
@@ -461,7 +462,7 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       onDismiss = { showDevices = false },
       onPick = { address ->
         showDevices = false
-        BridgeHub.service?.connectTo(address)
+        BridgeService.requestConnect(context, address)
       },
     )
   }
