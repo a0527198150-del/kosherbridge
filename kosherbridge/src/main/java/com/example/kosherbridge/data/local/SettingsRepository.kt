@@ -32,6 +32,7 @@ class SettingsRepository(private val context: Context) {
     val KEY_TONE = booleanPreferencesKey("key_tone")
     val AUTO_AUDIO = booleanPreferencesKey("auto_audio")
     val VOLUME_BOOST = booleanPreferencesKey("volume_boost")
+    val PROFILE_GUARD = booleanPreferencesKey("raw_profile_guard")
     val THEME_MODE = stringPreferencesKey("theme_mode")
     val LAST_DEVICE_NAME = stringPreferencesKey("last_device_name")
     val LAST_DEVICE_ADDRESS = stringPreferencesKey("last_device_address")
@@ -58,6 +59,10 @@ class SettingsRepository(private val context: Context) {
   val volumeBoost: Flow<Boolean> =
     context.dataStore.data.map { it[Keys.VOLUME_BOOST] ?: true }
 
+  /** Disable the system HEADSET/A2DP profiles before a raw RFCOMM connect. */
+  val profileGuard: Flow<Boolean> =
+    context.dataStore.data.map { it[Keys.PROFILE_GUARD] ?: true }
+
   /** "SYSTEM", "LIGHT" or "DARK" - app-wide appearance. */
   val themeMode: Flow<String> =
     context.dataStore.data.map { it[Keys.THEME_MODE] ?: "SYSTEM" }
@@ -80,6 +85,8 @@ class SettingsRepository(private val context: Context) {
   suspend fun setAutoAudio(value: Boolean) = context.dataStore.edit { it[Keys.AUTO_AUDIO] = value }
 
   suspend fun setVolumeBoost(value: Boolean) = context.dataStore.edit { it[Keys.VOLUME_BOOST] = value }
+
+  suspend fun setProfileGuard(value: Boolean) = context.dataStore.edit { it[Keys.PROFILE_GUARD] = value }
 
   suspend fun setThemeMode(mode: String) = context.dataStore.edit { it[Keys.THEME_MODE] = mode }
 

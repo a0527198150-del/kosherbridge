@@ -74,6 +74,7 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
   val keyTone by settings.keyTone.collectAsStateWithLifecycle(true)
   val autoAudio by settings.autoAudio.collectAsStateWithLifecycle(true)
   val volumeBoost by settings.volumeBoost.collectAsStateWithLifecycle(true)
+  val profileGuard by settings.profileGuard.collectAsStateWithLifecycle(true)
   val themeMode by settings.themeMode.collectAsStateWithLifecycle(ThemeMode.SYSTEM.name)
   var showDevices by remember { mutableStateOf(false) }
   var showClearCallsConfirm by remember { mutableStateOf(false) }
@@ -170,6 +171,11 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
       }
       SettingRow("ערוץ חיבור", channelLabel(channelState)) { showChannelDialog = true }
+      SettingSwitch(
+        title = "ניטרול פרופילי המערכת",
+        subtitle = "כיבוי הדיבורית/מדיה של המערכת לפני חיבור RFCOMM (כבה רק לבדיקת ניתוקים)",
+        checked = profileGuard,
+      ) { v -> scope.launch { settings.setProfileGuard(v) } }
       SettingRow(
         "צימוד מכשיר חדש (סריקה)",
         "סורק בלוטוס ומצמיד מכשיר חדש מהאפליקציה",

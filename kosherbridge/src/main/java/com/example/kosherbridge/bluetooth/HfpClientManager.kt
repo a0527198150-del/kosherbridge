@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -113,6 +114,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   @Volatile private var lastAclNudge = 0L
 
   private suspend fun disableSystemProfiles(device: BluetoothDevice) {
+    // Optional A/B switch: skip the profile guard entirely so a tester can
+    // compare "with protection" vs "without" on the same player.
+    if (!ServiceLocator.settings.profileGuard.first()) {
+      logConnection("ניטרול פרופילי המערכת כבוי בהגדרות - מדלג", false)
+      return
+    }
     // Pairing broadcasts and a manual connect can arrive together. Serialize
     // this operation so the raw socket never starts while the system profile
     // is still being disabled, and do not cache a failed priority change as if
@@ -150,6 +157,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         logConnection("ניקוי A2DP לא אושר; ממשיך לאחר סיום הניסיון", true)
       }
     }
+    // MediaTek stacks tear down the ACL asynchronously after the last system
+    // profile disconnects. Opening the raw RFCOMM socket immediately races
+    // that teardown: the fresh socket rides a dying ACL and drops within
+    // seconds ("connects then immediately disconnects"). Let the radio settle
+    // before the raw socket opens, without removing the intentional guard.
+    delay(1_000L)
   }
 
   /**
