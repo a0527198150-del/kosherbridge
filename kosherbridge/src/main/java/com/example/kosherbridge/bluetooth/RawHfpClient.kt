@@ -679,13 +679,11 @@ class RawHfpClient(
           // that cannot handle overlapping commands and may drop the RFCOMM
           // link. A 3-second timeout prevents the loop from hanging when the
           // AG is silent (some AGs don't respond to CLCC when idle).
-          val clccOk = try {
-            withTimeout(3_000L) { sendAndWait("AT+CLCC", ownedSocket) }
-          } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
-            // No response within 3 seconds is not a failure - the AG may
-            // simply be idle and not answering CLCC polls.
-            false
-          }
+          // null means the AG stayed silent for 3s (idle feature phones
+          // often don't answer CLCC) - not a failure, just keep polling.
+          val clccOk = withTimeoutOrNull(3_000L) {
+            sendAndWait("AT+CLCC", ownedSocket)
+          } ?: false
           if (clccOk) {
             writeFailures = 0
           } else {
