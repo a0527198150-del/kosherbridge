@@ -107,7 +107,7 @@ class RawHfpClient(
   // send an incompatible call-hold query during SLC.
   private val hfFeatures = 0x0004 or 0x0020
 
-  @Volatile private var socket: BluetoothSocket? = null
+  @Volatile private var socket: HfpLink? = null
   /** Socket currently inside BluetoothSocket.connect(), before it becomes socket. */
   @Volatile private var connectingSocket: BluetoothSocket? = null
   @Volatile private var input: BufferedReader? = null
@@ -219,8 +219,12 @@ class RawHfpClient(
         if (!waitBeforeRetry(generation)) return
         continue
       }
-      val streams = try {
-        BufferedReader(InputStreamReader(sock.inputStream, Charsets.ISO_8859_1)) to sock.outputStream
+      val link = try {
+        BluetoothHfpLink(
+          sock,
+          BufferedReader(InputStreamReader(sock.inputStream, Charsets.ISO_8859_1)),
+          sock.outputStream,
+        )
       } catch (t: Throwable) {
         if (t is java.util.concurrent.CancellationException) throw t
         runCatching { sock.close() }
@@ -229,107 +233,130 @@ class RawHfpClient(
         if (!waitBeforeRetry(generation)) return
         continue
       }
-      synchronized(writeLock) {
-        if (!isCurrentGeneration(generation)) {
-          runCatching { sock.close() }
-          return
+      when (runSession(link, generation)) {
+        SessionResult.CANCELLED -> return
+        SessionResult.HANDSHAKE_FAILED -> {
+          if (!waitBeforeRetry(generation)) return
         }
-        socket = sock
-        input = streams.first
-        output = streams.second
-      }
-
-      // Some embedded AG stacks (feature phones) need a moment after the
-      // RFCOMM channel opens before they're ready for AT commands.
-      // Blasting BRSF immediately can cause "connects then drops" on slow
-      // stacks - a short pause lets the AG finish its internal setup.
-      delay(300)
-
-      // Some AGs accept the socket but never answer AT commands. Close the
-      // socket after 12s so a silent handshake can't hang the reconnect loop.
-      // The atomic claim is important: without it, a watchdog waking at the
-      // same moment as a successful handshake could close a live socket after
-      // the handshake had already been accepted.
-      val handshakeClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
-      val watchdog = scope.launch(Dispatchers.IO) {
-        delay(12_000)
-        if (handshakeClaimed.compareAndSet(false, true)) {
-          onLog("משא ומתן הדיבורית עבר את הזמן המותר", true)
-          runCatching { sock.close() }
+        SessionResult.LINK_DROPPED -> {
+          if (!waitBeforeRetry(generation)) return
         }
       }
-      val handshakeResult = try {
-        handshake(sock)
-      } catch (t: Throwable) {
-        if (t is java.util.concurrent.CancellationException) {
-          // The watchdog belongs to the service scope rather than the
-          // connection job, so cancel it explicitly on user/service shutdown.
-          watchdog.cancel()
-          throw t
-        }
-        false
-      }
-      val handshakeWon = handshakeClaimed.compareAndSet(false, true)
-      watchdog.cancel()
-      if (!isCurrentGeneration(generation)) {
-        runCatching { sock.close() }
-        return
-      }
-      val handshakeOk = handshakeWon && handshakeResult && runCatching { sock.isConnected }.getOrDefault(false)
-      if (!handshakeOk) {
-        onLog("משא ומתן הדיבורית נכשל דרך ${lastGateway ?: "שער לא ידוע"}", true)
-        // The AG rejected our AT negotiation on this gateway - try another one.
-        rotateGateway()
-        lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית - מנסה שוב..."
-        teardown(sock)
-        attemptInFlight = false
-        if (!waitBeforeRetry(generation)) return
-        continue
-      }
-      // Link established - release the temporary wake lock; the persistent
-      // one in BridgeService takes over for the stable link.
-      tryReleaseConnectionWakeLock()
-      connectedAt = System.currentTimeMillis()
-      // Publish CONNECTED before allowing ACL recovery callbacks to intervene.
-      // Otherwise there is a small window where a valid socket looks both
-      // disconnected and no longer in-flight, so a second socket can be opened.
-      isConnected.value = true
-      attemptInFlight = false
-      startPolling()
-      readLoop(sock) // blocks until this link dies
-      if (!isCurrentGeneration(generation)) return
-      val lastedMs = System.currentTimeMillis() - connectedAt
-      if (reconnectEnabled) {
-        // The user did not disconnect - the phone dropped the link on its own.
-        dropCount++
-        lastDropMs = lastedMs
-        if (lastedMs < gatewayRotationDropWindowMs) quickDropCount++ else quickDropCount = 0
-        onLog("הקישור נותק אחרי ${lastedMs}ms דרך ${lastGateway ?: "שער לא ידוע"}", true)
-        Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway) [drop #$dropCount]")
-        dropInfo.value = buildDropInfo()
-        // A link that dies within a few seconds usually means this gateway is
-        // being rejected - move it to the back and try a different one.
-        if (lastedMs < gatewayRotationDropWindowMs) rotateGateway()
-        // Only a link that stayed up for a meaningful window earns a clean
-        // backoff slate. A handshake followed by a 1-6 second drop must not
-        // reset the delay and hammer a fragile phone every three seconds.
-        if (lastedMs >= stableLinkWindowMs) reconnectAttempts = 0
-        // Repeated fast drops: a stale bond or a competing system link is the
-        // usual culprit - tell the user to re-pair (the app now disables the
-        // system profiles the moment the bond completes).
-        if (quickDropCount >= 2 && reconnectAttempts <= 3) {
-          lastError.value =
-            "הקישור נופל שוב ושוב. מחק את זיווג הטלפון וזווג אותו מחדש - האפליקציה תכבה עכשיו את החיבורים המערכתיים שמתחרים על הקישור."
-        }
-      } else {
-        Log.i(tag, "link closed by user")
-      }
-      // The phone dropped the link - reconnect unless the user disconnected
-      // on purpose. This is the fix for "connects for a few seconds then
-      // immediately disconnects" on cheap stacks.
-      attemptInFlight = false
-      if (!waitBeforeRetry(generation)) return
     }
+  }
+
+  private sealed interface SessionResult {
+    object HANDSHAKE_FAILED : SessionResult
+    object LINK_DROPPED : SessionResult
+    object CANCELLED : SessionResult
+  }
+
+  /**
+   * Runs the connected-session portion of the link: negotiates the AT
+   * handshake, starts call-state polling, and reads events until the link
+   * drops. Returns the outcome so the reconnect loop decides whether to
+   * retry. Shared by the Bluetooth path and the simulation self-test.
+   */
+  private suspend fun runSession(link: HfpLink, generation: Long): SessionResult {
+    synchronized(writeLock) {
+      if (!isCurrentGeneration(generation)) {
+        runCatching { link.close() }
+        return SessionResult.CANCELLED
+      }
+      socket = link
+      input = link.input
+      output = link.output
+    }
+
+    // Some embedded AG stacks (feature phones) need a moment after the
+    // RFCOMM channel opens before they're ready for AT commands.
+    // Blasting BRSF immediately can cause "connects then drops" on slow
+    // stacks - a short pause lets the AG finish its internal setup.
+    delay(300)
+
+    // Some AGs accept the socket but never answer AT commands. Close the
+    // socket after 12s so a silent handshake can't hang the reconnect loop.
+    // The atomic claim is important: without it, a watchdog waking at the
+    // same moment as a successful handshake could close a live socket after
+    // the handshake had already been accepted.
+    val handshakeClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
+    val watchdog = scope.launch(Dispatchers.IO) {
+      delay(12_000)
+      if (handshakeClaimed.compareAndSet(false, true)) {
+        onLog("משא ומתן הדיבורית עבר את הזמן המותר", true)
+        runCatching { link.close() }
+      }
+    }
+    val handshakeResult = try {
+      handshake(link)
+    } catch (t: Throwable) {
+      if (t is java.util.concurrent.CancellationException) {
+        // The watchdog belongs to the service scope rather than the
+        // connection job, so cancel it explicitly on user/service shutdown.
+        watchdog.cancel()
+        throw t
+      }
+      false
+    }
+    val handshakeWon = handshakeClaimed.compareAndSet(false, true)
+    watchdog.cancel()
+    if (!isCurrentGeneration(generation)) {
+      runCatching { link.close() }
+      return SessionResult.CANCELLED
+    }
+    val handshakeOk = handshakeWon && handshakeResult && runCatching { link.isOpen }.getOrDefault(false)
+    if (!handshakeOk) {
+      onLog("משא ומתן הדיבורית נכשל דרך ${lastGateway ?: "שער לא ידוע"}", true)
+      // The AG rejected our AT negotiation on this gateway - try another one.
+      rotateGateway()
+      lastError.value = "הטלפון לא השלים את הפרוטוקול של הדיבורית - מנסה שוב..."
+      teardown(link)
+      attemptInFlight = false
+      return SessionResult.HANDSHAKE_FAILED
+    }
+    // Link established - release the temporary wake lock; the persistent
+    // one in BridgeService takes over for the stable link.
+    tryReleaseConnectionWakeLock()
+    connectedAt = System.currentTimeMillis()
+    // Publish CONNECTED before allowing ACL recovery callbacks to intervene.
+    // Otherwise there is a small window where a valid socket looks both
+    // disconnected and no longer in-flight, so a second socket can be opened.
+    isConnected.value = true
+    attemptInFlight = false
+    startPolling()
+    readLoop(link) // blocks until this link dies
+    if (!isCurrentGeneration(generation)) return SessionResult.CANCELLED
+    val lastedMs = System.currentTimeMillis() - connectedAt
+    if (reconnectEnabled) {
+      // The user did not disconnect - the phone dropped the link on its own.
+      dropCount++
+      lastDropMs = lastedMs
+      if (lastedMs < gatewayRotationDropWindowMs) quickDropCount++ else quickDropCount = 0
+      onLog("הקישור נותק אחרי ${lastedMs}ms דרך ${lastGateway ?: "שער לא ידוע"}", true)
+      Log.w(tag, "link closed after ${lastedMs}ms (gateway: $lastGateway) [drop #$dropCount]")
+      dropInfo.value = buildDropInfo()
+      // A link that dies within a few seconds usually means this gateway is
+      // being rejected - move it to the back and try a different one.
+      if (lastedMs < gatewayRotationDropWindowMs) rotateGateway()
+      // Only a link that stayed up for a meaningful window earns a clean
+      // backoff slate. A handshake followed by a 1-6 second drop must not
+      // reset the delay and hammer a fragile phone every three seconds.
+      if (lastedMs >= stableLinkWindowMs) reconnectAttempts = 0
+      // Repeated fast drops: a stale bond or a competing system link is the
+      // usual culprit - tell the user to re-pair (the app now disables the
+      // system profiles the moment the bond completes).
+      if (quickDropCount >= 2 && reconnectAttempts <= 3) {
+        lastError.value =
+          "הקישור נופל שוב ושוב. מחק את זיווג הטלפון וזווג אותו מחדש - האפליקציה תכבה עכשיו את החיבורים המערכתיים שמתחרים על הקישור."
+      }
+    } else {
+      Log.i(tag, "link closed by user")
+    }
+    // The phone dropped the link - reconnect unless the user disconnected
+    // on purpose. This is the fix for "connects for a few seconds then
+    // immediately disconnects" on cheap stacks.
+    attemptInFlight = false
+    return SessionResult.LINK_DROPPED
   }
 
   /** Backoff grows after repeated failures and resets only after a stable link. */
@@ -577,7 +604,7 @@ class RawHfpClient(
   }
 
   /** HFP negotiation: BRSF, CIND, CMER, CLIP, CCWA - the handshake every AG accepts. */
-  private suspend fun handshake(handshakeSocket: BluetoothSocket): Boolean {
+  private suspend fun handshake(handshakeSocket: HfpLink): Boolean {
     // The legacy headset gateway speaks HSP - there is no BRSF/CIND/CMER
     // negotiation. Accept the link as-is and let the read loop watch it.
     // HSP does not understand HFP polling commands; sending AT+CLCC after an
@@ -620,7 +647,7 @@ class RawHfpClient(
     return true
   }
 
-  private fun readLoop(ownedSocket: BluetoothSocket) {
+  private fun readLoop(ownedSocket: HfpLink) {
     val r = synchronized(writeLock) {
       if (socket === ownedSocket) input else null
     }
@@ -801,6 +828,94 @@ class RawHfpClient(
     readJob?.cancel()
     teardown()
     readJob = scope.launch(Dispatchers.IO) { runConnection(generation) }
+  }
+
+  /**
+   * Self-test that drives the full AT-command logic against a [MockAg] over
+   * an in-memory pipe - no Bluetooth radio required, so it runs on an
+   * emulator. Returns one human-readable line per checked step; callers feed
+   * these into the diagnostics report. Call this on a dedicated client
+   * instance, never on the live one.
+   */
+  suspend fun simulate(): List<String> {
+    val steps = mutableListOf<String>()
+    val (clientLink, agLink) = LoopbackHfpLink.createPair()
+    val mock = MockAg(agLink, scope)
+
+    // Session state for a single, non-reconnecting run (generation 1).
+    hspMode = false
+    lastGateway = "SIM"
+    reconnectEnabled = true
+    connectionGeneration = 1
+    attemptInFlight = true
+    val session = scope.launch(Dispatchers.IO) { runSession(clientLink, 1L) }
+    mock.start()
+    try {
+      if (!await(10_000) { isConnected.value }) {
+        steps += "✗ משא ומתן הדיבורית (handshake) לא הושלם"
+        return steps
+      }
+      steps += "✓ משא ומתן הדיבורית (handshake) הושלם"
+
+      mock.incomingCall("0501234567")
+      if (!await(5_000) {
+          call.value?.state == CallState.INCOMING && call.value?.number == "0501234567"
+        }
+      ) {
+        steps += "✗ שיחה נכנסת לא זוהתה (call=${call.value})"
+        return steps
+      }
+      steps += "✓ זיהוי שיחה נכנסת עם מזהה המתקשר"
+
+      answer()
+      if (!await(5_000) { call.value?.state == CallState.ACTIVE }) {
+        steps += "✗ המענה לא העביר את השיחה למצב פעיל (call=${call.value})"
+        return steps
+      }
+      steps += "✓ מענה לשיחה (ATA)"
+
+      hangup()
+      if (!await(5_000) { call.value == null || call.value?.state == CallState.IDLE }) {
+        steps += "✗ הניתוק לא סיים את השיחה (call=${call.value})"
+        return steps
+      }
+      steps += "✓ ניתוק שיחה (AT+CHUP)"
+
+      dial("0527654321")
+      if (!await(5_000) {
+          call.value?.state == CallState.ACTIVE && call.value?.direction == CallDirection.OUTGOING
+        }
+      ) {
+        steps += "✗ החיוג לא הגיע לשיחה פעילה (call=${call.value})"
+        return steps
+      }
+      steps += "✓ חיוג יוצא (ATD)"
+
+      hangup()
+      if (!await(5_000) { call.value == null || call.value?.state == CallState.IDLE }) {
+        steps += "✗ ניתוק השיחה היוצאת נכשל (call=${call.value})"
+        return steps
+      }
+      steps += "✓ סיום שיחה יוצאת"
+
+      steps += "✓ כל בדיקות הטלפון המדומה עברו בהצלחה"
+    } finally {
+      mock.close()
+      reconnectEnabled = false
+      connectionGeneration++
+      teardown()
+      session.cancel()
+    }
+    return steps
+  }
+
+  private suspend fun await(timeoutMs: Long, cond: () -> Boolean): Boolean {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      if (cond()) return true
+      delay(50)
+    }
+    return cond()
   }
 
   // ------------------------------------------------------------------ parsing
@@ -984,7 +1099,7 @@ class RawHfpClient(
    * sign that this RFCOMM link is half-open or already dead; close it now so
    * the reconnect loop does not wait for readLine() to notice later.
    */
-  private fun sendCommand(cmd: String, expectedSocket: BluetoothSocket? = null): Boolean {
+  private fun sendCommand(cmd: String, expectedSocket: HfpLink? = null): Boolean {
     val sent = synchronized(writeLock) {
       if (expectedSocket != null && socket !== expectedSocket) return@synchronized false
       val stream = output ?: return@synchronized false
@@ -1007,12 +1122,12 @@ class RawHfpClient(
     return sent
   }
 
-  private suspend fun sendAndWait(cmd: String, expectedSocket: BluetoothSocket? = null): Boolean {
+  private suspend fun sendAndWait(cmd: String, expectedSocket: HfpLink? = null): Boolean {
     if (!sendCommand(cmd, expectedSocket)) return false
     return readUntil(expectedSocket) { it.startsWith("OK") || it.startsWith("ERROR") }
   }
 
-  private suspend fun readUntil(expectedSocket: BluetoothSocket? = null, pred: (String) -> Boolean): Boolean {
+  private suspend fun readUntil(expectedSocket: HfpLink? = null, pred: (String) -> Boolean): Boolean {
     val r = synchronized(writeLock) {
       if (expectedSocket != null && socket !== expectedSocket) null else input
     } ?: return false
@@ -1036,7 +1151,7 @@ class RawHfpClient(
     return if (dropCount == 1) "ניתוק אחד ($last)" else "$dropCount ניתוקים ($last)"
   }
 
-  private fun teardown(expectedSocket: BluetoothSocket? = null) {
+  private fun teardown(expectedSocket: HfpLink? = null) {
     synchronized(writeLock) {
       if (expectedSocket != null && socket !== expectedSocket) return
       pollJob?.cancel()

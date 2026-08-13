@@ -328,6 +328,18 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
           micPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
       }
+      SettingRow(
+        "בדיקת טלפון מדומה",
+        "בודקת את פרוטוקול הדיבורית מול טלפון מדומה - ללא צורך בבלוטוס",
+      ) {
+        val svc = BridgeHub.service
+        if (svc != null) {
+          onSnackbar("מריץ בדיקה - התוצאות יופיעו ביומן החיבור")
+          svc.runSimulation { msg -> onSnackbar(msg) }
+        } else {
+          onSnackbar("השירות לא פעיל - פתח מחדש את האפליקציה")
+        }
+      }
       state.lastError?.let {
         Spacer(Modifier.height(4.dp))
         Text(
