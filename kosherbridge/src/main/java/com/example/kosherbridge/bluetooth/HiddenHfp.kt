@@ -25,6 +25,8 @@ object HiddenHfp {
 
   private const val TAG = "HiddenHfp"
   private const val PROFILE_PROXY_TIMEOUT_SECONDS = 6L
+  /** BluetoothHeadsetClient.CALL_ACCEPT_NONE - answer without holding/terminating others. */
+  private const val CALL_ACCEPT_NONE = 0
 
   private var clientClass: Class<*>? = null
   var callClass: Class<*>? = null
@@ -43,15 +45,15 @@ object HiddenHfp {
   private var mRedial: Method? = null
   private var mAccept: Method? = null
   private var mReject: Method? = null
-  private var mHangup: Method? = null
+  private var mTerminate: Method? = null
   private var mCurrentCalls: Method? = null
   private var mRegisterCallback: Method? = null
   private var mUnregisterCallback: Method? = null
 
   private var mCallState: Method? = null
   private var mCallNumber: Method? = null
-  private var mCallRemote: Method? = null
-  private var mCallDirection: Method? = null
+  private var mCallId: Method? = null
+  private var mCallOutgoing: Method? = null
 
   /**
    * Becomes true the moment any privileged call is rejected with a
@@ -88,7 +90,11 @@ object HiddenHfp {
   var callStateAlerting = 3; private set
   var callStateIncoming = 4; private set
   var callStateWaiting = 5; private set
-  var callStateIdle = 6; private set
+  // There is no CALL_STATE_IDLE in the hidden API. Use -1 as the app's own
+  // "no call / unknown" sentinel so it cannot collide with a real call state
+  // (6 is CALL_STATE_HELD_BY_RESPONSE_AND_HOLD in AOSP).
+  var callStateIdle = -1; private set
+  var callStateHeldByResponseAndHold = 6; private set
   var callStateTerminated = 7; private set
   var callDirectionOutgoing = 0; private set
   var callDirectionIncoming = 1; private set
@@ -110,12 +116,12 @@ object HiddenHfp {
     mGetAudioState = method(c, "getAudioState", BluetoothDevice::class.java)
     mConnectAudio = method(c, "connectAudio")
     mDisconnectAudio = method(c, "disconnectAudio")
-    mDial = method(c, "dial", String::class.java)
-    mRedial = method(c, "redial")
-    mAccept = method(c, "acceptCall")
-    mReject = method(c, "rejectCall")
-    mHangup = method(c, "hangupCall")
-    mCurrentCalls = method(c, "getCurrentCalls")
+    mDial = method(c, "dial", BluetoothDevice::class.java, String::class.java)
+    mRedial = method(c, "redial", BluetoothDevice::class.java)
+    mAccept = method(c, "acceptCall", BluetoothDevice::class.java, Int::class.javaPrimitiveType)
+    mReject = method(c, "rejectCall", BluetoothDevice::class.java)
+    mTerminate = method(c, "terminateCall", BluetoothDevice::class.java, Int::class.javaPrimitiveType)
+    mCurrentCalls = method(c, "getCurrentCalls", BluetoothDevice::class.java)
     callbackClass?.let { cb ->
       mRegisterCallback = method(c, "registerCallback", cb)
       mUnregisterCallback = method(c, "unregisterCallback", cb)
@@ -124,8 +130,8 @@ object HiddenHfp {
     val cc = callClass
     mCallState = method(cc, "getState")
     mCallNumber = method(cc, "getNumber")
-    mCallRemote = method(cc, "getRemoteParty")
-    mCallDirection = method(cc, "getDirection")
+    mCallId = method(cc, "getId")
+    mCallOutgoing = method(cc, "isOutgoing")
 
     callStateActive = intConstant(cc, "CALL_STATE_ACTIVE", 0)
     callStateHeld = intConstant(cc, "CALL_STATE_HELD", 1)
@@ -133,8 +139,9 @@ object HiddenHfp {
     callStateAlerting = intConstant(cc, "CALL_STATE_ALERTING", 3)
     callStateIncoming = intConstant(cc, "CALL_STATE_INCOMING", 4)
     callStateWaiting = intConstant(cc, "CALL_STATE_WAITING", 5)
-    callStateIdle = intConstant(cc, "CALL_STATE_IDLE", 6)
+    callStateHeldByResponseAndHold = intConstant(cc, "CALL_STATE_HELD_BY_RESPONSE_AND_HOLD", 6)
     callStateTerminated = intConstant(cc, "CALL_STATE_TERMINATED", 7)
+    callStateIdle = -1
     callDirectionOutgoing = intConstant(cc, "CALL_DIRECTION_OUTGOING", 0)
     callDirectionIncoming = intConstant(cc, "CALL_DIRECTION_INCOMING", 1)
   }
@@ -154,19 +161,38 @@ object HiddenHfp {
     if (device == null) 0 else int(mGetAudioState, client, 0, device)
   fun connectAudio(client: Any?): Boolean = bool(mConnectAudio, client)
   fun disconnectAudio(client: Any?): Boolean = bool(mDisconnectAudio, client)
-  fun dial(client: Any?, number: String): Boolean = bool(mDial, client, number)
-  fun redial(client: Any?): Boolean = bool(mRedial, client)
-  fun accept(client: Any?): Boolean = bool(mAccept, client)
-  fun reject(client: Any?): Boolean = bool(mReject, client)
-  fun hangup(client: Any?): Boolean = bool(mHangup, client)
-  fun currentCalls(client: Any?): List<*> = list(mCurrentCalls, client)
+  fun dial(client: Any?, device: BluetoothDevice?, number: String): Boolean =
+    if (device == null) false else bool(mDial, client, device, number)
+
+  fun redial(client: Any?, device: BluetoothDevice?): Boolean =
+    if (device == null) false else bool(mRedial, client, device)
+
+  fun accept(client: Any?, device: BluetoothDevice?): Boolean =
+    if (device == null) false else bool(mAccept, client, device, CALL_ACCEPT_NONE)
+
+  fun reject(client: Any?, device: BluetoothDevice?): Boolean =
+    if (device == null) false else bool(mReject, client, device)
+
+  fun hangup(client: Any?, device: BluetoothDevice?): Boolean {
+    if (device == null) return false
+    for (call in currentCalls(client, device)) {
+      if (call == null) continue
+      val index = int(mCallId, call, -1)
+      if (index >= 0) return bool(mTerminate, client, device, index)
+    }
+    return false
+  }
+
+  fun currentCalls(client: Any?, device: BluetoothDevice?): List<*> =
+    if (device == null) emptyList<Any>() else list(mCurrentCalls, client, device)
+
   fun registerCallback(client: Any?, callback: Any?): Boolean = bool(mRegisterCallback, client, callback)
   fun unregisterCallback(client: Any?, callback: Any?): Boolean = bool(mUnregisterCallback, client, callback)
 
   fun callState(call: Any): Int = int(mCallState, call, callStateIdle)
-  fun callNumber(call: Any): String? =
-    (string(mCallNumber, call) ?: string(mCallRemote, call))?.takeIf { it.isNotBlank() }
-  fun callDirection(call: Any): Int = int(mCallDirection, call, callDirectionIncoming)
+  fun callNumber(call: Any): String? = string(mCallNumber, call)?.takeIf { it.isNotBlank() }
+  fun callDirection(call: Any): Int =
+    if (bool(mCallOutgoing, call, false)) callDirectionOutgoing else callDirectionIncoming
 
   private fun method(c: Class<*>?, name: String, vararg p: Class<*>): Method? =
     if (c == null) null
@@ -190,8 +216,8 @@ object HiddenHfp {
     catch (e: SecurityException) { markPrivilegedBlocked(); null }
     catch (e: Throwable) { null }
 
-  private fun list(m: Method?, recv: Any?): List<*> =
-    try { m?.invoke(recv) as? List<*> ?: emptyList<Any>() }
+  private fun list(m: Method?, recv: Any?, vararg args: Any?): List<*> =
+    try { m?.invoke(recv, *args) as? List<*> ?: emptyList<Any>() }
     catch (e: SecurityException) { markPrivilegedBlocked(); emptyList<Any>() }
     catch (e: Throwable) { emptyList<Any>() }
 

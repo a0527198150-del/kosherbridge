@@ -437,7 +437,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           // HiddenHfp.privilegedBlocked (and its flow) immediately - so the
           // app knows at boot that this player needs the Shizuku path,
           // instead of discovering it mid-call on the first real dial.
-          runCatching { HiddenHfp.currentCalls(client) }
+          runCatching { HiddenHfp.currentCalls(client, device.value) }
           runCatching { HiddenHfp.connectedDevices(client) }
 
           // The direct (in-process) path works on this device - Shizuku is not
@@ -731,9 +731,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       // HFP profile entirely. No competition for the phone's single hands-free
       // slot, no privileged permissions needed. If raw fails (unbonded device,
       // unsupported controller), the reconnect loop inside RawHfpClient keeps
-      // retrying; meanwhile the system profile is still registered in the
-      // background (register()) and can be used as manual fallback via the
-      // channel selector in Settings.
+      // retrying. The system HFP profile is intentionally NOT registered in
+      // AUTO mode (see register()), so it cannot compete for the phone's
+      // single hands-free slot.
       // (connectRaw disables the system profiles internally before opening
       // the socket, so there is no need to call disableSystemProfiles here.)
       "AUTO" -> {
@@ -761,6 +761,14 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     call.value = null
   }
 
+  /** Resolves the device for the in-process hidden-API path, preferring the
+   * tracked device and falling back to the connected-devices list so a quick
+   * dial right after connect never passes a null device to the hidden API. */
+  private fun directDevice(): BluetoothDevice? {
+    val c = client ?: return null
+    return device.value ?: (HiddenHfp.connectedDevices(c).firstOrNull() as? BluetoothDevice)
+  }
+
   fun dial(number: String): Boolean {
     if (number.isBlank()) return false
     if (connectionState.value != BluetoothProfile.STATE_CONNECTED) {
@@ -770,7 +778,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     if (rawActive) return raw?.dial(number) ?: false
     if (useShizuku) return shizuku?.dial(number) ?: false
     val c = client ?: return false
-    val ok = HiddenHfp.dial(c, number)
+    val d = directDevice() ?: return false
+    val ok = HiddenHfp.dial(c, d, number)
     if (!ok && HiddenHfp.privilegedBlocked) {
       fallbackToShizuku("החיוג הישיר נחסם על ידי המערכת - עוברים אוטומטית ל-Shizuku")
     }
@@ -780,12 +789,20 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun redial(): Boolean =
     if (rawActive) raw?.redial() ?: false
     else if (useShizuku) shizuku?.redial() ?: false
-    else HiddenHfp.redial(client)
+    else {
+      val c = client
+      val d = if (c != null) directDevice() else null
+      c != null && d != null && HiddenHfp.redial(c, d)
+    }
 
   fun answer(): Boolean {
     val ok = if (rawActive) raw?.answer() ?: false
     else if (useShizuku) shizuku?.accept() ?: false
-    else HiddenHfp.accept(client)
+    else {
+      val c = client
+      val d = if (c != null) directDevice() else null
+      c != null && d != null && HiddenHfp.accept(c, d)
+    }
     if (ok) {
       // Give the AG a moment to move the call to ACTIVE before requesting SCO.
       scope.launch {
@@ -799,12 +816,20 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun reject(): Boolean =
     if (rawActive) raw?.reject() ?: false
     else if (useShizuku) shizuku?.reject() ?: false
-    else HiddenHfp.reject(client)
+    else {
+      val c = client
+      val d = if (c != null) directDevice() else null
+      c != null && d != null && HiddenHfp.reject(c, d)
+    }
 
   fun hangup(): Boolean =
     if (rawActive) raw?.hangup() ?: false
     else if (useShizuku) shizuku?.hangup() ?: false
-    else HiddenHfp.hangup(client)
+    else {
+      val c = client
+      val d = if (c != null) directDevice() else null
+      c != null && d != null && HiddenHfp.hangup(c, d)
+    }
 
   fun connectAudio() {
     if (rawActive) {
@@ -939,7 +964,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
                 connectionState.value = HiddenHfp.connectionState(c, d)
                 audioState.value = HiddenHfp.audioState(c, d)
                 if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
-                  val calls = HiddenHfp.currentCalls(c)
+                  val calls = HiddenHfp.currentCalls(c, d)
                   val key = callKey(calls)
                   if (key != lastKey) {
                     lastKey = key
@@ -1054,7 +1079,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     if (calls.isEmpty()) return null
     val parsed = calls.mapNotNull { c -> if (c == null) null else runCatching { parse(c) }.getOrNull() }
     if (parsed.isEmpty()) return null
-    val rank = listOf(CallState.ACTIVE, CallState.INCOMING, CallState.WAITING, CallState.ALERTING, CallState.DIALING, CallState.HELD)
+    // Prefer a newly arriving/ringing call over an already-active one so call
+    // waiting surfaces on the screen instead of being hidden behind the call
+    // the user is already on (mirrors emitFromIndicators() in RawHfpClient).
+    val rank = listOf(CallState.INCOMING, CallState.WAITING, CallState.ACTIVE, CallState.ALERTING, CallState.DIALING, CallState.HELD)
     return parsed.minByOrNull { rank.indexOf(it.state).let { i -> if (i < 0) Int.MAX_VALUE else i } }
   }
 
@@ -1069,6 +1097,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private fun mapState(s: Int): CallState = when (s) {
     HiddenHfp.callStateActive -> CallState.ACTIVE
     HiddenHfp.callStateHeld -> CallState.HELD
+    HiddenHfp.callStateHeldByResponseAndHold -> CallState.HELD
     HiddenHfp.callStateDialing -> CallState.DIALING
     HiddenHfp.callStateAlerting -> CallState.ALERTING
     HiddenHfp.callStateIncoming -> CallState.INCOMING

@@ -44,10 +44,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeHub
+import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.bluetooth.CallInfo
 import com.example.kosherbridge.bluetooth.CallState
@@ -60,6 +62,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifier = Modifier) {
+  val context = LocalContext.current
   var showDevices by remember { mutableStateOf(false) }
 
   Column(
@@ -81,7 +84,7 @@ fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifie
       onDismiss = { showDevices = false },
       onPick = { address ->
         showDevices = false
-        BridgeHub.service?.connectTo(address)
+        BridgeService.requestConnect(context, address)
       },
     )
   }

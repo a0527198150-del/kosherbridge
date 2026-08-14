@@ -1053,7 +1053,10 @@ class RawHfpClient(
     val fields = splitQuoted(line.substringAfter("+CLCC:").trim())
     val dir = fields.getOrNull(1)?.trim()?.toIntOrNull()
     val status = fields.getOrNull(2)?.trim()?.toIntOrNull()
-    val number = fields.firstOrNull { it.startsWith("\"") }?.trim('"')?.takeIf { it.isNotBlank() }
+    // +CLCC: <idx>,<dir>,<status>,<mode>,<mpty>,<number>,<type>. Some AGs quote
+    // the number, others do not (same dialect as +CLIP) - accept both so the
+    // caller id is not lost when the AG omits the quotes.
+    val number = fields.getOrNull(5)?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
     val state: CallState = when (status) {
       0 -> CallState.ACTIVE
       1 -> CallState.HELD
@@ -1098,9 +1101,9 @@ class RawHfpClient(
   }
 
   private fun rank(s: CallState): Int = when (s) {
-    CallState.ACTIVE -> 0
+    CallState.WAITING -> 0
     CallState.INCOMING -> 1
-    CallState.WAITING -> 2
+    CallState.ACTIVE -> 2
     CallState.ALERTING -> 3
     CallState.DIALING -> 4
     CallState.HELD -> 5

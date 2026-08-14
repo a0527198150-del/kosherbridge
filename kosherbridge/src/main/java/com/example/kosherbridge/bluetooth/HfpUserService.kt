@@ -102,15 +102,44 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
 
   override fun connectAudio(): Boolean = HiddenHfp.connectAudio(client)
   override fun disconnectAudio(): Boolean = HiddenHfp.disconnectAudio(client)
-  override fun dial(number: String): Boolean = HiddenHfp.dial(client, number)
-  override fun redial(): Boolean = HiddenHfp.redial(client)
-  override fun accept(): Boolean = HiddenHfp.accept(client)
-  override fun reject(): Boolean = HiddenHfp.reject(client)
-  override fun hangup(): Boolean = HiddenHfp.hangup(client)
+
+  private fun connectedDevice(): BluetoothDevice? =
+    client?.let { HiddenHfp.connectedDevices(it).firstOrNull() as? BluetoothDevice }
+
+  override fun dial(number: String): Boolean {
+    val c = client ?: return false
+    val d = connectedDevice() ?: return false
+    return HiddenHfp.dial(c, d, number)
+  }
+
+  override fun redial(): Boolean {
+    val c = client ?: return false
+    val d = connectedDevice() ?: return false
+    return HiddenHfp.redial(c, d)
+  }
+
+  override fun accept(): Boolean {
+    val c = client ?: return false
+    val d = connectedDevice() ?: return false
+    return HiddenHfp.accept(c, d)
+  }
+
+  override fun reject(): Boolean {
+    val c = client ?: return false
+    val d = connectedDevice() ?: return false
+    return HiddenHfp.reject(c, d)
+  }
+
+  override fun hangup(): Boolean {
+    val c = client ?: return false
+    val d = connectedDevice() ?: return false
+    return HiddenHfp.hangup(c, d)
+  }
 
   override fun currentCallSnapshot(): String {
     val c = client ?: return ""
-    val calls = HiddenHfp.currentCalls(c)
+    val d = connectedDevice() ?: return ""
+    val calls = HiddenHfp.currentCalls(c, d)
     val first = calls.firstOrNull() ?: return ""
     val state = HiddenHfp.callState(first)
     val number = HiddenHfp.callNumber(first) ?: ""

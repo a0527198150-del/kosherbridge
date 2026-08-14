@@ -221,9 +221,26 @@ class BridgeService : Service() {
       manager.logConnection("לא ניתן לפתור את המכשיר $address", true)
       return
     }
-    manager.register()
-    manager.connect(device)
-    scope.launch { ServiceLocator.settings.rememberDevice(device.name ?: address, address) }
+    // Apply the saved channel for THIS player before connecting. When the
+    // service is started via requestConnect() (ACTION_CONNECT) it never runs
+    // the ACTION_START block above, so without this a user who chose DIRECT or
+    // SHIZUKU would silently fall back to AUTO after the service restarts.
+    scope.launch {
+      val mode = ServiceLocator.settings.effectiveChannel(Build.FINGERPRINT).first()
+      manager.setChannelMode(mode)
+      manager.register()
+      if (mode == "DIRECT") {
+        // The DIRECT profile proxy binds asynchronously. Give it a bounded
+        // moment to arrive so a manual connect never sees client == null and
+        // reports "פרופיל הדיבורית לא זמין" prematurely.
+        for (i in 0 until 20) {
+          if (manager.profileReady.value) break
+          delay(250)
+        }
+      }
+      manager.connect(device)
+      ServiceLocator.settings.rememberDevice(device.name ?: address, address)
+    }
   }
 
   fun dial(number: String): Boolean = manager.dial(number)

@@ -67,17 +67,31 @@ class ContactsRepository(
     contact: ContactEntity,
     phones: List<Pair<String, String>>,
     emails: List<Pair<String, String>> = emptyList(),
-  ) {
+  ): Boolean {
     val cleanPhones = phones.map { it.first to it.second.trim() }.filter { it.second.isNotEmpty() }
     val primary = cleanPhones.firstOrNull()?.second ?: contact.phone
+    val normalized = normalizePhone(primary)
+    // addContact() rejects duplicate numbers; editing must too, otherwise two
+    // contacts can end up sharing a normalized number and caller-id resolves to
+    // whichever row Room returns first.
+    if (normalized.isNotEmpty()) {
+      val byPrimary = db.contactDao().byPhone(normalized)
+      val bySecondary = db.contactDao().phoneByNormalized(normalized)
+      if ((byPrimary != null && byPrimary.id != contact.id) ||
+        (bySecondary != null && bySecondary.contactId != contact.id)
+      ) {
+        return false
+      }
+    }
     db.contactDao().update(
       contact.copy(
         phone = primary,
-        normalizedPhone = normalizePhone(primary),
+        normalizedPhone = normalized,
         email = emails.firstOrNull()?.second?.trim()?.takeIf { it.isNotEmpty() } ?: contact.email,
       ),
     )
     syncPhonesAndEmails(contact.id, cleanPhones, emails)
+    return true
   }
 
   /** Rewrites the phone/email rows of a contact so they always match the editor state. */

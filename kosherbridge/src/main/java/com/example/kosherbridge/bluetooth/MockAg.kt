@@ -6,9 +6,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Simulated kosher phone playing the HFP Audio Gateway role. It speaks the
- * exact dialect captured from a real kosher phone (the AT probe recorded
- * `AT+BRSF=20 -> +BRSF: 355`, the CIND indicator order, `+CIEV` and `+CLIP`
- * events), so the app's AT-command logic can be exercised on an emulator that
+ * exact dialect captured from a real kosher phone (the AG's `+BRSF: 355`
+ * response, the CIND indicator order, `+CIEV` and `+CLIP` events), so the
+ * app's AT-command logic can be exercised on an emulator that
  * has no Bluetooth radio at all.
  *
  * The production [RawHfpClient] talks to this object over an in-memory pipe

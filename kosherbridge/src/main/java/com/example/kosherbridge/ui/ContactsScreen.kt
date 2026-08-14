@@ -184,10 +184,18 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
       initial = c,
       onSave = { name, phones, emails, notes, photo ->
         scope.launch {
-          if (photo != c.contact.photoUri) repo.deleteContactPhoto(c.contact.photoUri)
-          repo.updateContact(c.contact.copy(name = name, photoUri = photo, notes = notes), phones, emails)
+          val ok = repo.updateContact(
+            c.contact.copy(name = name, photoUri = photo, notes = notes),
+            phones,
+            emails,
+          )
+          if (ok) {
+            if (photo != c.contact.photoUri) repo.deleteContactPhoto(c.contact.photoUri)
+            editFor = null
+          } else {
+            onSnackbar("איש קשר עם מספר זה כבר קיים")
+          }
         }
-        editFor = null
       },
       onDismiss = { editFor = null },
     )
