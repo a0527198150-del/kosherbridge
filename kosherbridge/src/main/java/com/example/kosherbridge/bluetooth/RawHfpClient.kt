@@ -140,6 +140,11 @@ class RawHfpClient(
 
   private val indicatorNames = mutableMapOf<Int, String>() // index -> name (from AT+CIND=?)
   private val indicatorValues = mutableMapOf<Int, Int>()   // index -> value (from +CIEV / AT+CIND)
+  /** True once a real +CIEV event arrived. Feature phones (or AGs that reject
+   * AT+CMER) never send CIEV, so AT+CLCC polling is their only call-state
+   * channel; this flag lets an empty CLCC batch mean "call ended" for them,
+   * while AGs with live CIEV keep that path as the source of truth. */
+  @Volatile private var cievSeen = false
   private val clccLock = Any()
   private val clccCalls = mutableListOf<CallInfo>()
   @Volatile private var clipNumber: String? = null
@@ -966,6 +971,7 @@ class RawHfpClient(
     val parts = line.substringAfter("+CIEV:").trim().split(",")
     val idx = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return
     val value = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: return
+    cievSeen = true
     indicatorValues[idx] = value
     emitFromIndicators()
   }
@@ -1017,7 +1023,9 @@ class RawHfpClient(
     } else {
       body.substringBefore(',').trim()
     }
-    if (num.isNotEmpty()) clipNumber = num
+    // A withheld/unknown number must clear the previous call's number, not
+    // keep showing it as this call's caller ID.
+    clipNumber = if (num.isNotEmpty()) num else null
     // Some AGs send the callsetup CIEV before the CLIP, so the ringing call
     // was first shown without a number. Refresh it now that the number is known.
     val current = call.value
@@ -1061,15 +1069,32 @@ class RawHfpClient(
 
   private fun finishClccBatch() {
     var info: CallInfo? = null
+    var sawCalls = false
     synchronized(clccLock) {
-      if (clccCalls.isEmpty()) return
-      info = clccCalls.minByOrNull { rank(it.state) }
+      sawCalls = clccCalls.isNotEmpty()
+      info = if (sawCalls) clccCalls.minByOrNull { rank(it.state) } else null
       clccCalls.clear()
     }
-    info ?: return
-    lastDirection = info.direction
-    if (call.value != info) call.value = info
-    if (info.state == CallState.IDLE) clipNumber = null
+    if (info != null) {
+      lastDirection = info.direction
+      if (call.value != info) call.value = info
+      if (info.state == CallState.IDLE) clipNumber = null
+      return
+    }
+    if (sawCalls) return // rows arrived but none parsed - keep the current state
+    // Empty CLCC list = the AG reports no active call. If the AG never sends
+    // +CIEV (CMER rejected / feature phone), CLCC is the only source of truth
+    // and an empty batch means the call ended - clear the stale ringing/active
+    // UI instead of leaving it stuck. When CIEV is working, only an
+    // established (ACTIVE/HELD) call may be cleared this way: those reliably
+    // appear in CLCC, whereas a buggy AG can omit a ringing call and a
+    // transient empty batch must not dismiss the incoming-call screen.
+    val current = call.value
+    val established = current?.state == CallState.ACTIVE || current?.state == CallState.HELD
+    if (!cievSeen || established) {
+      clipNumber = null
+      if (current != null) call.value = null
+    }
   }
 
   private fun rank(s: CallState): Int = when (s) {
