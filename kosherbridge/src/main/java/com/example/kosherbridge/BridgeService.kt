@@ -334,10 +334,16 @@ class BridgeService : Service() {
     }
     scope.launch {
       val settings = ServiceLocator.settings
-      var applied: String? = null
-      settings.effectiveChannel(Build.FINGERPRINT).collect { mode ->
-        manager.setChannelMode(mode)
-        if (applied != null && applied != mode) {
+      var appliedManual: String? = null
+      // React to the user's *manual* choice, not the effective channel. The
+      // effective channel also changes when onBackendWorked() learns the
+      // channel that worked on this player (AUTO -> RAW right after a
+      // successful connect); treating that as a user switch disconnected the
+      // link the app had just established, causing a spurious drop on the
+      // first connection after every fresh install.
+      settings.channelState(Build.FINGERPRINT).collect { cs ->
+        manager.setChannelMode(cs.effective)
+        if (appliedManual != null && appliedManual != cs.manual) {
           // The user switched the channel in settings - re-apply it to the
           // live connection so the change takes effect immediately.
           val dev = settings.lastDevice.first() ?: return@collect
@@ -347,7 +353,7 @@ class BridgeService : Service() {
             manager.connect(it)
           }
         }
-        applied = mode
+        appliedManual = cs.manual
       }
     }
   }
