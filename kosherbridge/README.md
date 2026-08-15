@@ -136,7 +136,7 @@
 ## בנייה
 
 ```bash
-./gradlew :kosherbridge:assembleDebug
+gradle :kosherbridge:assembleDebug
 ```
 
 קובץ ה-APK ייווצר ב-`kosherbridge/build/outputs/apk/debug/`.

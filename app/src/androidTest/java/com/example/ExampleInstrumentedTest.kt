@@ -15,8 +15,9 @@ import org.junit.runner.RunWith
 class ExampleInstrumentedTest {
   @Test
   fun useAppContext() {
-    // Context of the app under test.
+    // Context of the app under test. The applicationId is set in
+    // app/build.gradle.kts (not the namespace), so this must match that value.
     val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-    assertEquals("com.example", appContext.packageName)
+    assertEquals("com.aistudio.kosherbudget.zrwpxm", appContext.packageName)
   }
 }
