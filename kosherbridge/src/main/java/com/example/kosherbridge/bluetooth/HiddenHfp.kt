@@ -118,9 +118,9 @@ object HiddenHfp {
     mDisconnectAudio = method(c, "disconnectAudio")
     mDial = method(c, "dial", BluetoothDevice::class.java, String::class.java)
     mRedial = method(c, "redial", BluetoothDevice::class.java)
-    mAccept = method(c, "acceptCall", BluetoothDevice::class.java, Int::class.javaPrimitiveType)
+    mAccept = method(c, "acceptCall", BluetoothDevice::class.java, Int::class.javaPrimitiveType!!)
     mReject = method(c, "rejectCall", BluetoothDevice::class.java)
-    mTerminate = method(c, "terminateCall", BluetoothDevice::class.java, Int::class.javaPrimitiveType)
+    mTerminate = method(c, "terminateCall", BluetoothDevice::class.java, Int::class.javaPrimitiveType!!)
     mCurrentCalls = method(c, "getCurrentCalls", BluetoothDevice::class.java)
     callbackClass?.let { cb ->
       mRegisterCallback = method(c, "registerCallback", cb)

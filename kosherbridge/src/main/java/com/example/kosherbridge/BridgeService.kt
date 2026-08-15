@@ -22,6 +22,7 @@ import com.example.kosherbridge.bluetooth.HfpClientManager
 import com.example.kosherbridge.bluetooth.HiddenHfp
 import com.example.kosherbridge.bluetooth.PairedDeviceInfo
 import com.example.kosherbridge.data.ServiceLocator
+import com.example.kosherbridge.data.local.ContactsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -100,13 +101,18 @@ class BridgeService : Service() {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private lateinit var manager: HfpClientManager
 
-  private var activeCallLogId: Long? = null
-  private var lastCallInfo: CallInfo? = null
+  /** Keeps one call-log lifecycle per simultaneous HFP call. */
+  private data class CallLogSession(
+    val id: Long,
+    var number: String?,
+    val direction: CallDirection,
+    var sawActive: Boolean = false,
+    var startedAt: Long = 0L,
+  )
+
+  private val activeCallLogs = mutableListOf<CallLogSession>()
   private var fullScreenEnabled = true
   private var vibrateEnabled = true
-  private var sawActive = false       // did the current call ever reach ACTIVE?
-  private var callStartedAt = 0L      // when ACTIVE began, for duration
-  private var activeCallDirection: CallDirection? = null
   private var reconnecting = false
   private var lastManualDisconnectAt = 0L
   private var wakeLock: PowerManager.WakeLock? = null
@@ -487,65 +493,69 @@ class BridgeService : Service() {
   }
 
   private suspend fun onCallChanged(info: CallInfo?) {
-    val prev = lastCallInfo
     BridgeHub.update { it.copy(call = info) }
 
     if (info == null || info.state == CallState.IDLE || info.state == CallState.TERMINATED) {
       Notifications.cancelCall(this)
-      // Finalize the call log entry: an incoming call that never reached ACTIVE
-      // is a missed call; otherwise record the conversation length.
-      activeCallLogId?.let { id ->
-        val missed = activeCallDirection == CallDirection.INCOMING && !sawActive
-        val duration = if (sawActive && callStartedAt != 0L) {
-          ((System.currentTimeMillis() - callStartedAt) / 1000L).toInt()
+      // A null/idle snapshot means the AG has no remaining calls. Finalize
+      // every session, not only the most recently observed one: HFP call
+      // waiting can keep the first call held while a second call is ringing.
+      activeCallLogs.toList().forEach { session ->
+        val missed = session.direction == CallDirection.INCOMING && !session.sawActive
+        val duration = if (session.sawActive && session.startedAt != 0L) {
+          ((System.currentTimeMillis() - session.startedAt) / 1000L).toInt()
         } else {
           0
         }
-        ServiceLocator.contacts.finishCall(id, missed, duration)
+        ServiceLocator.contacts.finishCall(session.id, missed, duration)
       }
-      activeCallLogId = null
-      sawActive = false
-      callStartedAt = 0L
-      activeCallDirection = null
-      lastCallInfo = null
+      activeCallLogs.clear()
       return
     }
 
-    lastCallInfo = info
+    val normalizedNumber = ContactsRepository.normalizePhone(info.number.orEmpty())
+    val existingSession = activeCallLogs.firstOrNull { candidate ->
+      if (candidate.direction != info.direction) return@firstOrNull false
+      val candidateNumber = ContactsRepository.normalizePhone(candidate.number.orEmpty())
+      if (normalizedNumber.isNotEmpty() && candidateNumber.isNotEmpty()) {
+        normalizedNumber == candidateNumber
+      } else {
+        // A caller ID can arrive shortly after the first CIEV/RING event.
+        // Reuse the direction's number-less session instead of creating a
+        // duplicate row when the number becomes known.
+        candidateNumber.isEmpty()
+      }
+    }
+    val isNewSession = existingSession == null
+    val session = existingSession ?: run {
+      val name = ServiceLocator.contacts.nameFor(info.number)
+      val id = ServiceLocator.contacts.logCall(
+        info.number ?: "",
+        name,
+        info.direction,
+        info.state,
+      )
+      CallLogSession(id, info.number, info.direction).also { activeCallLogs += it }
+    }
+    if (!isNewSession && session.number.isNullOrBlank() && !info.number.isNullOrBlank()) {
+      // Keep the in-memory identity stable while caller ID is filled in.
+      session.number = info.number
+    }
+
     when (info.state) {
       CallState.INCOMING, CallState.WAITING -> {
-        if (prev == null || (prev.state != CallState.INCOMING && prev.state != CallState.WAITING)) {
+        // A new WAITING event alongside an existing ACTIVE/HELD session is a
+        // second call, so it gets its own log row and its own missed flag.
+        if (isNewSession) {
           val name = ServiceLocator.contacts.nameFor(info.number)
-          sawActive = false
-          callStartedAt = 0L
-          activeCallDirection = CallDirection.INCOMING
-          activeCallLogId = ServiceLocator.contacts.logCall(
-            info.number ?: "",
-            name,
-            CallDirection.INCOMING,
-            info.state,
-          )
           showIncomingCall(name ?: info.number ?: "שיחה נכנסת", info.number)
         }
       }
-      CallState.DIALING -> {
-        if (info.direction == CallDirection.OUTGOING && activeCallLogId == null) {
-          val name = ServiceLocator.contacts.nameFor(info.number)
-          activeCallDirection = CallDirection.OUTGOING
-          activeCallLogId = ServiceLocator.contacts.logCall(
-            info.number ?: "",
-            name,
-            CallDirection.OUTGOING,
-            CallState.DIALING,
-          )
-        }
-      }
       CallState.ACTIVE -> {
-        sawActive = true
+        session.sawActive = true
         // Only start the clock on the first ACTIVE of this call, so a
-        // HELD -> ACTIVE transition mid-call doesn't shrink the duration
-        // that gets written to the call log.
-        if (callStartedAt == 0L) callStartedAt = System.currentTimeMillis()
+        // HELD -> ACTIVE transition mid-call doesn't shrink its duration.
+        if (session.startedAt == 0L) session.startedAt = System.currentTimeMillis()
         manager.connectAudio()
         Notifications.showInCall(this, info)
       }
