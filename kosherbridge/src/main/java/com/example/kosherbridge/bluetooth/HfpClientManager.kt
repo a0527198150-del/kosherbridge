@@ -440,15 +440,27 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           runCatching { HiddenHfp.currentCalls(client, device.value) }
           runCatching { HiddenHfp.connectedDevices(client) }
 
-          // The direct (in-process) path works on this device - Shizuku is not
-          // needed. Clear any stale error (e.g. a premature Shizuku message)
-          // so the home screen doesn't keep telling the user to install it.
-          lastError.value = null
-          backendLabel.value = "ישיר"
+          // The proxy exists, but the probe above may have proven the app
+          // actually lacks BLUETOOTH_PRIVILEGED. In that case do NOT record
+          // "DIRECT" as the learned working channel: BridgeService persists
+          // onBackendWorked() per Build.FINGERPRINT, so a blocked device would
+          // otherwise jump straight into the blocked path on every next launch
+          // instead of falling back to Shizuku/RFCOMM.
+          if (HiddenHfp.privilegedBlocked) {
+            lastError.value =
+              "גישת פרופיל הדיבורית נחסמה על ידי המערכת - נדרש Shizuku או חיבור RFCOMM ישיר"
+          } else {
+            // The direct (in-process) path works on this device - Shizuku is
+            // not needed. Clear any stale error (e.g. a premature Shizuku
+            // message) so the home screen doesn't keep telling the user to
+            // install it.
+            lastError.value = null
+            backendLabel.value = "ישיר"
+            onBackendWorked?.invoke("DIRECT")
+          }
           registerCallback()
           registerStateReceiver()
           startPolling()
-          onBackendWorked?.invoke("DIRECT")
         }
       }
 

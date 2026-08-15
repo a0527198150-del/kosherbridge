@@ -366,8 +366,22 @@ class BridgeService : Service() {
           val dev = settings.lastDevice.first() ?: return@collect
           manager.disconnect()
           delay(300)
-          runCatching { adapter()?.getRemoteDevice(dev.address) }?.getOrNull()?.let {
-            manager.connect(it)
+          val target = runCatching { adapter()?.getRemoteDevice(dev.address) }.getOrNull()
+          if (target != null) {
+            // The DIRECT path needs the in-process profile proxy, which is
+            // registered on service start (and by connectTo()). A service that
+            // started in AUTO/RAW skipped register() entirely, so switching to
+            // DIRECT on a live service would otherwise fail with "פרופיל
+            // הדיבורית לא זמין" until the app restarted. Register it now and
+            // give the proxy a bounded moment to arrive before connecting.
+            manager.register()
+            if (cs.effective == "DIRECT") {
+              for (i in 0 until 20) {
+                if (manager.profileReady.value || manager.privilegedBlocked) break
+                delay(250)
+              }
+            }
+            manager.connect(target)
           }
         }
         appliedManual = cs.manual
