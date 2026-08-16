@@ -1019,8 +1019,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     var d = device.value
     if (d == null) {
       // Rediscover the connected device, mirroring the direct path's
-      // connectedDevices() lookup, so a manual "התחבר דרך Shizuku" works even
-      // when auto-connect never filled device.value.
+      // connectedDevices() lookup, so a manual Shizuku connect (via the
+      // "ערוץ חיבור" selector) works even when auto-connect never filled
+      // device.value.
       val addr = s.bondedDevices()
         .firstOrNull { s.connectionState(it.address) == BluetoothProfile.STATE_CONNECTED }
         ?.address

@@ -46,7 +46,6 @@ class BridgeService : Service() {
     const val ACTION_START = "com.example.kosherbridge.action.START"
     const val ACTION_CONNECT = "com.example.kosherbridge.action.CONNECT"
     const val EXTRA_DEVICE = "com.example.kosherbridge.extra.DEVICE"
-    const val EXTRA_RAW = "com.example.kosherbridge.extra.RAW"
     const val ACTION_DISCONNECT = "com.example.kosherbridge.action.DISCONNECT"
     const val ACTION_DIAL = "com.example.kosherbridge.action.DIAL"
     const val EXTRA_NUMBER = "com.example.kosherbridge.extra.NUMBER"
@@ -83,19 +82,6 @@ class BridgeService : Service() {
       }
     }
 
-    /** Force the raw RFCOMM path even when the service is not running yet. */
-    fun requestConnectRaw(context: Context, address: String) {
-      val svc = instance
-      if (svc != null) {
-        svc.connectRaw(address)
-      } else {
-        val intent = Intent(context, BridgeService::class.java)
-          .setAction(ACTION_CONNECT)
-          .putExtra(EXTRA_DEVICE, address)
-          .putExtra(EXTRA_RAW, true)
-        ContextCompat.startForegroundService(context, intent)
-      }
-    }
   }
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -154,7 +140,7 @@ class BridgeService : Service() {
         ACTION_CONNECT -> {
           val addr = intent.getStringExtra(EXTRA_DEVICE)
           if (addr != null) {
-            if (intent.getBooleanExtra(EXTRA_RAW, false)) connectRaw(addr) else connectTo(addr)
+            connectTo(addr)
           }
         }
         ACTION_DISCONNECT -> disconnect()
@@ -250,22 +236,6 @@ class BridgeService : Service() {
   }
 
   fun dial(number: String): Boolean = manager.dial(number)
-
-  /** Direct HFP over RFCOMM - no permissions needed; audio depends on the player. */
-  fun connectRaw(address: String) {
-    val adapter = adapter()
-    if (adapter == null) {
-      manager.logConnection("לא נמצא מתאם בלוטוס - לא ניתן להתחבר (RAW)", true)
-      return
-    }
-    val device = runCatching { adapter.getRemoteDevice(address) }.getOrNull()
-    if (device == null) {
-      manager.logConnection("לא ניתן לפתור את המכשיר $address (RAW)", true)
-      return
-    }
-    manager.connectRaw(device)
-    scope.launch { ServiceLocator.settings.rememberDevice(device.name ?: address, address) }
-  }
 
   fun disconnect() {
     lastManualDisconnectAt = System.currentTimeMillis()

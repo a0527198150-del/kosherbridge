@@ -9,7 +9,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
-import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -42,7 +41,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.data.ServiceLocator
@@ -124,9 +122,6 @@ fun ConnectionSettingsScreen(
         checked = autoConnect,
       ) { v -> scope.launch { settings.setAutoConnect(v) } }
       SettingRow("בחר מכשיר", state.deviceName ?: "לא נבחר") { showDevices = true }
-      SettingRow("התאמת מכשיר חדש", null) {
-        runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
-      }
       SettingRow("ערוץ חיבור", channelLabel(channelState)) { showChannelDialog = true }
       SettingSwitch(
         title = "ניטרול פרופילי המערכת",
@@ -137,23 +132,6 @@ fun ConnectionSettingsScreen(
         "צימוד מכשיר חדש (סריקה)",
         "סורק בלוטוס ומצמיד מכשיר חדש מהאפליקציה",
       ) { requestScanPermissions() }
-      SettingRow(
-        "התחבר דרך Shizuku",
-        "עוקף חסימת אנדרואיד 12+ (דורש Shizuku פעיל עם הרשאה)",
-      ) {
-        BridgeHub.service?.bindShizuku()
-      }
-      SettingRow(
-        "חיבור ישיר (ללא הרשאות)",
-        "שליטה וזיהוי שיחה ישירות מהאפליקציה; שמע תלוי בנגן",
-      ) {
-        val addr = state.deviceAddress
-        if (addr != null) {
-          BridgeService.requestConnectRaw(context, addr)
-        } else {
-          showDevices = true
-        }
-      }
     }
 
     SettingsCard("כלים") {

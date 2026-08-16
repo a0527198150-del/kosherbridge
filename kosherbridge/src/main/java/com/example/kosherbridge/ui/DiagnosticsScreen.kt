@@ -174,7 +174,7 @@ private fun buildGuidance(state: BridgeUiState): String? = when {
     when {
       !state.hiddenApiAvailable && !state.shizukuAvailable ->
         "המכשיר חוסם את פרופיל הדיבורית. שתי דרכים:\n" +
-          "1) התקן Shizuku והפעל אותו פעם אחת (adb אלחוטי), ואז לחץ 'התחבר דרך Shizuku'.\n" +
+          "1) התקן Shizuku והפעל אותו פעם אחת (adb אלחוטי), ובחר 'דרך Shizuku' ב'ערוץ חיבור'.\n" +
           "2) בלי התקנות: זווג את הטלפון הכשר ובחר אותו באפליקציה - החיבור הישיר ינסה לבד."
       !state.profileReady && state.rawDropInfo != null ->
         "הקישור נופל שוב ושוב. מחק את זיווג הטלפון וזווג אותו מחדש - עכשיו האפליקציה תכבה אוטומטית את החיבורים המערכתיים שמתחרים על הקישור."
