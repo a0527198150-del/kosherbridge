@@ -647,28 +647,6 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   /**
-   * Runs the HFP protocol self-test against a simulated kosher phone over an
-   * in-memory pipe. No Bluetooth radio is involved, so this works on an
-   * emulator. Each step is written to the connection journal and the final
-   * line is returned through [onResult] (for a snackbar).
-   */
-  fun runSimulation(onResult: (String) -> Unit) {
-    logConnection("מפעיל בדיקת טלפון מדומה (ללא בלוטוס)...", false)
-    val client = RawHfpClient(context, scope) { message, error ->
-      logConnection(message, error)
-    }
-    scope.launch {
-      val report = withContext(Dispatchers.IO) {
-        runCatching { client.simulate() }.getOrElse { t ->
-          listOf("✗ הבדיקה קרסה: ${t.message ?: "שגיאה לא ידועה"}")
-        }
-      }
-      report.forEach { line -> logConnection(line, line.startsWith("✗")) }
-      onResult(report.lastOrNull() ?: "הבדיקה הסתיימה")
-    }
-  }
-
-  /**
    * Connects the bridge to the kosher phone. Priority: active raw RFCOMM link,
    * then the privileged Shizuku path, then the in-process hidden API. When the
    * hands-free profile is unavailable on this player - or the stack-level

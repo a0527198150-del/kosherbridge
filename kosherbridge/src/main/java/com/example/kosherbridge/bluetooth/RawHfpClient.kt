@@ -260,7 +260,7 @@ class RawHfpClient(
    * Runs the connected-session portion of the link: negotiates the AT
    * handshake, starts call-state polling, and reads events until the link
    * drops. Returns the outcome so the reconnect loop decides whether to
-   * retry. Shared by the Bluetooth path and the simulation self-test.
+   * retry.
    */
   private suspend fun runSession(link: HfpLink, generation: Long): SessionResult {
     synchronized(writeLock) {
@@ -833,94 +833,6 @@ class RawHfpClient(
     readJob?.cancel()
     teardown()
     readJob = scope.launch(Dispatchers.IO) { runConnection(generation) }
-  }
-
-  /**
-   * Self-test that drives the full AT-command logic against a [MockAg] over
-   * an in-memory pipe - no Bluetooth radio required, so it runs on an
-   * emulator. Returns one human-readable line per checked step; callers feed
-   * these into the diagnostics report. Call this on a dedicated client
-   * instance, never on the live one.
-   */
-  suspend fun simulate(): List<String> {
-    val steps = mutableListOf<String>()
-    val (clientLink, agLink) = LoopbackHfpLink.createPair()
-    val mock = MockAg(agLink, scope)
-
-    // Session state for a single, non-reconnecting run (generation 1).
-    hspMode = false
-    lastGateway = "SIM"
-    reconnectEnabled = true
-    connectionGeneration = 1
-    attemptInFlight = true
-    val session = scope.launch(Dispatchers.IO) { runSession(clientLink, 1L) }
-    mock.start()
-    try {
-      if (!await(10_000) { isConnected.value }) {
-        steps += "✗ משא ומתן הדיבורית (handshake) לא הושלם"
-        return steps
-      }
-      steps += "✓ משא ומתן הדיבורית (handshake) הושלם"
-
-      mock.incomingCall("0501234567")
-      if (!await(5_000) {
-          call.value?.state == CallState.INCOMING && call.value?.number == "0501234567"
-        }
-      ) {
-        steps += "✗ שיחה נכנסת לא זוהתה (call=${call.value})"
-        return steps
-      }
-      steps += "✓ זיהוי שיחה נכנסת עם מזהה המתקשר"
-
-      answer()
-      if (!await(5_000) { call.value?.state == CallState.ACTIVE }) {
-        steps += "✗ המענה לא העביר את השיחה למצב פעיל (call=${call.value})"
-        return steps
-      }
-      steps += "✓ מענה לשיחה (ATA)"
-
-      hangup()
-      if (!await(5_000) { call.value == null || call.value?.state == CallState.IDLE }) {
-        steps += "✗ הניתוק לא סיים את השיחה (call=${call.value})"
-        return steps
-      }
-      steps += "✓ ניתוק שיחה (AT+CHUP)"
-
-      dial("0527654321")
-      if (!await(5_000) {
-          call.value?.state == CallState.ACTIVE && call.value?.direction == CallDirection.OUTGOING
-        }
-      ) {
-        steps += "✗ החיוג לא הגיע לשיחה פעילה (call=${call.value})"
-        return steps
-      }
-      steps += "✓ חיוג יוצא (ATD)"
-
-      hangup()
-      if (!await(5_000) { call.value == null || call.value?.state == CallState.IDLE }) {
-        steps += "✗ ניתוק השיחה היוצאת נכשל (call=${call.value})"
-        return steps
-      }
-      steps += "✓ סיום שיחה יוצאת"
-
-      steps += "✓ כל בדיקות הטלפון המדומה עברו בהצלחה"
-    } finally {
-      mock.close()
-      reconnectEnabled = false
-      connectionGeneration++
-      teardown()
-      session.cancel()
-    }
-    return steps
-  }
-
-  private suspend fun await(timeoutMs: Long, cond: () -> Boolean): Boolean {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (System.currentTimeMillis() < deadline) {
-      if (cond()) return true
-      delay(50)
-    }
-    return cond()
   }
 
   // ------------------------------------------------------------------ parsing

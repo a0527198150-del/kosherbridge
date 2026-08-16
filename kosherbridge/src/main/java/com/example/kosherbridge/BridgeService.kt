@@ -290,9 +290,6 @@ class BridgeService : Service() {
     scope.launch { onResult(manager.audio.checkMicrophone()) }
   }
 
-  /** Runs the protocol self-test against a simulated kosher phone (no Bluetooth). */
-  fun runSimulation(onResult: (String) -> Unit) = manager.runSimulation(onResult)
-
   // ------------------------------------------------------------------ internals
 
   private fun adapter(): BluetoothAdapter? =
