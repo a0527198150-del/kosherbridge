@@ -147,6 +147,12 @@ class RawHfpClient(
   @Volatile private var cievSeen = false
   private val clccLock = Any()
   private val clccCalls = mutableListOf<CallInfo>()
+  /**
+   * Bumped by [finishClccBatch] every time the AG completes a command
+   * (OK/ERROR). The CLCC poller waits on this signal instead of reading the
+   * socket stream itself - see startPolling().
+   */
+  @Volatile private var clccBatchSeq = 0L
   @Volatile private var clipNumber: String? = null
   @Volatile private var lastDirection = CallDirection.INCOMING
 
@@ -702,43 +708,37 @@ class RawHfpClient(
       // phones answer once and then terminate the RFCOMM channel.
       val supportsCurrentCalls = !agFeaturesKnown || (agBrsfFeatures and 0x40) != 0
       if (supportsCurrentCalls) {
-        var writeFailures = 0
+        // Single-reader design: only readLoop() consumes the socket stream.
+        // It parses every +CLCC: row into clccCalls and finishClccBatch()
+        // publishes the call state when the terminating OK/ERROR arrives
+        // (bumping clccBatchSeq). This poller schedules each query and waits
+        // on that signal - it never reads the stream itself. A second reader
+        // on the same BufferedReader stole lines from readLoop at random, so
+        // the CLCC response often landed in the main loop while this coroutine
+        // timed out, counted a bogus "write failure" and tore down perfectly
+        // healthy links on slow AGs after ~9 seconds.
         while (isActive && isConnected.value) {
           val ownedSocket = socket // capture before possible generation switch
           synchronized(clccLock) { clccCalls.clear() }
-          // Wait for the AG to finish the previous command before sending
-          // the next one. Simple feature phones use a synchronous AT parser
-          // that cannot handle overlapping commands and may drop the RFCOMM
-          // link. A 3-second timeout prevents the loop from hanging when the
-          // AG is silent (some AGs don't respond to CLCC when idle).
-          // null means the AG stayed silent for 3s (idle feature phones
-          // often don't answer CLCC) - not a failure, just keep polling.
-          val clccOk = withTimeoutOrNull(3_000L) {
-            sendAndWait("AT+CLCC", ownedSocket)
-          } ?: false
-          if (clccOk) {
-            writeFailures = 0
-          } else {
-            writeFailures++
-            // A cancelled old generation must never tear down the replacement.
-            if (ownedSocket != null && socket !== ownedSocket) {
-              // Socket was replaced by a newer generation - stop polling.
-              return@launch
-            }
-            // The output stream is dead (half-open socket): the phone will
-            // drop the link soon anyway. Tear it down now so the reconnect
-            // loop picks it up immediately instead of waiting for readLoop
-            // to detect the closure.
-            if (writeFailures >= 3) {
-              onLog("זרם הכתיבה מת אחרי $writeFailures כשלונות — מתחבר מחדש", true)
-              Log.w(tag, "output stream dead after $writeFailures write failures - forcing reconnect")
-              teardown(ownedSocket)
-              return@launch
-            }
+          val batchBefore = clccBatchSeq
+          if (!sendCommand("AT+CLCC", ownedSocket)) {
+            // sendCommand() either tore the socket down (dead output stream)
+            // or the socket was replaced by a newer generation - stop polling
+            // in both cases.
+            return@launch
           }
-          // Keep the polling gentle for low-end feature phones; unsolicited
-          // +CIEV notifications remain the primary call-state mechanism.
-          delay(1500)
+          // Wait for the reader to finish the response batch, or for a
+          // silent-AG timeout. Some basic AGs don't answer CLCC when idle -
+          // that is not a failure, just keep polling gently.
+          val deadline = System.currentTimeMillis() + 3_000L
+          while (isActive && clccBatchSeq == batchBefore && System.currentTimeMillis() < deadline) {
+            delay(50)
+          }
+          // Quiet gap: a synchronous feature-phone AT parser must finish the
+          // current command before the next one arrives, or it may drop the
+          // RFCOMM link. Unsolicited +CIEV events remain the primary
+          // call-state mechanism for low-end AGs.
+          delay(600)
         }
       } else {
         // The AG does not advertise Enhanced Call Status (or we could not
@@ -983,6 +983,9 @@ class RawHfpClient(
   }
 
   private fun finishClccBatch() {
+    // The AG completed a command - release the CLCC poller waiting on this
+    // batch, whatever its outcome (calls listed, empty list, or error).
+    clccBatchSeq++
     var info: CallInfo? = null
     var sawCalls = false
     synchronized(clccLock) {
