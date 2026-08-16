@@ -116,22 +116,22 @@ fun ConnectionSettingsScreen(
     SubPageHeader("הגדרות חיבור", onBack)
 
     SettingsCard("חיבור") {
+      SettingRow("בחר מכשיר", state.deviceName ?: "לא נבחר") { showDevices = true }
+      SettingRow(
+        "צימוד מכשיר חדש (סריקה)",
+        "סורק בלוטוס ומצמיד מכשיר חדש מהאפליקציה",
+      ) { requestScanPermissions() }
       SettingSwitch(
         title = "חיבור אוטומטי",
         subtitle = "התחבר לטלפון הכשר בהפעלה, ואחרי ניתוק אקראי",
         checked = autoConnect,
       ) { v -> scope.launch { settings.setAutoConnect(v) } }
-      SettingRow("בחר מכשיר", state.deviceName ?: "לא נבחר") { showDevices = true }
       SettingRow("ערוץ חיבור", channelLabel(channelState)) { showChannelDialog = true }
       SettingSwitch(
         title = "ניטרול פרופילי המערכת",
         subtitle = "כיבוי הדיבורית/מדיה של המערכת לפני חיבור RFCOMM (כבה רק לבדיקת ניתוקים)",
         checked = profileGuard,
       ) { v -> scope.launch { settings.setProfileGuard(v) } }
-      SettingRow(
-        "צימוד מכשיר חדש (סריקה)",
-        "סורק בלוטוס ומצמיד מכשיר חדש מהאפליקציה",
-      ) { requestScanPermissions() }
     }
 
     SettingsCard("כלים") {
