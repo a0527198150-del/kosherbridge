@@ -23,7 +23,7 @@ class RootBridgeProvider : ContentProvider() {
 
   override fun onCreate(): Boolean = true
 
-  override fun call(method: String?, arg: String?, extras: Bundle?): Bundle? {
+  override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
     if (method != RootBridge.METHOD_SEND_BINDER) return null
     // Only the root process may hand the app its privileged binder.
     if (Binder.getCallingUid() != 0) return null

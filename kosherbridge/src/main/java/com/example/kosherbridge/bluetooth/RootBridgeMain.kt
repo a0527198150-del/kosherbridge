@@ -56,17 +56,21 @@ object RootBridgeMain {
       Log.e(TAG, "missing arguments: $args")
       System.exit(1)
     }
+    val packageName = pkg ?: return
+    val className = cls ?: return
+    val tokenValue = token ?: return
 
     if (Looper.getMainLooper() == null) Looper.prepareMainLooper()
 
-    val service: IHfpBridge = try {
-      createService(pkg, cls)
+    val service = try {
+      createService(packageName, className)
     } catch (t: Throwable) {
       Log.e(TAG, "failed to create user service", t)
       System.exit(1)
+      return
     }
 
-    if (!deliverBinder(service, pkg, token)) {
+    if (!deliverBinder(service, packageName, tokenValue)) {
       Log.e(TAG, "failed to deliver binder to the app")
       System.exit(1)
     }
