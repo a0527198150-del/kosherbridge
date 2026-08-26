@@ -125,6 +125,11 @@ class RawHfpClient(
   @Volatile private var attemptInFlight = false
   @Volatile private var connectionGeneration = 0L
   private var reconnectAttempts = 0
+  /** Connection-generation in which the profile guard already ran. The guard
+   * (beforeSocketOpen) is a heavy multi-second profile teardown; running it
+   * once per generation instead of before every socket attempt cuts the
+   * worst-case pre-socket delay from ~29s to one pass. */
+  @Volatile private var guardRanForGeneration = -1L
 
   val isConnected = MutableStateFlow(false)
   val call = MutableStateFlow<CallInfo?>(null)
@@ -145,6 +150,16 @@ class RawHfpClient(
    * channel; this flag lets an empty CLCC batch mean "call ended" for them,
    * while AGs with live CIEV keep that path as the source of truth. */
   @Volatile private var cievSeen = false
+  /** True when the AG accepted AT+CMER, i.e. unsolicited +CIEV will arrive.
+   * When false, CLCC polling is the only call-state channel and the poller
+   * falls back to a slow periodic query. */
+  @Volatile private var cmerAccepted = false
+  /** Bumped on every +CIEV. The poller watches this instead of polling blindly. */
+  @Volatile private var cievSeq = 0L
+  /** AT transcript is written to the journal until this timestamp. Covers the
+   * SLC plus the first seconds of the live link - exactly the window in which
+   * the link dies - without filling the journal during a healthy session. */
+  @Volatile private var atTraceUntil = 0L
   private val clccLock = Any()
   private val clccCalls = mutableListOf<CallInfo>()
   /**
@@ -210,11 +225,14 @@ class RawHfpClient(
     while (isCurrentGeneration(generation)) {
       attemptInFlight = true
       lastError.value = null
-      try {
-        beforeSocketOpen?.invoke(target)
-      } catch (t: Throwable) {
-        if (t is java.util.concurrent.CancellationException) throw t
-        onLog("הכנת חיבור RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
+      if (guardRanForGeneration != generation) {
+        guardRanForGeneration = generation
+        try {
+          beforeSocketOpen?.invoke(target)
+        } catch (t: Throwable) {
+          if (t is java.util.concurrent.CancellationException) throw t
+          onLog("הכנת חיבור RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
+        }
       }
       if (!isCurrentGeneration(generation)) return
       val sock = openSocket(target, generation)
@@ -278,6 +296,11 @@ class RawHfpClient(
       input = link.input
       output = link.output
     }
+
+    // Open the AT transcript window: the SLC plus the first seconds of the
+    // live link, exactly the window in which the link dies. Keeps the journal
+    // from filling up during a healthy session.
+    atTraceUntil = System.currentTimeMillis() + 25_000L
 
     // Some embedded AG stacks (feature phones) need a moment after the
     // RFCOMM channel opens before they're ready for AT commands.
@@ -421,7 +444,17 @@ class RawHfpClient(
     // Some feature phones expose the HFP service but fail to answer SDP. On
     // Android the hidden createRfcommSocket(channel) is the only way to try
     // the channel directly. It is best-effort and harmless when blocked.
-    val channels = (channelCursor..8).toList() + (1 until channelCursor).toList()
+    // The direct-channel sweep is a last resort for phones whose SDP server
+    // does not answer at all. When SDP DID answer, every channel here belongs
+    // to some other service (OBEX/PBAP/SPP/DUN); connecting to it and sending
+    // AT+BRSF makes the phone close the channel and, on some firmware,
+    // destabilises the whole ACL link.
+    val channels = if (discoveredUuids.isEmpty()) {
+      (channelCursor..8).toList() + (1 until channelCursor).toList()
+    } else {
+      onLog("SDP ענה - מדלג על סריקת ערוצי RFCOMM ישירים", false)
+      emptyList()
+    }
     for (channel in channels.distinct()) {
       if (!isCurrentGeneration(generation)) return null
       val sock = openChannelSocket(target, channel, generation)
@@ -614,7 +647,21 @@ class RawHfpClient(
     }
   }
 
-  /** HFP negotiation: BRSF, CIND, CMER, CLIP, CCWA - the handshake every AG accepts. */
+  /**
+   * HFP Service Level Connection, per spec:
+   * AT+BRSF=<features> -> +BRSF / OK
+   * AT+CIND=? -> indicator names + OK
+   * AT+CIND? -> indicator values + OK <-- Read command, needs '?'
+   * AT+CMER=3,0,0,1 -> OK (SLC established here)
+   * [AT+CHLD=?] -> only when both sides advertise three-way calling
+   * AT+CLIP=1 -> post-SLC, caller ID
+   *
+   * The previous implementation sent a bare "AT+CIND", which is not a valid
+   * AT command (CIND defines Test and Read only). Feature-phone AG parsers
+   * answer ERROR and stay blocked waiting for the Read; the following CMER
+   * then arrives out of SLC sequence and the AG closes the RFCOMM channel -
+   * the "connects and immediately disconnects" symptom.
+   */
   private suspend fun handshake(handshakeSocket: HfpLink): Boolean {
     // The legacy headset gateway speaks HSP - there is no BRSF/CIND/CMER
     // negotiation. Accept the link as-is and let the read loop watch it.
@@ -627,34 +674,45 @@ class RawHfpClient(
     hspMode = false
     agBrsfFeatures = 0
     agFeaturesKnown = false
-    // Claim the common feature set; some AGs reject feature bits they don't
-    // understand, so retry with the minimal set before giving up.
+    cmerAccepted = false
+    // 1. BRSF - mandatory first step. Retry with the minimal feature set
+    // before giving up, as some AGs reject unfamiliar feature bits.
     if (!sendAndWait("AT+BRSF=$hfFeatures", handshakeSocket) &&
       !sendAndWait("AT+BRSF=0", handshakeSocket)
-    ) return false
-    sendCommand("AT+CIND=?", handshakeSocket)
-    if (!readUntil(handshakeSocket) { it.startsWith("OK") || it.startsWith("ERROR") }) return false
-    if (!sendAndWait("AT+CIND", handshakeSocket)) {
-      // Some AGs only support AT+CIND=? (not the value query) - continue
-      // without current indicator values; +CIEV events still arrive.
-      Log.w(tag, "AT+CIND rejected - continuing without indicator values")
-    }
-    if (!sendAndWait("AT+CMER=3,0,0,1", handshakeSocket) &&
-      !sendAndWait("AT+CMER=3,0,0,0", handshakeSocket)
     ) {
-      // CMER mode 3 is needed for unsolicited +CIEV events. Some basic
-      // AGs (feature phones) reject it entirely - skip CMER; CLCC polling
-      // still works, and some AGs send CIEV unsolicited regardless.
-      Log.w(tag, "CMER rejected - continuing without call progress events")
+      onLog("SLC נכשל: AT+BRSF נדחה", true)
+      return false
     }
-    // CHLD is intentionally not queried: this client does not advertise or
-    // implement the three-way/call-hold procedures, and basic AGs sometimes
-    // disconnect when an unsupported CHLD query is sent.
-    sendCommand("AT+CLIP=1", handshakeSocket)
-    readUntil(handshakeSocket) { it.startsWith("OK") || it.startsWith("ERROR") }
-    // Call-waiting notification is optional and is not needed for ordinary
-    // incoming calls. Leave it disabled during SLC so basic AG firmware does
-    // not reject an otherwise valid connection.
+    // 2. CIND=? - indicator names and ranges.
+    if (!sendAndWait("AT+CIND=?", handshakeSocket)) {
+      onLog("SLC נכשל: AT+CIND=? נדחה", true)
+      return false
+    }
+    // 3. CIND? - current indicator values. The '?' is mandatory.
+    if (!sendAndWait("AT+CIND?", handshakeSocket)) {
+      onLog("SLC: AT+CIND? נדחה - ממשיך בלי ערכי אינדיקטורים התחלתיים", true)
+    }
+    // 4. CMER - enables unsolicited +CIEV. The SLC is established on OK.
+    cmerAccepted = sendAndWait("AT+CMER=3,0,0,1", handshakeSocket)
+    if (!cmerAccepted) {
+      onLog("SLC: AT+CMER=3,0,0,1 נדחה - מנסה מצב מצומצם", true)
+      cmerAccepted = sendAndWait("AT+CMER=3,0,0,0", handshakeSocket)
+      if (!cmerAccepted) {
+        onLog("SLC: AT+CMER נדחה - אירועי +CIEV לא יתקבלו", true)
+      }
+    }
+    // 5. CHLD is required only when the AG advertises three-way calling
+    // (AG bit 0) AND the HF advertises it (HF bit 1). hfFeatures does not
+    // set HF bit 1, so it is skipped by design. Logged so an AG that waits
+    // for CHLD anyway can be identified from the journal.
+    if (agFeaturesKnown && (agBrsfFeatures and 0x01) != 0) {
+      onLog("SLC: ה-AG מכריז על שיחה משולשת (ביט 0) - AT+CHLD=? לא נשלח בכוונה", false)
+    }
+    // 6. Post-SLC: caller ID presentation.
+    if (!sendAndWait("AT+CLIP=1", handshakeSocket)) {
+      onLog("SLC: AT+CLIP=1 נדחה - ייתכן שלא יוצג מספר מתקשר", true)
+    }
+    onLog("SLC הושלם דרך ${lastGateway ?: "שער לא ידוע"} (AG features=$agBrsfFeatures)", false)
     return true
   }
 
@@ -693,68 +751,68 @@ class RawHfpClient(
       return
     }
     pollJob = scope.launch(Dispatchers.IO) {
-      // Let the link settle for a few seconds before polling call state -
-      // some basic AG stacks (feature phones) drop the connection when the
-      // HF starts sending AT+CLCC right after the SLC completes.
-      delay(1500)
+      // Let the SLC settle before the first query - some AG stacks drop the
+      // link when the HF starts issuing commands the instant CMER returns.
+      delay(2_000)
       if (!isConnected.value) return@launch
-      sendCommand("AT", socket)
-      delay(1500)
-      if (!isConnected.value) return@launch
-      sendCommand("AT", socket)
-      // HFP AG feature bit 6 advertises Enhanced Call Status, which is the
-      // capability behind AT+CLCC. Do not repeatedly send that optional
-      // command to a basic feature phone that explicitly lacks it; some such
-      // phones answer once and then terminate the RFCOMM channel.
+      // HFP AG feature bit 6 = Enhanced Call Status, the capability behind
+      // AT+CLCC. An AG that explicitly lacks it never gets CLCC.
       val supportsCurrentCalls = !agFeaturesKnown || (agBrsfFeatures and 0x40) != 0
+      var lastSeenCiev = cievSeq
+      var lastActivity = 0L
+      // One CLCC right after the SLC: picks up a call that was already in
+      // progress when the link came up (the indicator values from AT+CIND?
+      // cover the state, this covers number + direction).
       if (supportsCurrentCalls) {
-        // Single-reader design: only readLoop() consumes the socket stream.
-        // It parses every +CLCC: row into clccCalls and finishClccBatch()
-        // publishes the call state when the terminating OK/ERROR arrives
-        // (bumping clccBatchSeq). This poller schedules each query and waits
-        // on that signal - it never reads the stream itself. A second reader
-        // on the same BufferedReader stole lines from readLoop at random, so
-        // the CLCC response often landed in the main loop while this coroutine
-        // timed out, counted a bogus "write failure" and tore down perfectly
-        // healthy links on slow AGs after ~9 seconds.
-        while (isActive && isConnected.value) {
-          val ownedSocket = socket // capture before possible generation switch
-          synchronized(clccLock) { clccCalls.clear() }
-          val batchBefore = clccBatchSeq
-          if (!sendCommand("AT+CLCC", ownedSocket)) {
-            // sendCommand() either tore the socket down (dead output stream)
-            // or the socket was replaced by a newer generation - stop polling
-            // in both cases.
-            return@launch
-          }
-          // Wait for the reader to finish the response batch, or for a
-          // silent-AG timeout. Some basic AGs don't answer CLCC when idle -
-          // that is not a failure, just keep polling gently.
-          val deadline = System.currentTimeMillis() + 3_000L
-          while (isActive && clccBatchSeq == batchBefore && System.currentTimeMillis() < deadline) {
-            delay(50)
-          }
-          // Quiet gap: a synchronous feature-phone AT parser must finish the
-          // current command before the next one arrives, or it may drop the
-          // RFCOMM link. Unsolicited +CIEV events remain the primary
-          // call-state mechanism for low-end AGs.
-          delay(600)
+        queryClcc()
+        lastActivity = System.currentTimeMillis()
+      }
+      while (isActive && isConnected.value) {
+        delay(500)
+        val ownedSocket = socket ?: return@launch
+        if (socket !== ownedSocket) return@launch
+        val now = System.currentTimeMillis()
+
+        val cievChanged = cievSeq != lastSeenCiev
+        // Degraded path: CMER was rejected, so no +CIEV will ever arrive and
+        // CLCC is the only call-state channel. Poll it slowly (2s) instead of
+        // the previous ~600ms hammering.
+        val periodicNeeded = !cmerAccepted && (now - lastActivity >= 2_000L)
+        if (supportsCurrentCalls && (cievChanged || periodicNeeded)) {
+          lastSeenCiev = cievSeq
+          // Let the AG finish its own event burst (+CIEV, +CLIP, RING often
+          // arrive back to back) before asking anything.
+          if (cievChanged) delay(250)
+          queryClcc()
+          lastActivity = System.currentTimeMillis()
+          continue
         }
-      } else {
-        // The AG does not advertise Enhanced Call Status (or we could not
-        // determine its features). CLCC polling is skipped, but a silent
-        // RFCOMM link will be dropped by many feature phones after a 20-60s
-        // inactivity timeout. Send a minimal AT keep-alive every 10s so the
-        // phone sees activity and holds the line up.
-        while (isActive && isConnected.value) {
-          val ownedSocket = socket
-          if (!sendCommand("AT", ownedSocket)) {
-            if (ownedSocket != null && socket !== ownedSocket) return@launch
-          }
-          delay(10_000)
+        // Idle keep-alive: many feature-phone AGs close a silent RFCOMM link
+        // after 20-60s. A bare AT is the cheapest thing their parser accepts.
+        if (now - lastActivity >= 20_000L) {
+          if (!sendCommand("AT", ownedSocket)) return@launch
+          lastActivity = System.currentTimeMillis()
         }
       }
     }
+  }
+
+  /**
+   * Sends one AT+CLCC and waits for readLoop() to publish the batch
+   * (finishClccBatch bumps clccBatchSeq on the terminating OK/ERROR).
+   *
+   * Single-reader design is preserved: this never reads the stream itself.
+   */
+  private suspend fun queryClcc(): Boolean {
+    val ownedSocket = socket ?: return false
+    synchronized(clccLock) { clccCalls.clear() }
+    val batchBefore = clccBatchSeq
+    if (!sendCommand("AT+CLCC", ownedSocket)) return false
+    val deadline = System.currentTimeMillis() + 3_000L
+    while (clccBatchSeq == batchBefore && System.currentTimeMillis() < deadline) {
+      delay(50)
+    }
+    return true
   }
 
   // ----------------------------------------------------------------- actions
@@ -838,6 +896,9 @@ class RawHfpClient(
   // ------------------------------------------------------------------ parsing
 
   private fun handleLine(line: String) {
+    if (System.currentTimeMillis() < atTraceUntil && line.isNotEmpty()) {
+      onLog("← $line", line.startsWith("ERROR"))
+    }
     when {
       line.startsWith("+CIEV:") -> handleCiev(line)
       line.startsWith("+CLIP:") -> handleClip(line)
@@ -876,6 +937,17 @@ class RawHfpClient(
   private fun handleBrsf(line: String) {
     agBrsfFeatures = line.substringAfter("+BRSF:").trim().toIntOrNull() ?: return
     agFeaturesKnown = true
+    val bits = buildList {
+      if (agBrsfFeatures and 0x001 != 0) add("3-way")
+      if (agBrsfFeatures and 0x002 != 0) add("EC/NR")
+      if (agBrsfFeatures and 0x004 != 0) add("VoiceRec")
+      if (agBrsfFeatures and 0x008 != 0) add("InBandRing")
+      if (agBrsfFeatures and 0x020 != 0) add("Reject")
+      if (agBrsfFeatures and 0x040 != 0) add("EnhCallStatus")
+      if (agBrsfFeatures and 0x080 != 0) add("EnhCallCtrl")
+      if (agBrsfFeatures and 0x200 != 0) add("CodecNeg")
+    }
+    onLog("תכונות ה-AG: $agBrsfFeatures [${bits.joinToString(", ")}]", false)
     Log.i(tag, "AG features: $agBrsfFeatures")
   }
 
@@ -884,6 +956,7 @@ class RawHfpClient(
     val idx = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return
     val value = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: return
     cievSeen = true
+    cievSeq++
     indicatorValues[idx] = value
     emitFromIndicators()
   }
@@ -1085,6 +1158,9 @@ class RawHfpClient(
         onLog("שליחת פקודת בלוטוס נכשלה — הקישור נסגר לצורך חיבור מחדש", true)
         teardown(expectedSocket)
       }
+    }
+    if (System.currentTimeMillis() < atTraceUntil) {
+      onLog("→ $cmd${if (sent) "" else " [נכשלה שליחה]"}", sent)
     }
     return sent
   }

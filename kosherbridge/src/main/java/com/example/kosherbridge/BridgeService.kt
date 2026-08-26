@@ -124,6 +124,16 @@ class BridgeService : Service() {
     // user tapped connect. (An empty journal used to mean either "no attempt"
     // or "the service was silently dead" - now the two are distinguishable.)
     manager.logConnection("שירות הגשר עלה (process=${android.os.Process.myPid()})", false)
+    // Log which channel this player actually resolves to, so the journal
+    // answers "which channel is the device running on?" without asking the
+    // user - the rest of the diagnostics assume AUTO.
+    scope.launch {
+      val cs = ServiceLocator.settings.channelState(Build.FINGERPRINT).first()
+      manager.logConnection(
+        "ערוץ חיבור: פעיל=${cs.effective}, בחירה ידנית=${cs.manual}, נלמד=${cs.learned.ifBlank { "אין" }} · נגן=${Build.MANUFACTURER} ${Build.MODEL} (SDK ${Build.VERSION.SDK_INT})",
+        false,
+      )
+    }
     // Remember which connection channel actually worked on this exact player
     // (keyed by Build.FINGERPRINT) so the next launch can jump straight to it.
     manager.onBackendWorked = { backend ->

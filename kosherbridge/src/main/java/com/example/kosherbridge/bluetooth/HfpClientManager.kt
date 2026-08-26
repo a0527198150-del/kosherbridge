@@ -115,6 +115,16 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   @Volatile private var lastAclNudge = 0L
 
   private suspend fun disableSystemProfiles(device: BluetoothDevice) {
+    // Privileged channels route the link THROUGH the system HFP profile (just
+    // from a privileged process). Forcing that profile off would kill their
+    // link a moment after it is established. connect() already guards the
+    // SHIZUKU/ROOT/DIRECT branches; the bond-time path in startBondWatch()
+    // does not, so a re-pair silently broke those channels - and it now
+    // disables HEADSET_CLIENT (16), the exact profile they rely on.
+    if (channelMode == "SHIZUKU" || channelMode == "ROOT" || channelMode == "DIRECT") {
+      logConnection("ערוץ $channelMode משתמש בפרופיל המערכת - מדלג על ניטרול", false)
+      return
+    }
     // Optional A/B switch: skip the profile guard entirely so a tester can
     // compare "with protection" vs "without" on the same player.
     if (!ServiceLocator.settings.profileGuard.first()) {
@@ -143,6 +153,15 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           "לא ניתן לנטרל את פרופיל הדיבורית המערכתי (נותק בפועל: $disconnected) - יבוצע ניסיון חוזר",
           true,
         )
+      }
+
+      // HEADSET_CLIENT (16) is the HFP client role - the exact same role this
+      // app plays - so on players that expose it, it is the profile that truly
+      // competes for the phone's single hands-free slot. Disable it
+      // best-effort next to HEADSET (1), without removing the existing guard.
+      withContext(Dispatchers.IO) {
+        runCatching { HiddenHfp.setProfilePriority(context, device, 16 /* HEADSET_CLIENT */, 0) }
+        runCatching { HiddenHfp.forceDisconnectProfile(context, device, 16 /* HEADSET_CLIENT */) }
       }
 
       // A2DP does not own the HFP slot, but on some low-end stacks its ACL
