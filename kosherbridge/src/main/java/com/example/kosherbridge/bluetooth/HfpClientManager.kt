@@ -115,6 +115,16 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   @Volatile private var lastAclNudge = 0L
 
   private suspend fun disableSystemProfiles(device: BluetoothDevice) {
+    // Privileged channels route the link THROUGH the system HFP profile (just
+    // from a privileged process). Forcing that profile off would kill their
+    // link a moment after it is established. connect() already guards the
+    // SHIZUKU/ROOT/DIRECT branches; the bond-time path in startBondWatch()
+    // does not, so a re-pair silently broke those channels - and it now
+    // disables HEADSET_CLIENT (16), the exact profile they rely on.
+    if (channelMode == "SHIZUKU" || channelMode == "ROOT" || channelMode == "DIRECT") {
+      logConnection("ערוץ $channelMode משתמש בפרופיל המערכת - מדלג על ניטרול", false)
+      return
+    }
     // Optional A/B switch: skip the profile guard entirely so a tester can
     // compare "with protection" vs "without" on the same player.
     if (!ServiceLocator.settings.profileGuard.first()) {
