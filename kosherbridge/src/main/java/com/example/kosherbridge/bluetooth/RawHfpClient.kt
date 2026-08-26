@@ -436,7 +436,17 @@ class RawHfpClient(
     // Some feature phones expose the HFP service but fail to answer SDP. On
     // Android the hidden createRfcommSocket(channel) is the only way to try
     // the channel directly. It is best-effort and harmless when blocked.
-    val channels = (channelCursor..8).toList() + (1 until channelCursor).toList()
+    // The direct-channel sweep is a last resort for phones whose SDP server
+    // does not answer at all. When SDP DID answer, every channel here belongs
+    // to some other service (OBEX/PBAP/SPP/DUN); connecting to it and sending
+    // AT+BRSF makes the phone close the channel and, on some firmware,
+    // destabilises the whole ACL link.
+    val channels = if (discoveredUuids.isEmpty()) {
+      (channelCursor..8).toList() + (1 until channelCursor).toList()
+    } else {
+      onLog("SDP ענה - מדלג על סריקת ערוצי RFCOMM ישירים", false)
+      emptyList()
+    }
     for (channel in channels.distinct()) {
       if (!isCurrentGeneration(generation)) return null
       val sock = openChannelSocket(target, channel, generation)
