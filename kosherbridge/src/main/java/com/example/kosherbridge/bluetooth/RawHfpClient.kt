@@ -149,6 +149,8 @@ class RawHfpClient(
    * When false, CLCC polling is the only call-state channel and the poller
    * falls back to a slow periodic query. */
   @Volatile private var cmerAccepted = false
+  /** Bumped on every +CIEV. The poller watches this instead of polling blindly. */
+  @Volatile private var cievSeq = 0L
   private val clccLock = Any()
   private val clccCalls = mutableListOf<CallInfo>()
   /**
@@ -722,68 +724,68 @@ class RawHfpClient(
       return
     }
     pollJob = scope.launch(Dispatchers.IO) {
-      // Let the link settle for a few seconds before polling call state -
-      // some basic AG stacks (feature phones) drop the connection when the
-      // HF starts sending AT+CLCC right after the SLC completes.
-      delay(1500)
+      // Let the SLC settle before the first query - some AG stacks drop the
+      // link when the HF starts issuing commands the instant CMER returns.
+      delay(2_000)
       if (!isConnected.value) return@launch
-      sendCommand("AT", socket)
-      delay(1500)
-      if (!isConnected.value) return@launch
-      sendCommand("AT", socket)
-      // HFP AG feature bit 6 advertises Enhanced Call Status, which is the
-      // capability behind AT+CLCC. Do not repeatedly send that optional
-      // command to a basic feature phone that explicitly lacks it; some such
-      // phones answer once and then terminate the RFCOMM channel.
+      // HFP AG feature bit 6 = Enhanced Call Status, the capability behind
+      // AT+CLCC. An AG that explicitly lacks it never gets CLCC.
       val supportsCurrentCalls = !agFeaturesKnown || (agBrsfFeatures and 0x40) != 0
+      var lastSeenCiev = cievSeq
+      var lastActivity = 0L
+      // One CLCC right after the SLC: picks up a call that was already in
+      // progress when the link came up (the indicator values from AT+CIND?
+      // cover the state, this covers number + direction).
       if (supportsCurrentCalls) {
-        // Single-reader design: only readLoop() consumes the socket stream.
-        // It parses every +CLCC: row into clccCalls and finishClccBatch()
-        // publishes the call state when the terminating OK/ERROR arrives
-        // (bumping clccBatchSeq). This poller schedules each query and waits
-        // on that signal - it never reads the stream itself. A second reader
-        // on the same BufferedReader stole lines from readLoop at random, so
-        // the CLCC response often landed in the main loop while this coroutine
-        // timed out, counted a bogus "write failure" and tore down perfectly
-        // healthy links on slow AGs after ~9 seconds.
-        while (isActive && isConnected.value) {
-          val ownedSocket = socket // capture before possible generation switch
-          synchronized(clccLock) { clccCalls.clear() }
-          val batchBefore = clccBatchSeq
-          if (!sendCommand("AT+CLCC", ownedSocket)) {
-            // sendCommand() either tore the socket down (dead output stream)
-            // or the socket was replaced by a newer generation - stop polling
-            // in both cases.
-            return@launch
-          }
-          // Wait for the reader to finish the response batch, or for a
-          // silent-AG timeout. Some basic AGs don't answer CLCC when idle -
-          // that is not a failure, just keep polling gently.
-          val deadline = System.currentTimeMillis() + 3_000L
-          while (isActive && clccBatchSeq == batchBefore && System.currentTimeMillis() < deadline) {
-            delay(50)
-          }
-          // Quiet gap: a synchronous feature-phone AT parser must finish the
-          // current command before the next one arrives, or it may drop the
-          // RFCOMM link. Unsolicited +CIEV events remain the primary
-          // call-state mechanism for low-end AGs.
-          delay(600)
+        queryClcc()
+        lastActivity = System.currentTimeMillis()
+      }
+      while (isActive && isConnected.value) {
+        delay(500)
+        val ownedSocket = socket ?: return@launch
+        if (socket !== ownedSocket) return@launch
+        val now = System.currentTimeMillis()
+
+        val cievChanged = cievSeq != lastSeenCiev
+        // Degraded path: CMER was rejected, so no +CIEV will ever arrive and
+        // CLCC is the only call-state channel. Poll it slowly (2s) instead of
+        // the previous ~600ms hammering.
+        val periodicNeeded = !cmerAccepted && (now - lastActivity >= 2_000L)
+        if (supportsCurrentCalls && (cievChanged || periodicNeeded)) {
+          lastSeenCiev = cievSeq
+          // Let the AG finish its own event burst (+CIEV, +CLIP, RING often
+          // arrive back to back) before asking anything.
+          if (cievChanged) delay(250)
+          queryClcc()
+          lastActivity = System.currentTimeMillis()
+          continue
         }
-      } else {
-        // The AG does not advertise Enhanced Call Status (or we could not
-        // determine its features). CLCC polling is skipped, but a silent
-        // RFCOMM link will be dropped by many feature phones after a 20-60s
-        // inactivity timeout. Send a minimal AT keep-alive every 10s so the
-        // phone sees activity and holds the line up.
-        while (isActive && isConnected.value) {
-          val ownedSocket = socket
-          if (!sendCommand("AT", ownedSocket)) {
-            if (ownedSocket != null && socket !== ownedSocket) return@launch
-          }
-          delay(10_000)
+        // Idle keep-alive: many feature-phone AGs close a silent RFCOMM link
+        // after 20-60s. A bare AT is the cheapest thing their parser accepts.
+        if (now - lastActivity >= 20_000L) {
+          if (!sendCommand("AT", ownedSocket)) return@launch
+          lastActivity = System.currentTimeMillis()
         }
       }
     }
+  }
+
+  /**
+   * Sends one AT+CLCC and waits for readLoop() to publish the batch
+   * (finishClccBatch bumps clccBatchSeq on the terminating OK/ERROR).
+   *
+   * Single-reader design is preserved: this never reads the stream itself.
+   */
+  private suspend fun queryClcc(): Boolean {
+    val ownedSocket = socket ?: return false
+    synchronized(clccLock) { clccCalls.clear() }
+    val batchBefore = clccBatchSeq
+    if (!sendCommand("AT+CLCC", ownedSocket)) return false
+    val deadline = System.currentTimeMillis() + 3_000L
+    while (clccBatchSeq == batchBefore && System.currentTimeMillis() < deadline) {
+      delay(50)
+    }
+    return true
   }
 
   // ----------------------------------------------------------------- actions
@@ -913,6 +915,7 @@ class RawHfpClient(
     val idx = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return
     val value = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: return
     cievSeen = true
+    cievSeq++
     indicatorValues[idx] = value
     emitFromIndicators()
   }
