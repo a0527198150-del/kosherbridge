@@ -145,6 +145,15 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         )
       }
 
+      // HEADSET_CLIENT (16) is the HFP client role - the exact same role this
+      // app plays - so on players that expose it, it is the profile that truly
+      // competes for the phone's single hands-free slot. Disable it
+      // best-effort next to HEADSET (1), without removing the existing guard.
+      withContext(Dispatchers.IO) {
+        runCatching { HiddenHfp.setProfilePriority(context, device, 16 /* HEADSET_CLIENT */, 0) }
+        runCatching { HiddenHfp.forceDisconnectProfile(context, device, 16 /* HEADSET_CLIENT */) }
+      }
+
       // A2DP does not own the HFP slot, but on some low-end stacks its ACL
       // activity can still overlap the raw opening. Await the best-effort
       // cleanup instead of launching it after this function returns.

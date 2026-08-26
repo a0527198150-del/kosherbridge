@@ -125,6 +125,11 @@ class RawHfpClient(
   @Volatile private var attemptInFlight = false
   @Volatile private var connectionGeneration = 0L
   private var reconnectAttempts = 0
+  /** Connection-generation in which the profile guard already ran. The guard
+   * (beforeSocketOpen) is a heavy multi-second profile teardown; running it
+   * once per generation instead of before every socket attempt cuts the
+   * worst-case pre-socket delay from ~29s to one pass. */
+  @Volatile private var guardRanForGeneration = -1L
 
   val isConnected = MutableStateFlow(false)
   val call = MutableStateFlow<CallInfo?>(null)
@@ -220,11 +225,14 @@ class RawHfpClient(
     while (isCurrentGeneration(generation)) {
       attemptInFlight = true
       lastError.value = null
-      try {
-        beforeSocketOpen?.invoke(target)
-      } catch (t: Throwable) {
-        if (t is java.util.concurrent.CancellationException) throw t
-        onLog("הכנת חיבור RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
+      if (guardRanForGeneration != generation) {
+        guardRanForGeneration = generation
+        try {
+          beforeSocketOpen?.invoke(target)
+        } catch (t: Throwable) {
+          if (t is java.util.concurrent.CancellationException) throw t
+          onLog("הכנת חיבור RFCOMM נכשלה: ${t.message ?: "שגיאה לא ידועה"}", true)
+        }
       }
       if (!isCurrentGeneration(generation)) return
       val sock = openSocket(target, generation)

@@ -24,7 +24,7 @@ object HiddenHfp {
   const val PROFILE_ID = 16 // BluetoothProfile.HEADSET_CLIENT (hidden constant)
 
   private const val TAG = "HiddenHfp"
-  private const val PROFILE_PROXY_TIMEOUT_SECONDS = 6L
+  private const val PROFILE_PROXY_TIMEOUT_SECONDS = 2L
   /** BluetoothHeadsetClient.CALL_ACCEPT_NONE - answer without holding/terminating others. */
   private const val CALL_ACCEPT_NONE = 0
 
@@ -273,7 +273,26 @@ object HiddenHfp {
     // the priority change and immediately reconnected their own profile,
     // competing with the raw RFCOMM socket.
     return try {
-      val m = p.javaClass.getMethod("setPriority", BluetoothDevice::class.java, Int::class.javaPrimitiveType)
+      // On Android 12+ setPriority(BluetoothDevice, int) was replaced by
+      // setConnectionPolicy(BluetoothDevice, int) (CONNECTION_POLICY_FORBIDDEN
+      // = 0), and the old method is blocked/absent at targetSdk 36. Try the
+      // new method first and fall back to setPriority, logging which one
+      // actually worked.
+      val policy = runCatching {
+        val m = p.javaClass.getMethod(
+          "setConnectionPolicy", BluetoothDevice::class.java,
+          Int::class.javaPrimitiveType,
+        )
+        (m.invoke(p, device, priority) as? Boolean) ?: false
+      }.getOrElse { e ->
+        Log.w(TAG, "setConnectionPolicy($profileId) unavailable: ${e.message}")
+        false
+      }
+      if (policy) return@try true
+      val m = p.javaClass.getMethod(
+        "setPriority", BluetoothDevice::class.java,
+        Int::class.javaPrimitiveType,
+      )
       (m.invoke(p, device, priority) as? Boolean) ?: false
     } catch (e: Throwable) {
       Log.w(TAG, "setProfilePriority($profileId, $priority) failed: ${e.message}")
