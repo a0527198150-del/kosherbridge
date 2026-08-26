@@ -518,6 +518,15 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   suspend fun bindShizuku(): Boolean {
     logConnection("מתחיל חיבור דרך שיזוקו")
     val b = shizuku ?: ShizukuBridge(context).also { shizuku = it }
+    // Mirror of bindRoot(): when the privileged user-service process dies
+    // mid-session, reset the UI state so the user sees the failure instead of
+    // a stale "Shizuku" label, and so maybeReconnect() can re-establish the
+    // channel instead of leaving a dead bridge looking active.
+    b.onRemoteDied {
+      profileReady.value = false
+      backendLabel.value = null
+      lastError.value = "תהליך Shizuku נפל - נסה לחבר שוב"
+    }
     if (b.isBound && b.isProfileReady()) {
       profileReady.value = true
       startPolling()

@@ -28,8 +28,14 @@ class ShizukuBridge(private val context: Context) {
   @Volatile private var bindRequested = false
   private var args: Shizuku.UserServiceArgs? = null
   private var conn: ServiceConnection? = null
+  private var remoteDied: (() -> Unit)? = null
 
   val isBound: Boolean get() = remote != null
+
+  /** Fired when the Shizuku user-service process dies (mirror of RootBridge). */
+  fun onRemoteDied(callback: () -> Unit) {
+    remoteDied = callback
+  }
 
   /** True when the Shizuku server (started via adb / root) is reachable. */
   val isAvailable: Boolean
@@ -75,6 +81,7 @@ class ShizukuBridge(private val context: Context) {
         Log.w(tag, "user service disconnected")
         remote = null
         bindRequested = false
+        remoteDied?.invoke()
       }
     }
     args = a
