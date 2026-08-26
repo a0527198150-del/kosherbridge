@@ -151,6 +151,10 @@ class RawHfpClient(
   @Volatile private var cmerAccepted = false
   /** Bumped on every +CIEV. The poller watches this instead of polling blindly. */
   @Volatile private var cievSeq = 0L
+  /** AT transcript is written to the journal until this timestamp. Covers the
+   * SLC plus the first seconds of the live link - exactly the window in which
+   * the link dies - without filling the journal during a healthy session. */
+  @Volatile private var atTraceUntil = 0L
   private val clccLock = Any()
   private val clccCalls = mutableListOf<CallInfo>()
   /**
@@ -284,6 +288,11 @@ class RawHfpClient(
       input = link.input
       output = link.output
     }
+
+    // Open the AT transcript window: the SLC plus the first seconds of the
+    // live link, exactly the window in which the link dies. Keeps the journal
+    // from filling up during a healthy session.
+    atTraceUntil = System.currentTimeMillis() + 25_000L
 
     // Some embedded AG stacks (feature phones) need a moment after the
     // RFCOMM channel opens before they're ready for AT commands.
@@ -869,6 +878,9 @@ class RawHfpClient(
   // ------------------------------------------------------------------ parsing
 
   private fun handleLine(line: String) {
+    if (System.currentTimeMillis() < atTraceUntil && line.isNotEmpty()) {
+      onLog("← $line", line.startsWith("ERROR"))
+    }
     when {
       line.startsWith("+CIEV:") -> handleCiev(line)
       line.startsWith("+CLIP:") -> handleClip(line)
@@ -907,6 +919,17 @@ class RawHfpClient(
   private fun handleBrsf(line: String) {
     agBrsfFeatures = line.substringAfter("+BRSF:").trim().toIntOrNull() ?: return
     agFeaturesKnown = true
+    val bits = buildList {
+      if (agBrsfFeatures and 0x001 != 0) add("3-way")
+      if (agBrsfFeatures and 0x002 != 0) add("EC/NR")
+      if (agBrsfFeatures and 0x004 != 0) add("VoiceRec")
+      if (agBrsfFeatures and 0x008 != 0) add("InBandRing")
+      if (agBrsfFeatures and 0x020 != 0) add("Reject")
+      if (agBrsfFeatures and 0x040 != 0) add("EnhCallStatus")
+      if (agBrsfFeatures and 0x080 != 0) add("EnhCallCtrl")
+      if (agBrsfFeatures and 0x200 != 0) add("CodecNeg")
+    }
+    onLog("תכונות ה-AG: $agBrsfFeatures [${bits.joinToString(", ")}]", false)
     Log.i(tag, "AG features: $agBrsfFeatures")
   }
 
@@ -1117,6 +1140,9 @@ class RawHfpClient(
         onLog("שליחת פקודת בלוטוס נכשלה — הקישור נסגר לצורך חיבור מחדש", true)
         teardown(expectedSocket)
       }
+    }
+    if (System.currentTimeMillis() < atTraceUntil) {
+      onLog("→ $cmd${if (sent) "" else " [נכשלה שליחה]"}", sent)
     }
     return sent
   }
