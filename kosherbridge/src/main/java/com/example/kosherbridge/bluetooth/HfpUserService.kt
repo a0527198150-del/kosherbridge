@@ -26,12 +26,26 @@ import java.util.concurrent.TimeUnit
  */
 class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
 
-  // Some Shizuku runtime versions instantiate user services via a no-arg
-  // constructor rather than passing a Context in; RootBridgeMain passes the
-  // app Context explicitly. BridgeApp.onCreate() runs first in *every*
-  // process this APK is loaded into - including this one - so
-  // BridgeApp.instance is always safe to fall back to.
-  constructor() : this(BridgeApp.instance)
+  /**
+   * Fallback for Shizuku servers older than v13, which instantiate the user
+   * service with the no-arg constructor. The privileged process does NOT run
+   * BridgeApp: Shizuku's starter calls LoadedApk.makeApplication(true, null),
+   * which forces the default android.app.Application class. The starter does
+   * set ActivityThread.mInitialApplication, so currentApplication() resolves.
+   */
+  constructor() : this(resolveFallbackContext())
+
+  companion object {
+    private fun resolveFallbackContext(): Context {
+      val fromActivityThread = runCatching {
+        Class.forName("android.app.ActivityThread")
+          .getMethod("currentApplication")
+          .invoke(null) as? Context
+      }.getOrNull()
+      if (fromActivityThread != null) return fromActivityThread
+      return BridgeApp.instance
+    }
+  }
 
   private val adapter: BluetoothAdapter? =
     (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter

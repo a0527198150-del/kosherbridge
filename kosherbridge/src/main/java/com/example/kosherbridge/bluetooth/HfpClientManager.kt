@@ -57,6 +57,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var root: RootBridge? = null
   private var raw: RawHfpClient? = null
   private var shizukuFallbackLaunched = false
+  /** The sticky binder-received listener was registered exactly once, so a
+   * capability report taken before the Shizuku binder arrived can be
+   * refreshed instead of staying stale. */
+  @Volatile private var binderListenerRegistered = false
 
   /** Raw-link drop stats (count + last duration) for the diagnostics report. */
   val rawDropInfo = MutableStateFlow<String?>(null)
@@ -372,6 +376,16 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   fun shizukuState(): Pair<Boolean, Boolean> {
     val b = shizuku ?: ShizukuBridge(context).also { shizuku = it }
+    // The bridge may be asked about Shizuku before the server ever delivered
+    // its binder (the report then reads "Shizuku unavailable" permanently).
+    // Register the sticky binder-received listener once so the report can be
+    // refreshed the moment the server actually becomes available.
+    if (!binderListenerRegistered) {
+      binderListenerRegistered = true
+      b.onBinderReceived {
+        logConnection("שרת Shizuku זמין כעת", false)
+      }
+    }
     return b.isAvailable to b.permissionGranted
   }
 
@@ -558,10 +572,25 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       return false
     }
     if (!b.permissionGranted) {
-      lastError.value =
-        "לא הוענקה הרשאה ל-Shizuku - פתח את אפליקציית Shizuku והענק הרשאה לאפליקציה זו"
-      logConnection("לשיזוקו אין הרשאה לאפליקציה", true)
-      return false
+      // Ask through the official flow instead of failing right away - the
+      // dialog result arrives via onPermissionResult, and when granted the
+      // binding is re-attempted. Only when no request can be made (pre-V11,
+      // or the user chose "deny and don't ask again") does the flow continue
+      // to the existing failure branch below.
+      b.onPermissionResult { granted ->
+        if (granted) {
+          logConnection("הוענקה הרשאת Shizuku - מתחבר מחדש", false)
+          scope.launch { bindShizuku() }
+        }
+      }
+      if (!b.requestPermission()) {
+        lastError.value =
+          "לא הוענקה הרשאה ל-Shizuku - פתח את אפליקציית Shizuku והענק הרשאה לאפליקציה זו"
+        logConnection("לשיזוקו אין הרשאה לאפליקציה", true)
+        return false
+      }
+      // requestPermission() returned true - the grant landed between the
+      // checks; fall through and bind normally.
     }
     if (!b.bind()) {
       lastError.value = "החיבור ל-Shizuku נכשל"

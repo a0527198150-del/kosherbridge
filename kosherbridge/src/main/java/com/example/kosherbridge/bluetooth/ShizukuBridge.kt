@@ -40,6 +40,40 @@ class ShizukuBridge(private val context: Context) {
   private companion object {
     /** A bind older than this without a connection is dead - re-bind. */
     const val BIND_RETRY_AFTER_MS = 45_000L
+    const val PERMISSION_REQUEST_CODE = 4711
+  }
+
+  /**
+   * Fires once the Shizuku binder becomes available, so a capability report
+   * taken before the binder arrived can be refreshed instead of staying stale.
+   */
+  fun onBinderReceived(callback: () -> Unit) {
+    runCatching { Shizuku.addBinderReceivedListenerSticky { callback() } }
+  }
+
+  /**
+   * Asks Shizuku for permission using the official flow. Returns true when the
+   * permission is already granted; false means a request was fired (or the
+   * user previously chose "deny and don't ask again") and the result arrives
+   * through the listener registered by [onPermissionResult].
+   */
+  fun requestPermission(): Boolean = runCatching {
+    if (Shizuku.isPreV11()) return false
+    if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) return true
+    if (Shizuku.shouldShowRequestPermissionRationale()) return false
+    Shizuku.requestPermission(PERMISSION_REQUEST_CODE)
+    false
+  }.getOrDefault(false)
+
+  /** Registers a listener for the permission dialog result. */
+  fun onPermissionResult(callback: (Boolean) -> Unit) {
+    runCatching {
+      Shizuku.addRequestPermissionResultListener { code, result ->
+        if (code == PERMISSION_REQUEST_CODE) {
+          callback(result == PackageManager.PERMISSION_GRANTED)
+        }
+      }
+    }
   }
 
   /** Fired when the Shizuku user-service process dies (mirror of RootBridge). */
@@ -85,6 +119,7 @@ class ShizukuBridge(private val context: Context) {
       .processNameSuffix("shizuku")
       .debuggable(false)
       .version(1)
+      .tag("kosherbridge-hfp")
     val connection = object : ServiceConnection {
       override fun onServiceConnected(name: ComponentName, binder: IBinder) {
         remote = IHfpBridge.Stub.asInterface(binder)
