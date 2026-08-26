@@ -687,7 +687,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     backendLabel.value = "Root"
     profileReady.value = true
     startPolling()
-    onBackendWorked?.invoke("ROOT")
+    // Deliberately NOT learned as the "channel that worked" on this player:
+    // the user requires AUTO to never touch root - it may only run when the
+    // user picks it explicitly in the channel selector. Learning "ROOT" here
+    // would make a later AUTO choice resolve to the learned ROOT channel and
+    // spawn su without an explicit selection. The manual choice persists on
+    // its own, so the ROOT channel keeps working for this player either way.
     return true
   }
 
@@ -801,7 +806,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
             if (bindShizuku()) {
               connect(target)
             } else {
-              lastError.value = "Shizuku לא פעיל/לא מורשה - שנה ערוץ חיבור בהגדרות"
+              // bindShizuku() already set a specific error + log entry - do
+              // not overwrite it with a generic message that hides the real
+              // reason (server down, permission missing, process still booting).
+              logConnection("החיבור בערוץ Shizuku נכשל", true)
             }
           }
         }
@@ -828,7 +836,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
             if (bindRoot()) {
               connect(target)
             } else {
-              lastError.value = "הרשאת רוט לא זמינה/לא הוענקה - שנה ערוץ חיבור בהגדרות"
+              // bindRoot() already set a specific error + log entry - keep it.
+              logConnection("החיבור בערוץ הרוט נכשל", true)
             }
           }
         }
