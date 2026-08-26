@@ -145,6 +145,10 @@ class RawHfpClient(
    * channel; this flag lets an empty CLCC batch mean "call ended" for them,
    * while AGs with live CIEV keep that path as the source of truth. */
   @Volatile private var cievSeen = false
+  /** True when the AG accepted AT+CMER, i.e. unsolicited +CIEV will arrive.
+   * When false, CLCC polling is the only call-state channel and the poller
+   * falls back to a slow periodic query. */
+  @Volatile private var cmerAccepted = false
   private val clccLock = Any()
   private val clccCalls = mutableListOf<CallInfo>()
   /**
@@ -614,7 +618,21 @@ class RawHfpClient(
     }
   }
 
-  /** HFP negotiation: BRSF, CIND, CMER, CLIP, CCWA - the handshake every AG accepts. */
+  /**
+   * HFP Service Level Connection, per spec:
+   * AT+BRSF=<features> -> +BRSF / OK
+   * AT+CIND=? -> indicator names + OK
+   * AT+CIND? -> indicator values + OK <-- Read command, needs '?'
+   * AT+CMER=3,0,0,1 -> OK (SLC established here)
+   * [AT+CHLD=?] -> only when both sides advertise three-way calling
+   * AT+CLIP=1 -> post-SLC, caller ID
+   *
+   * The previous implementation sent a bare "AT+CIND", which is not a valid
+   * AT command (CIND defines Test and Read only). Feature-phone AG parsers
+   * answer ERROR and stay blocked waiting for the Read; the following CMER
+   * then arrives out of SLC sequence and the AG closes the RFCOMM channel -
+   * the "connects and immediately disconnects" symptom.
+   */
   private suspend fun handshake(handshakeSocket: HfpLink): Boolean {
     // The legacy headset gateway speaks HSP - there is no BRSF/CIND/CMER
     // negotiation. Accept the link as-is and let the read loop watch it.
@@ -627,34 +645,45 @@ class RawHfpClient(
     hspMode = false
     agBrsfFeatures = 0
     agFeaturesKnown = false
-    // Claim the common feature set; some AGs reject feature bits they don't
-    // understand, so retry with the minimal set before giving up.
+    cmerAccepted = false
+    // 1. BRSF - mandatory first step. Retry with the minimal feature set
+    // before giving up, as some AGs reject unfamiliar feature bits.
     if (!sendAndWait("AT+BRSF=$hfFeatures", handshakeSocket) &&
       !sendAndWait("AT+BRSF=0", handshakeSocket)
-    ) return false
-    sendCommand("AT+CIND=?", handshakeSocket)
-    if (!readUntil(handshakeSocket) { it.startsWith("OK") || it.startsWith("ERROR") }) return false
-    if (!sendAndWait("AT+CIND", handshakeSocket)) {
-      // Some AGs only support AT+CIND=? (not the value query) - continue
-      // without current indicator values; +CIEV events still arrive.
-      Log.w(tag, "AT+CIND rejected - continuing without indicator values")
-    }
-    if (!sendAndWait("AT+CMER=3,0,0,1", handshakeSocket) &&
-      !sendAndWait("AT+CMER=3,0,0,0", handshakeSocket)
     ) {
-      // CMER mode 3 is needed for unsolicited +CIEV events. Some basic
-      // AGs (feature phones) reject it entirely - skip CMER; CLCC polling
-      // still works, and some AGs send CIEV unsolicited regardless.
-      Log.w(tag, "CMER rejected - continuing without call progress events")
+      onLog("SLC נכשל: AT+BRSF נדחה", true)
+      return false
     }
-    // CHLD is intentionally not queried: this client does not advertise or
-    // implement the three-way/call-hold procedures, and basic AGs sometimes
-    // disconnect when an unsupported CHLD query is sent.
-    sendCommand("AT+CLIP=1", handshakeSocket)
-    readUntil(handshakeSocket) { it.startsWith("OK") || it.startsWith("ERROR") }
-    // Call-waiting notification is optional and is not needed for ordinary
-    // incoming calls. Leave it disabled during SLC so basic AG firmware does
-    // not reject an otherwise valid connection.
+    // 2. CIND=? - indicator names and ranges.
+    if (!sendAndWait("AT+CIND=?", handshakeSocket)) {
+      onLog("SLC נכשל: AT+CIND=? נדחה", true)
+      return false
+    }
+    // 3. CIND? - current indicator values. The '?' is mandatory.
+    if (!sendAndWait("AT+CIND?", handshakeSocket)) {
+      onLog("SLC: AT+CIND? נדחה - ממשיך בלי ערכי אינדיקטורים התחלתיים", true)
+    }
+    // 4. CMER - enables unsolicited +CIEV. The SLC is established on OK.
+    cmerAccepted = sendAndWait("AT+CMER=3,0,0,1", handshakeSocket)
+    if (!cmerAccepted) {
+      onLog("SLC: AT+CMER=3,0,0,1 נדחה - מנסה מצב מצומצם", true)
+      cmerAccepted = sendAndWait("AT+CMER=3,0,0,0", handshakeSocket)
+      if (!cmerAccepted) {
+        onLog("SLC: AT+CMER נדחה - אירועי +CIEV לא יתקבלו", true)
+      }
+    }
+    // 5. CHLD is required only when the AG advertises three-way calling
+    // (AG bit 0) AND the HF advertises it (HF bit 1). hfFeatures does not
+    // set HF bit 1, so it is skipped by design. Logged so an AG that waits
+    // for CHLD anyway can be identified from the journal.
+    if (agFeaturesKnown && (agBrsfFeatures and 0x01) != 0) {
+      onLog("SLC: ה-AG מכריז על שיחה משולשת (ביט 0) - AT+CHLD=? לא נשלח בכוונה", false)
+    }
+    // 6. Post-SLC: caller ID presentation.
+    if (!sendAndWait("AT+CLIP=1", handshakeSocket)) {
+      onLog("SLC: AT+CLIP=1 נדחה - ייתכן שלא יוצג מספר מתקשר", true)
+    }
+    onLog("SLC הושלם דרך ${lastGateway ?: "שער לא ידוע"} (AG features=$agBrsfFeatures)", false)
     return true
   }
 
