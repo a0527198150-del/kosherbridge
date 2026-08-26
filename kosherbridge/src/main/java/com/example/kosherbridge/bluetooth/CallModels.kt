@@ -32,6 +32,8 @@ data class BridgeUiState(
   val privilegedBlocked: Boolean = false, // system rejected privileged calls?
   val shizukuAvailable: Boolean = false,
   val shizukuGranted: Boolean = false,
+  val rootAvailable: Boolean = false, // a su binary exists on this device
+
   val scoSupport: String? = null, // does this player expose SCO at all?
   val scoTechnique: String? = null, // last SCO technique the stack was asked for
   val rawDropInfo: String? = null, // raw RFCOMM link drop stats (count + last duration)

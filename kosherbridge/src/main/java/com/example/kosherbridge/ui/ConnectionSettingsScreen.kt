@@ -219,6 +219,7 @@ fun ConnectionSettingsScreen(
             "AUTO" to "אוטומטי - האפליקציה בוחרת לבד",
             "DIRECT" to "ישיר (ללא Shizuku)",
             "SHIZUKU" to "דרך Shizuku",
+            "ROOT" to "דרך הרשאת רוט (su)",
             "RAW" to "חיבור ישיר RFCOMM",
           ).forEach { (mode, label) ->
             Row(
@@ -286,6 +287,7 @@ private fun channelLabel(cs: ChannelState): String {
   val name = when (cs.effective) {
     "DIRECT" -> "ישיר"
     "SHIZUKU" -> "Shizuku"
+    "ROOT" -> "Root"
     "RAW" -> "RFCOMM ישיר"
     else -> "אוטומטי"
   }

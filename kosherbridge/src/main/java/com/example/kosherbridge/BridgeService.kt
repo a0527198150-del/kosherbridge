@@ -371,12 +371,14 @@ class BridgeService : Service() {
   private fun publishCapabilityReport() {
     scope.launch {
       val (sAvail, sGranted) = manager.shizukuState()
+      val rootAvail = manager.rootState()
       BridgeHub.update {
         it.copy(
           deviceInfo = "${Build.MANUFACTURER} ${Build.MODEL} (SDK ${Build.VERSION.SDK_INT})",
           hiddenApiAvailable = HiddenHfp.isAvailable,
           shizukuAvailable = sAvail,
           shizukuGranted = sGranted,
+          rootAvailable = rootAvail,
         )
       }
     }

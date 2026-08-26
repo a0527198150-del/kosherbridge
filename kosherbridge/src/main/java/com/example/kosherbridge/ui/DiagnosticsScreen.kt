@@ -114,6 +114,7 @@ fun DiagnosticsScreen(
         },
         state.shizukuGranted,
       )
+      DiagRow("Root (su)", if (state.rootAvailable) "זמין" else "לא זמין", state.rootAvailable)
       state.scoSupport?.let {
         DiagRow("שמע (SCO)", it, it.startsWith("מחובר") || it.startsWith("נתמך"))
       }
@@ -172,10 +173,16 @@ private fun buildGuidance(state: BridgeUiState): String? = when {
   !state.adapterOn -> "הדלק את הבלוטוס בהגדרות המערכת וחזור לכאן."
   state.connectionState != BluetoothProfile.STATE_CONNECTED -> {
     when {
+      !state.hiddenApiAvailable && !state.shizukuAvailable && state.rootAvailable ->
+        "המכשיר חוסם את פרופיל הדיבורית, אבל יש בו הרשאת רוט. בחר 'ערוץ חיבור' → 'דרך הרשאת רוט (su)' " +
+          "ואשר את בקשת ההרשאה (Magisk) - הערוץ יעבוד בלי Shizuku ובלי adb."
       !state.hiddenApiAvailable && !state.shizukuAvailable ->
         "המכשיר חוסם את פרופיל הדיבורית. שתי דרכים:\n" +
           "1) התקן Shizuku והפעל אותו פעם אחת (adb אלחוטי), ובחר 'דרך Shizuku' ב'ערוץ חיבור'.\n" +
           "2) בלי התקנות: זווג את הטלפון הכשר ובחר אותו באפליקציה - החיבור הישיר ינסה לבד."
+      state.privilegedBlocked && state.rootAvailable ->
+        "הגישה הישירה נחסמה, אבל יש רוט: בחר 'ערוץ חיבור' → 'דרך הרשאת רוט (su)' - " +
+          "או התקן את מודול ה-Magisk לעבודה קבועה."
       !state.profileReady && state.rawDropInfo != null ->
         "הקישור נופל שוב ושוב. מחק את זיווג הטלפון וזווג אותו מחדש - עכשיו האפליקציה תכבה אוטומטית את החיבורים המערכתיים שמתחרים על הקישור."
       !state.profileReady ->
@@ -207,6 +214,7 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
       }
     }",
   )
+  appendLine("Root (su): ${if (state.rootAvailable) "זמין" else "לא זמין"}")
   appendLine("בלוטוס: ${if (state.adapterOn) "פועל" else "כבוי"}")
   appendLine("חיבור: ${connectionText(state)}")
   appendLine(

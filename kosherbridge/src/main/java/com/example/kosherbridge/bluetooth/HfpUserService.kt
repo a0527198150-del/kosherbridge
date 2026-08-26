@@ -10,22 +10,27 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * The actual privileged worker. Shizuku loads this same APK into a second
- * process that runs under the `shell` UID and instantiates this class there
- * (see HfpClientManager.bindShizuku). It reuses HiddenHfp directly - it's
- * the same reflection code, just executed under an identity that isn't
- * blocked by the two barriers described in chat: hidden-API enforcement and
- * the BLUETOOTH_PRIVILEGED permission check.
+ * The actual privileged worker. Two paths load this same APK into a second
+ * process with a privileged identity and instantiate this class there:
+ *  - Shizuku (see HfpClientManager.bindShizuku): the Shizuku server spawns
+ *    the process under the `shell` UID.
+ *  - Root (see HfpClientManager.bindRoot / RootBridgeMain): the app spawns
+ *    the process itself via `su` under uid 0 - no Shizuku app needed.
+ * It reuses HiddenHfp directly - it's the same reflection code, just executed
+ * under an identity that isn't blocked by the two barriers: hidden-API
+ * enforcement and the BLUETOOTH_PRIVILEGED permission check.
  *
- * Never instantiate this directly from normal app code - only Shizuku's
- * bindUserService() should create it, in the remote process.
+ * Never instantiate this directly from normal app code - only the privileged
+ * spawn paths (Shizuku bindUserService / RootBridgeMain) should create it,
+ * in the remote process.
  */
 class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
 
   // Some Shizuku runtime versions instantiate user services via a no-arg
-  // constructor rather than passing a Context in. BridgeApp.onCreate() runs
-  // first in *every* process this APK is loaded into - including this one -
-  // so BridgeApp.instance is always safe to fall back to.
+  // constructor rather than passing a Context in; RootBridgeMain passes the
+  // app Context explicitly. BridgeApp.onCreate() runs first in *every*
+  // process this APK is loaded into - including this one - so
+  // BridgeApp.instance is always safe to fall back to.
   constructor() : this(BridgeApp.instance)
 
   private val adapter: BluetoothAdapter? =
@@ -151,8 +156,9 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     client?.let { c -> runCatching { adapter?.closeProfileProxy(HiddenHfp.PROFILE_ID, c as BluetoothProfile) } }
     client = null
     ready = false
-    // Shizuku convention: the process is not killed automatically, so the
-    // service must terminate itself after the cleanup.
+    // Shizuku convention (shared by the root channel): the process is not
+    // killed automatically, so the service must terminate itself after the
+    // cleanup.
     System.exit(0)
   }
 }
