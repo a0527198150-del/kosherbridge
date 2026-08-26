@@ -288,12 +288,15 @@ object HiddenHfp {
         Log.w(TAG, "setConnectionPolicy($profileId) unavailable: ${e.message}")
         false
       }
-      if (policy) return@try true
-      val m = p.javaClass.getMethod(
-        "setPriority", BluetoothDevice::class.java,
-        Int::class.javaPrimitiveType,
-      )
-      (m.invoke(p, device, priority) as? Boolean) ?: false
+      if (policy) {
+        true
+      } else {
+        val m = p.javaClass.getMethod(
+          "setPriority", BluetoothDevice::class.java,
+          Int::class.javaPrimitiveType,
+        )
+        (m.invoke(p, device, priority) as? Boolean) ?: false
+      }
     } catch (e: Throwable) {
       Log.w(TAG, "setProfilePriority($profileId, $priority) failed: ${e.message}")
       false
