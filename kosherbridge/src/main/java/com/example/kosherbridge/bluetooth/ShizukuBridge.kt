@@ -26,11 +26,21 @@ class ShizukuBridge(private val context: Context) {
 
   @Volatile private var remote: IHfpBridge? = null
   @Volatile private var bindRequested = false
+  /** When the last bind was requested - un-sticks a bind whose user-service
+   * process crashed before delivering its binder (mirror of RootBridge).
+   * Without it `bindRequested` stayed true forever and the Shizuku channel
+   * was dead until the app restarted. */
+  @Volatile private var bindRequestedAt = 0L
   private var args: Shizuku.UserServiceArgs? = null
   private var conn: ServiceConnection? = null
   private var remoteDied: (() -> Unit)? = null
 
   val isBound: Boolean get() = remote != null
+
+  private companion object {
+    /** A bind older than this without a connection is dead - re-bind. */
+    const val BIND_RETRY_AFTER_MS = 45_000L
+  }
 
   /** Fired when the Shizuku user-service process dies (mirror of RootBridge). */
   fun onRemoteDied(callback: () -> Unit) {
@@ -52,17 +62,22 @@ class ShizukuBridge(private val context: Context) {
    * The connection arrives asynchronously via [ServiceConnection] (main thread).
    */
   fun bind(): Boolean {
-    if (remote != null || bindRequested) return true
+    val inFlight = bindRequested &&
+      System.currentTimeMillis() - bindRequestedAt < BIND_RETRY_AFTER_MS
+    if (remote != null || (bindRequested && inFlight)) return true
     synchronized(this) {
       // Binding is asynchronous. A second caller can arrive before
       // onServiceConnected and otherwise create a second remote process.
-      if (remote != null || bindRequested) return true
+      if (remote != null ||
+        (bindRequested && System.currentTimeMillis() - bindRequestedAt < BIND_RETRY_AFTER_MS)
+      ) return true
       if (!isAvailable) return false
       if (!permissionGranted) {
         Log.w(tag, "Shizuku permission not granted for this app")
         return false
       }
       bindRequested = true
+      bindRequestedAt = System.currentTimeMillis()
     }
     val component = ComponentName(context, HfpUserService::class.java)
     val a = Shizuku.UserServiceArgs(component)
@@ -81,6 +96,7 @@ class ShizukuBridge(private val context: Context) {
         Log.w(tag, "user service disconnected")
         remote = null
         bindRequested = false
+        bindRequestedAt = 0L
         remoteDied?.invoke()
       }
     }
@@ -106,6 +122,7 @@ class ShizukuBridge(private val context: Context) {
     args = null
     remote = null
     bindRequested = false
+    bindRequestedAt = 0L
   }
 
   // ------------------------------------------------------------- remote calls

@@ -587,8 +587,15 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   private suspend fun finishShizukuBind(b: ShizukuBridge): Boolean {
     if (!b.registerProfile()) {
-      lastError.value = "פרופיל הדיבורית לא זמין דרך Shizuku במכשיר זה"
-      logConnection("שיזוקו מחובר אך רישום פרופיל הדיבורית נכשל", true)
+      // The most common "Shizuku doesn't work at all" failure: the privileged
+      // process is up, but the player's Bluetooth stack does not expose the
+      // HFP client profile, so the profile proxy never connects. Shizuku only
+      // lifts the permission walls - it cannot add HFP-client support to the
+      // vendor stack. Point the user to the channel that bypasses the profile.
+      lastError.value =
+        "המכשיר לא מאפשר את פרופיל הדיבורית (HFP Client) גם דרך Shizuku - " +
+          "שנה את 'ערוץ חיבור' ל'חיבור ישיר RFCOMM' שמדבר עם הטלפון הכשר ישירות"
+      logConnection("שיזוקו מחובר אך רישום פרופיל הדיבורית נכשל - אין תמיכת HFP Client בנגן", true)
       return false
     }
     logConnection("שיזוקו רשם את פרופיל הדיבורית", false)
@@ -795,10 +802,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         if (useShizuku) {
           if (profileReady.value) {
             if (!shizuku!!.connect(target.address)) {
-              lastError.value = "חיבור הדיבורית נכשל דרך Shizuku"
+              lastError.value = "חיבור הדיבורית נכשל דרך Shizuku - נסה 'חיבור ישיר RFCOMM' בערוץ החיבור"
             }
           } else {
-            lastError.value = "פרופיל הדיבורית לא זמין דרך Shizuku בנגן זה"
+            lastError.value =
+              "פרופיל הדיבורית לא זמין דרך Shizuku בנגן זה - נסה 'חיבור ישיר RFCOMM' בערוץ החיבור"
           }
         } else {
           lastError.value = "מתחבר דרך Shizuku..."
