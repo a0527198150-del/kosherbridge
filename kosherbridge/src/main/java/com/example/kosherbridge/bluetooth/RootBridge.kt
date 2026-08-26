@@ -38,6 +38,9 @@ class RootBridge(private val context: Context) {
     private const val ENTRY_CLASS = "com.example.kosherbridge.bluetooth.RootBridgeMain"
     private const val SERVICE_CLASS = "com.example.kosherbridge.bluetooth.HfpUserService"
 
+    /** A spawn older than this without delivering its binder is dead - re-spawn. */
+    private const val SPAWN_RETRY_AFTER_MS = 45_000L
+
     // Bridge between RootBridgeProvider (running in this process on a binder
     // thread) and the manager's RootBridge instance. The provider only lets
     // uid-0 callers through, and the one-time token ties the handoff to the
@@ -60,6 +63,11 @@ class RootBridge(private val context: Context) {
   @Volatile private var remote: IHfpBridge? = null
   @Volatile private var rootPid = -1
   @Volatile private var started = false
+  /** When the last spawn was launched - used to un-stick a spawn that never
+   * delivered its binder (silent app_process crash, bad CLASSPATH, ...).
+   * Without it `started` stayed true forever and the root channel was bricked
+   * until the app restarted. */
+  @Volatile private var startedAt = 0L
   private var remoteDied: (() -> Unit)? = null
 
   val isBound: Boolean get() = remote != null
@@ -138,9 +146,17 @@ class RootBridge(private val context: Context) {
    * (like Shizuku's start.sh) so `su` returns immediately; the app_process
    * child keeps running under uid 0. The binder handoff arrives asynchronously
    * via [RootBridgeProvider] - poll [isBound] or wait in the caller.
+   *
+   * Synchronized so two concurrent bindRoot() coroutines cannot both spawn a
+   * second process (each spawn replaces expectedToken, silently rejecting the
+   * other's delivery and leaking a booted-but-idle app_process). A spawn that
+   * never delivers its binder within [SPAWN_RETRY_AFTER_MS] is treated as
+   * dead and re-spawned on the next call instead of sticking forever.
    */
+  @Synchronized
   fun start(): Boolean {
-    if (remote != null || started) return true
+    if (remote != null) return true
+    if (started && System.currentTimeMillis() - startedAt < SPAWN_RETRY_AFTER_MS) return true
     val token = UUID.randomUUID().toString()
     expectedToken = token
     val apk = context.packageCodePath
@@ -156,12 +172,14 @@ class RootBridge(private val context: Context) {
     val r = execWithTimeout(arrayOf("su", "-c", cmd), 5_000)
     val ok = r.exited && r.exitCode == 0
     started = ok
+    startedAt = if (ok) System.currentTimeMillis() else 0L
     if (!ok) expectedToken = null
     Log.i(TAG, if (ok) "root process spawned" else "failed to spawn root process")
     return ok
   }
 
   /** Stops the root process: asks it to destroy itself, then kills by pid. */
+  @Synchronized
   fun stop() {
     runCatching { remote?.destroy() }
     if (rootPid > 0) {
@@ -170,6 +188,7 @@ class RootBridge(private val context: Context) {
     remote = null
     rootPid = -1
     started = false
+    startedAt = 0L
     expectedToken = null
   }
 
@@ -181,6 +200,7 @@ class RootBridge(private val context: Context) {
         remote = null
         rootPid = -1
         started = false
+        startedAt = 0L
         remoteDied?.invoke()
       }, 0)
     }

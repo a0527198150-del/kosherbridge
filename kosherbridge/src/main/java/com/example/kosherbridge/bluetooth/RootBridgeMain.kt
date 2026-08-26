@@ -2,6 +2,7 @@ package com.example.kosherbridge.bluetooth
 
 import android.app.Application
 import android.content.Context
+import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -139,6 +140,10 @@ object RootBridgeMain {
     val icpClass = Class.forName("android.content.IContentProvider")
     var icp: IInterface? = null
 
+    // Mirrors Shizuku's ServiceStarter: a real (non-null) token binder is
+    // passed to getContentProviderExternal and the matching remove call. Some
+    // AOSP versions do not accept a null token for the external provider.
+    val tokenBinder = Binder()
     return try {
       val provider = amClass.getMethod(
         "getContentProviderExternal",
@@ -146,7 +151,7 @@ object RootBridgeMain {
         Int::class.javaPrimitiveType,
         IBinder::class.java,
         String::class.java,
-      ).invoke(iam, RootBridge.AUTHORITIES, 0, null, RootBridge.AUTHORITIES)
+      ).invoke(iam, RootBridge.AUTHORITIES, 0, tokenBinder, RootBridge.AUTHORITIES)
       icp = icpClass.cast(provider) as? IInterface
       if (icp == null || !icp.asBinder().pingBinder()) return false
 
@@ -169,7 +174,7 @@ object RootBridgeMain {
     } finally {
       runCatching {
         amClass.getMethod("removeContentProviderExternal", String::class.java, IBinder::class.java)
-          .invoke(iam, RootBridge.AUTHORITIES, null)
+          .invoke(iam, RootBridge.AUTHORITIES, tokenBinder)
       }
     }
   }
