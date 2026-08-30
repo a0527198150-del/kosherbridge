@@ -716,6 +716,38 @@ class RawHfpClient(
     return true
   }
 
+  // ------------------------------------------------- test seams (no behavior change)
+
+  /** Visibility-for-tests only: the SLC/AT conversation is a pure text
+   * protocol over an [HfpLink], so the JVM test harness (MockAg) drives it
+   * over piped streams without a device. Installs the link exactly as
+   * runSession() does (sendCommand's ownership check requires it) and leaves
+   * it installed so post-SLC commands can be exercised; the caller's
+   * disconnect() tears it down. Production behavior is unchanged. */
+  internal suspend fun runHandshakeForTest(link: HfpLink): Boolean {
+    synchronized(writeLock) {
+      socket = link
+      input = link.input
+      output = link.output
+    }
+    return handshake(link)
+  }
+
+  /** Visibility-for-tests only: feed one AG line through the same parser the
+   * read loop uses (see MockAg / RawHfpClientSlcTest). */
+  internal fun handleLineForTest(line: String) = handleLine(line)
+
+  /** Visibility-for-tests only: the AG feature bitmap learned from +BRSF. */
+  internal var agFeaturesForTest: Int
+    get() = agBrsfFeatures
+    set(value) {
+      agBrsfFeatures = value
+      agFeaturesKnown = true
+    }
+
+  /** Visibility-for-tests only: the current gateway rotation order. */
+  internal fun gatewayOrderForTest(): List<Pair<UUID, String>> = gatewayOrder.toList()
+
   private fun readLoop(ownedSocket: HfpLink) {
     val r = synchronized(writeLock) {
       if (socket === ownedSocket) input else null

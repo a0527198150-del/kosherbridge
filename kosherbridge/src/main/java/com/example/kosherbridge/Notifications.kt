@@ -21,6 +21,17 @@ object Notifications {
   private const val NOTIF_BRIDGE = 1
   private const val NOTIF_CALL = 2
 
+  /**
+   * True when the system will actually honour a full-screen intent. On Android
+   * 14+ USE_FULL_SCREEN_INTENT is user-revocable, and when it is off the
+   * incoming-call notification silently degrades to a heads-up banner.
+   */
+  fun canUseFullScreen(context: Context): Boolean {
+    if (Build.VERSION.SDK_INT < 34) return true
+    val nm = context.getSystemService(NotificationManager::class.java) ?: return false
+    return runCatching { nm.canUseFullScreenIntent() }.getOrDefault(false)
+  }
+
   fun createChannels(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

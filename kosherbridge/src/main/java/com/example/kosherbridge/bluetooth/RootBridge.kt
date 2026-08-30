@@ -259,4 +259,15 @@ class RootBridge(private val context: Context) {
 
   fun currentCallSnapshot(): String =
     runCatching { remote?.currentCallSnapshot() ?: "" }.getOrDefault("")
+
+  /**
+   * Asks the privileged root process to set the HFP-client connection policy
+   * for one device back to ALLOWED before connect() (mirror of ShizukuBridge).
+   */
+  fun setConnectionAllowed(address: String): Boolean =
+    runCatching { remote?.setConnectionAllowed(address) ?: false }.getOrDefault(false)
+
+  /** Reads the HFP-client connection policy for one device (diagnostics). */
+  fun connectionPolicy(address: String): Int =
+    runCatching { remote?.connectionPolicy(address) ?: -1000 }.getOrDefault(-1000)
 }

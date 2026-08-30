@@ -5,7 +5,10 @@ import android.bluetooth.BluetoothProfile
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -127,6 +130,33 @@ fun DiagnosticsScreen(
       state.rawConnectionDiagnostics?.let {
         DiagRow("ניסיונות SDP/RFCOMM", it, false)
       }
+      state.headsetClientPolicy?.let {
+        DiagRow("מדיניות חיבור (פרופיל דיבורית)", it, it == "מאושר")
+      }
+      state.fullScreenAllowed?.let { allowed ->
+        DiagRow(
+          "מסך שיחה מלא",
+          if (allowed) "מותר" else "חסום - השיחה תופיע כהודעה מוקפצת",
+          allowed,
+        )
+        if (!allowed) {
+          SettingRow(
+            "אפשר מסך שיחה מלא",
+            "פתח את הגדרות המערכת כדי לאשר הצגת שיחה נכנסת במסך מלא",
+          ) {
+            // Android 14+: the dedicated full-screen-intent settings page.
+            val fsIntent = Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT)
+              .setData(Uri.parse("package:${context.packageName}"))
+            val opened = runCatching {
+              context.startActivity(fsIntent)
+              true
+            }.getOrDefault(false)
+            if (!opened) {
+              onSnackbar("לא ניתן לפתוח את המסך הזה במכשיר הזה")
+            }
+          }
+        }
+      }
       SettingRow("בדיקת מיקרופון", micResult ?: "מוודא שהמיקרופון קולט קול לשיחה") {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
           PackageManager.PERMISSION_GRANTED
@@ -231,6 +261,10 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
   state.scoTechnique?.let { appendLine("טכניקת שמע אחרונה: $it") }
   state.rawDropInfo?.let { appendLine("ניתוקי קישור: $it") }
   state.rawConnectionDiagnostics?.let { appendLine("ניסיונות SDP/RFCOMM: $it") }
+  state.headsetClientPolicy?.let { appendLine("מדיניות חיבור (פרופיל דיבורית): $it") }
+  state.fullScreenAllowed?.let {
+    appendLine("מסך שיחה מלא: ${if (it) "מותר" else "חסום - השיחה תופיע כהודעה מוקפצת"}")
+  }
   if (state.connectionLog.isNotEmpty()) {
     appendLine("יומן חיבור:")
     state.connectionLog.forEach { appendLine(it) }

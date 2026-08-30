@@ -64,6 +64,25 @@ class BridgeService : Service() {
     }
 
     /**
+     * Runs [block] with the live bridge manager when the service is running.
+     * When the service is not running the bridge does not exist and there is
+     * nothing to act on — [onMissing] reports that instead of a silent no-op
+     * (the earlier BridgeHub.service?.x pattern silently did nothing).
+     */
+    fun withManager(
+      context: Context,
+      onMissing: () -> Unit = {},
+      block: (HfpClientManager) -> Unit,
+    ) {
+      val svc = instance
+      if (svc == null) {
+        onMissing()
+        return
+      }
+      block(svc.manager)
+    }
+
+    /**
      * Connects to a device whether or not the service is already running.
      * Tapping "בחר מכשיר" previously went through BridgeHub.service?.connectTo,
      * which silently did nothing when the service was dead - no connection,
@@ -389,6 +408,7 @@ class BridgeService : Service() {
           shizukuAvailable = sAvail,
           shizukuGranted = sGranted,
           rootAvailable = rootAvail,
+          fullScreenAllowed = Notifications.canUseFullScreen(this@BridgeService),
         )
       }
     }
@@ -401,6 +421,21 @@ class BridgeService : Service() {
       a.scoDeviceEverSeen && a.scoConnected.value -> "מחובר (${a.scoTechniqueUsed})"
       a.scoDeviceEverSeen -> "נתמך - לא מחובר עכשיו"
       else -> "לא זוהה התקן SCO - הנגן כנראה תומך רק בבקרה, לא בקול"
+    }
+  }
+
+  /** Human-readable HFP-client connection-policy line for the diagnostics tab. */
+  private fun headsetClientPolicyText(): String {
+    val policy = manager.headsetClientPolicy(
+      BridgeHub.state.value.deviceAddress?.let { addr ->
+        runCatching { adapter()?.getRemoteDevice(addr) }.getOrNull()
+      },
+    )
+    return when (policy) {
+      HiddenHfp.POLICY_ALLOWED -> "מאושר"
+      HiddenHfp.POLICY_FORBIDDEN -> "חסום"
+      HiddenHfp.POLICY_UNREADABLE -> "לא ניתן לקריאה"
+      else -> "לא ידוע ($policy)"
     }
   }
 
@@ -457,6 +492,14 @@ class BridgeService : Service() {
     scope.launch {
       manager.connectionLog.collect { lines ->
         BridgeHub.update { it.copy(connectionLog = lines) }
+        // The policy row is not a flow: refresh it whenever anything in the
+        // bridge changes (it is cheap and read-only).
+        BridgeHub.update { it.copy(headsetClientPolicy = headsetClientPolicyText()) }
+      }
+    }
+    scope.launch {
+      manager.connectionState.collect {
+        BridgeHub.update { it.copy(headsetClientPolicy = headsetClientPolicyText()) }
       }
     }
     scope.launch {

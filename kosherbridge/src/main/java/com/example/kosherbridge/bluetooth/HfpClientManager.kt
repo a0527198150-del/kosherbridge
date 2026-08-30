@@ -118,6 +118,120 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var aclReceiver: BroadcastReceiver? = null
   @Volatile private var lastAclNudge = 0L
 
+  /**
+   * The connection policies this app changed, keyed "address:profileId" -> the
+   * value read BEFORE the first FORBIDDEN write. Connection policy is a
+   * persistent per-device setting held by the Bluetooth stack: it survives app
+   * restarts, reboots, and even uninstall, so the original value must be
+   * remembered here or it can never be restored. Only the first write records
+   * the original — a later read may already see the app's own FORBIDDEN.
+   */
+  private val recordedPolicies = mutableMapOf<String, Int>()
+
+  /** The profile ids disableSystemProfiles may set to FORBIDDEN. */
+  private val guardedProfiles = listOf(
+    BluetoothProfile.HEADSET,
+    16, // HEADSET_CLIENT — the profile the Shizuku/root channels drive
+    BluetoothProfile.A2DP,
+    11, // A2DP_SINK
+  )
+
+  private fun policyKey(address: String, profileId: Int) = "$address:$profileId"
+
+  /**
+   * Reads and persists the current policy for (device, profile) before the
+   * first FORBIDDEN write. Later calls are no-ops: once an original is stored
+   * it must never be overwritten with a value the app itself wrote.
+   */
+  private fun recordOriginalPolicy(device: BluetoothDevice, profileId: Int) {
+    val key = policyKey(device.address, profileId)
+    if (recordedPolicies.containsKey(key)) return
+    val current = HiddenHfp.profilePolicy(context, device, profileId)
+    if (current != HiddenHfp.POLICY_UNREADABLE) {
+      recordedPolicies[key] = current
+    }
+  }
+
+  /**
+   * Restores every connection policy this app changed for one device back to
+   * the values recorded before the first FORBIDDEN write, then forgets the
+   * record. Called on deliberate disconnect, on unpair, and from the manual
+   * repair action. Idempotent and safe when nothing was ever recorded.
+   *
+   * Privileged channels (SHIZUKU/ROOT/DIRECT) never disable system profiles,
+   * so they never restore either — restoring would write policies the guard
+   * never touched.
+   */
+  fun restoreSystemProfiles(device: BluetoothDevice) {
+    if (channelMode in ("SHIZUKU", "ROOT", "DIRECT")) return
+    val address = device.address
+    val keys = recordedPolicies.keys.filter { it.startsWith("$address:") }
+    if (keys.isEmpty()) {
+      logConnection("שחזור מדיניות חיבור: אין מה לשחזר עבור ${device.name ?: address}", false)
+      return
+    }
+    scope.launch {
+      systemProfilesMutex.withLock {
+        for (key in keys) {
+          val profileId = key.substringAfter(':').toIntOrNull() ?: continue
+          val original = recordedPolicies[key] ?: continue
+          val applied = withContext(Dispatchers.IO) {
+            HiddenHfp.setProfilePriority(context, device, profileId, original)
+          }
+          if (applied) {
+            recordedPolicies.remove(key)
+            logConnection(
+              "מדיניות החיבור של פרופיל $profileId שוחזרה לערך המקורי ($original)",
+              false,
+            )
+          } else {
+            // The write failed (unprivileged process on a locked-down stack).
+            // Keep the record so a later repair attempt can try again.
+            logConnection(
+              "לא ניתן לשחזר את מדיניות החיבור של פרופיל $profileId - ינוסה שוב בתיקון הבא",
+              true,
+            )
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * The escape hatch for every player already stuck in the poisoned state:
+   * sets all guarded profiles back to ALLOWED for the device, whether or not
+   * this app recorded an original. Unprivileged writes may still fail on a
+   * locked-down stack — the log line says so, and the privileged channels
+   * perform the same repair through the privileged process.
+   */
+  fun repairConnectionPolicies(device: BluetoothDevice) {
+    val address = device.address
+    logConnection("מתקן מדיניות חיבור עבור ${device.name ?: address}", false)
+    scope.launch {
+      for (profileId in guardedProfiles) {
+        val applied = withContext(Dispatchers.IO) {
+          HiddenHfp.setProfilePriority(context, device, profileId, HiddenHfp.POLICY_ALLOWED)
+        }
+        if (applied) {
+          recordedPolicies.remove(policyKey(address, profileId))
+        }
+        logConnection(
+          "פרופיל $profileId: ${if (applied) "מדיניות הוחזרה למאושר" else "הכתיבה נדחתה (נדרש תהליך מיוחס)"}",
+          !applied,
+        )
+      }
+    }
+  }
+
+  /**
+   * The current HFP-client (profile 16) connection policy for one device, for
+   * the diagnostics row and report. POLICY_UNREADABLE when it cannot be read.
+   */
+  fun headsetClientPolicy(device: BluetoothDevice?): Int {
+    val d = device ?: return HiddenHfp.POLICY_UNREADABLE
+    return HiddenHfp.profilePolicy(context, d, 16)
+  }
+
   private suspend fun disableSystemProfiles(device: BluetoothDevice) {
     // Privileged channels route the link THROUGH the system HFP profile (just
     // from a privileged process). Forcing that profile off would kill their
@@ -134,6 +248,13 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     if (!ServiceLocator.settings.profileGuard.first()) {
       logConnection("ניטרול פרופילי המערכת כבוי בהגדרות - מדלג", false)
       return
+    }
+    // Record the pre-existing policies BEFORE the first FORBIDDEN write, so a
+    // later restore can put back what the stack originally held. Connection
+    // policy is persistent per device — without this record the change is
+    // irreversible (it survives restart, reboot, and uninstall).
+    for (profileId in guardedProfiles) {
+      recordOriginalPolicy(device, profileId)
     }
     // Pairing broadcasts and a manual connect can arrive together. Serialize
     // this operation so the raw socket never starts while the system profile
@@ -161,11 +282,20 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
       // HEADSET_CLIENT (16) is the HFP client role - the exact same role this
       // app plays - so on players that expose it, it is the profile that truly
-      // competes for the phone's single hands-free slot. Disable it
-      // best-effort next to HEADSET (1), without removing the existing guard.
-      withContext(Dispatchers.IO) {
-        runCatching { HiddenHfp.setProfilePriority(context, device, 16 /* HEADSET_CLIENT */, 0) }
-        runCatching { HiddenHfp.forceDisconnectProfile(context, device, 16 /* HEADSET_CLIENT */) }
+      // competes for the phone's single hands-free slot. In the user's
+      // explicit, sticky RAW choice it is disabled next to HEADSET (1).
+      // In AUTO it is left UNTOUCHED: AUTO resolves to the raw path today, but
+      // profile 16 is also the profile the Shizuku/root channels drive, and a
+      // FORBIDDEN policy persisted here silently breaks every one of those
+      // channels afterwards — the stack refuses (or tears down seconds later)
+      // every hands-free connection for this device, with no visible cause and
+      // no recovery short of unpairing. Only the explicit RAW choice may
+      // sacrifice the privileged channels.
+      if (channelMode == "RAW") {
+        withContext(Dispatchers.IO) {
+          runCatching { HiddenHfp.setProfilePriority(context, device, 16 /* HEADSET_CLIENT */, 0) }
+          runCatching { HiddenHfp.forceDisconnectProfile(context, device, 16 /* HEADSET_CLIENT */) }
+        }
       }
 
       // A2DP does not own the HFP slot, but on some low-end stacks its ACL
@@ -213,9 +343,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
             if (dev != null) scope.launch { disableSystemProfiles(dev) }
           }
           BluetoothDevice.BOND_NONE -> {
-            // Un-paired: clear the learned channel so a future re-pair starts
-            // fresh.
+            // Un-paired: restore the connection policies this app changed and
+            // clear the learned channel so a future re-pair starts fresh.
             scope.launch {
+              if (dev != null) restoreSystemProfiles(dev)
               ServiceLocator.settings.learnChannel(Build.FINGERPRINT, "")
             }
           }
@@ -849,6 +980,18 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         // "connects then immediately disconnects" symptom.
         if (useShizuku) {
           if (profileReady.value) {
+            // Restore the HFP-client connection policy to ALLOWED in the
+            // privileged process BEFORE connecting. A policy left FORBIDDEN by
+            // an earlier raw/AUTO session is persisted per device by the stack:
+            // the connect below would be refused — or accepted and torn down
+            // seconds later — with no visible cause. Only the privileged
+            // identity can perform this write.
+            val allowed = shizuku!!.setConnectionAllowed(target.address)
+            if (allowed) {
+              logConnection("מדיניות החיבור לפרופיל הדיבורית הוחזרה לפעילה", false)
+            } else {
+              logConnection("לא ניתן להחזיר את מדיניות החיבור - החיבור עלול ליפול", true)
+            }
             if (!shizuku!!.connect(target.address)) {
               lastError.value = "חיבור הדיבורית נכשל דרך Shizuku - נסה 'חיבור ישיר RFCOMM' בערוץ החיבור"
             }
@@ -880,6 +1023,15 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         // same profile and kill the root link a moment after it was made.
         if (useRoot) {
           if (profileReady.value) {
+            // Same rule as SHIZUKU: restore ALLOWED in the privileged process
+            // before connect, undoing any FORBIDDEN policy a raw/AUTO session
+            // persisted for this device.
+            val allowed = root!!.setConnectionAllowed(target.address)
+            if (allowed) {
+              logConnection("מדיניות החיבור לפרופיל הדיבורית הוחזרה לפעילה", false)
+            } else {
+              logConnection("לא ניתן להחזיר את מדיניות החיבור - החיבור עלול ליפול", true)
+            }
             if (!root!!.connect(target.address)) {
               lastError.value = "חיבור הדיבורית נכשל דרך הרוט"
             }
@@ -906,6 +1058,18 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         // otherwise the auto-connect may race ahead and claim the slot.
         scope.launch {
           disableSystemProfiles(target)
+          // The DIRECT channel drives the same profile whose policy the raw
+          // path may have set to FORBIDDEN. Try to restore ALLOWED first; in
+          // an unprivileged process the write may be refused — log it, do not
+          // treat it as fatal (the Shizuku fallback below still applies).
+          val allowed = withContext(Dispatchers.IO) {
+            HiddenHfp.setProfilePriority(context, target, 16, HiddenHfp.POLICY_ALLOWED)
+          }
+          if (allowed) {
+            logConnection("מדיניות החיבור לפרופיל הדיבורית הוחזרה לפעילה", false)
+          } else {
+            logConnection("לא ניתן להחזיר את מדיניות החיבור - החיבור עלול ליפול", true)
+          }
           val c = client
           if (c != null) {
             if (!HiddenHfp.connect(c, target)) {
@@ -943,6 +1107,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // attempts. Checking only rawActive left its reconnect loop running after a
     // user disconnect, which could reopen the socket moments later.
     raw?.disconnect()
+    // A deliberate disconnect hands the phone's hands-free slot back: restore
+    // the connection policies this app changed so the phone can connect to the
+    // player as an ordinary hands-free device again (outside this app).
+    device.value?.let { d ->
+      scope.launch { restoreSystemProfiles(d) }
+    }
     if (useShizuku) {
       device.value?.address?.let { shizuku?.disconnect(it) }
     } else if (useRoot) {

@@ -76,6 +76,8 @@ android {
 }
 
 dependencies {
+  testImplementation(libs.junit)
+  testImplementation(libs.kotlinx.coroutines.test)
   implementation(libs.shizuku.api)
   implementation(libs.shizuku.provider)
   implementation(platform(libs.androidx.compose.bom))

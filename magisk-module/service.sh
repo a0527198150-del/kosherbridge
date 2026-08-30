@@ -8,8 +8,20 @@
 # The setting persists across reboots; re-applying it at boot covers factory
 # resets and ROMs that reset globals.
 
-until [ "$(getprop sys.boot_completed)" = "1" ]; do
+# Wait for boot to complete, bounded: a device where sys.boot_completed
+# never flips must not spin this loop forever.
+i=0
+until [ "$(getprop sys.boot_completed)" = "1" ] || [ "$i" -ge 120 ]; do
   sleep 1
+  i=$((i + 1))
 done
+if [ "$i" -ge 120 ]; then
+  echo "KosherBridge module: boot did not complete after 120s - skipping hidden_api_policy" > /dev/stderr
+  exit 0
+fi
 
+# NOTE: hidden_api_policy=1 is a DEVICE-GLOBAL setting. It relaxes Android's
+# non-SDK API restrictions for EVERY application on this player, not only
+# KosherBridge. On a dedicated player that trade is reasonable; reconsider on
+# a device used for anything else.
 settings put global hidden_api_policy 1

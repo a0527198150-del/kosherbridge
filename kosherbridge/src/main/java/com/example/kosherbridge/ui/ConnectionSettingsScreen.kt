@@ -138,6 +138,49 @@ fun ConnectionSettingsScreen(
       SettingRow("אבחון", "מצב המכשיר, ערוץ פעיל ובדיקות") { onOpenDiagnostics() }
       SettingRow("יומן חיבור בלוטוס", "ניסיונות החיבור שנרשמו במכשיר") { onOpenConnectionLog() }
     }
+
+    SettingsCard("תיקון") {
+      SettingRow(
+        "תקן מדיניות חיבור",
+        "מחזיר את כל פרופילי הבלוטוס של הטלפון למצב מאושר. הרץ אם החיבור נופל אחרי כמה שניות",
+      ) {
+        val address = state.deviceAddress
+        if (address == null) {
+          onSnackbar("בחר את הטלפון הכשר לפני התיקון")
+        } else {
+          val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+          val d = runCatching { manager?.adapter?.getRemoteDevice(address) }.getOrNull()
+          if (d == null) {
+            onSnackbar("לא ניתן לפתור את המכשיר הנבחר")
+          } else {
+            BridgeService.withManager(context) { bridge ->
+              bridge.repairConnectionPolicies(d)
+            }
+            onSnackbar("תיקון מדיניות החיבור הופעל - פרטים ביומן החיבור")
+          }
+        }
+      }
+      SettingRow(
+        "שחזר חיבור דיבורית רגיל",
+        "מחזיר לטלפון את היכולת להתחבר לנגן כדיבורית רגילה, מחוץ לאפליקציה",
+      ) {
+        val address = state.deviceAddress
+        if (address == null) {
+          onSnackbar("בחר את הטלפון הכשר לפני השחזור")
+        } else {
+          val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+          val d = runCatching { manager?.adapter?.getRemoteDevice(address) }.getOrNull()
+          if (d == null) {
+            onSnackbar("לא ניתן לפתור את המכשיר הנבחר")
+          } else {
+            BridgeService.withManager(context) { bridge ->
+              bridge.restoreSystemProfiles(d)
+            }
+            onSnackbar("השחזור הופעל - פרטים ביומן החיבור")
+          }
+        }
+      }
+    }
   }
 
   // Discovery for in-app pairing: register the receiver and scan while the

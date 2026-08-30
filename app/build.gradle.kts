@@ -1,13 +1,10 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
 
-// Automatically generate .env from environment variables if present
-val envFile = rootProject.file(".env")
-val geminiEnvKey = System.getenv("GEMINI_API_KEY") ?: ""
-if (geminiEnvKey.isNotEmpty()) {
-    envFile.writeText("GEMINI_API_KEY=$geminiEnvKey\n")
-} else if (!envFile.exists() && rootProject.file(".env.example").exists()) {
-    rootProject.file(".env.example").copyTo(envFile, overwrite = true)
-}
+// .env generation is a registered task (see generateEnvFile below), NOT
+// configuration-time file I/O: writing to the source tree and reading
+// GEMINI_API_KEY during configuration breaks the configuration cache and
+// mutates the working tree on every Gradle invocation, including builds of
+// the unrelated :kosherbridge module.
 
 plugins {
   alias(libs.plugins.android.application)
@@ -72,6 +69,30 @@ android {
 secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
+}
+
+// Generates the root .env for the budget app: from GEMINI_API_KEY when the
+// environment provides it, otherwise a copy of .env.example. Registered (not
+// configuration-time), cache-tracked via providers, with a declared output,
+// and wired as a dependency of :app's preBuild only — so building
+// :kosherbridge never touches .env.
+tasks.register("generateEnvFile") {
+  val envFile = rootProject.file(".env")
+  val exampleFile = rootProject.file(".env.example")
+  val geminiKey = providers.environmentVariable("GEMINI_API_KEY")
+  outputs.file(envFile)
+  doLast {
+    val key = geminiKey.orNull ?: ""
+    if (key.isNotEmpty()) {
+      envFile.writeText("GEMINI_API_KEY=$key\n")
+    } else if (!envFile.exists() && exampleFile.exists()) {
+      exampleFile.copyTo(envFile, overwrite = true)
+    }
+  }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+  dependsOn("generateEnvFile")
 }
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }

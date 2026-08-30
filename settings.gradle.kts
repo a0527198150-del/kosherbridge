@@ -18,6 +18,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Hebrew Budget"
+rootProject.name = "KosherBridge"
 include(":app")
 include(":kosherbridge")

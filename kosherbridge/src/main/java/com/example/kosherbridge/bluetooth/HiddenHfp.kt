@@ -23,6 +23,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 object HiddenHfp {
   const val PROFILE_ID = 16 // BluetoothProfile.HEADSET_CLIENT (hidden constant)
 
+  /** BluetoothProfile.CONNECTION_POLICY_ALLOWED (hidden constant value). */
+  const val POLICY_ALLOWED = 100
+  /** BluetoothProfile.CONNECTION_POLICY_FORBIDDEN (hidden constant value). */
+  const val POLICY_FORBIDDEN = 0
+  /** BluetoothProfile.CONNECTION_POLICY_UNKNOWN (hidden constant value). */
+  const val POLICY_UNKNOWN = -1
+  /** Sentinel returned by policy readers when the value cannot be read at all. */
+  const val POLICY_UNREADABLE = -1000
+
   private const val TAG = "HiddenHfp"
   private const val PROFILE_PROXY_TIMEOUT_SECONDS = 2L
   /** BluetoothHeadsetClient.CALL_ACCEPT_NONE - answer without holding/terminating others. */
@@ -185,6 +194,67 @@ object HiddenHfp {
 
   fun currentCalls(client: Any?, device: BluetoothDevice?): List<*> =
     if (device == null) emptyList<Any>() else list(mCurrentCalls, client, device)
+
+  /**
+   * Reads the per-device connection policy for one profile via reflection
+   * (getConnectionPolicy, falling back to getPriority). Returns
+   * [POLICY_UNREADABLE] when the value cannot be read. Read-only: this never
+   * writes, so it is safe from the unprivileged app process.
+   */
+  fun profilePolicy(context: Context, device: BluetoothDevice, profileId: Int): Int {
+    val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+      ?: return POLICY_UNREADABLE
+    val latch = CountDownLatch(1)
+    val callbackLock = Any()
+    var timedOut = false
+    var proxy: BluetoothProfile? = null
+    val listener = object : BluetoothProfile.ServiceListener {
+      override fun onServiceConnected(profile: Int, p: BluetoothProfile) {
+        if (profile != profileId) return
+        synchronized(callbackLock) {
+          if (timedOut) {
+            runCatching { adapter.closeProfileProxy(profileId, p) }
+          } else {
+            proxy = p
+            latch.countDown()
+          }
+        }
+      }
+      override fun onServiceDisconnected(profile: Int) = Unit
+    }
+    val started = runCatching { adapter.getProfileProxy(context, listener, profileId) }.getOrDefault(false)
+    if (!started) return POLICY_UNREADABLE
+    if (!latch.await(PROFILE_PROXY_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+      val lateProxy = synchronized(callbackLock) {
+        timedOut = true
+        proxy
+      }
+      if (lateProxy != null) runCatching { adapter.closeProfileProxy(profileId, lateProxy) }
+      return POLICY_UNREADABLE
+    }
+    val p = proxy ?: return POLICY_UNREADABLE
+    return try {
+      val policy = runCatching {
+        val m = p.javaClass.getMethod(
+          "getConnectionPolicy", BluetoothDevice::class.java,
+        )
+        (m.invoke(p, device) as? Int) ?: POLICY_UNREADABLE
+      }.getOrElse { POLICY_UNREADABLE }
+      if (policy != POLICY_UNREADABLE) {
+        policy
+      } else {
+        runCatching {
+          val m = p.javaClass.getMethod("getPriority", BluetoothDevice::class.java)
+          (m.invoke(p, device) as? Int) ?: POLICY_UNREADABLE
+        }.getOrDefault(POLICY_UNREADABLE)
+      }
+    } catch (e: Throwable) {
+      Log.w(TAG, "profilePolicy($profileId) failed: ${e.message}")
+      POLICY_UNREADABLE
+    } finally {
+      runCatching { adapter.closeProfileProxy(profileId, p) }
+    }
+  }
 
   fun registerCallback(client: Any?, callback: Any?): Boolean = bool(mRegisterCallback, client, callback)
   fun unregisterCallback(client: Any?, callback: Any?): Boolean = bool(mUnregisterCallback, client, callback)

@@ -30,15 +30,48 @@ jobs:
       # updates install over previous versions without uninstalling. Without
       # this, Gradle generates a throwaway debug key per run and each APK has a
       # different signature (install over old version fails).
+      # Hardened: a missing secret or a corrupt decode fails HERE with a clear
+      # error instead of surfacing later as an opaque signing failure. printf
+      # (not echo) avoids appending a newline that breaks strict base64 decode
+      # on some shells.
       - name: Restore stable debug keystore
         run: |
-          echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
-          ls -la debug.keystore
+          if [ -z "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" ]; then
+            echo "::error::DEBUG_KEYSTORE_BASE64 secret is not set" && exit 1
+          fi
+          printf '%s' "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+          keytool -list -keystore debug.keystore -storepass android > /dev/null \
+            || { echo "::error::restored debug.keystore is not a valid keystore" && exit 1; }
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+
+      # Unit tests are plain JVM tests (no emulator needed) — see
+      # kosherbridge/src/test. A regression in the SLC/AT protocol logic now
+      # fails CI instead of shipping silently.
+      - name: Test kosherbridge
+        run: gradle :kosherbridge:test --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
+
+      # Lint reports but does not block; the HTML report is uploaded so the
+      # findings stay inspectable.
+      - name: Lint kosherbridge
+        run: gradle :kosherbridge:lintDebug --no-daemon --continue -Pkotlin.compiler.execution.strategy=daemon
+        continue-on-error: true
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kosherbridge-lint
+          path: kosherbridge/build/reports/lint-results-debug.html
+
+      # :app (the Hebrew budget app) is INTENTIONALLY unbuilt in CI: it is a
+      # separate, unrelated application that shares this Gradle root (see the
+      # root README). Building it would require the GEMINI_API_KEY / .env
+      # handling and Firebase setup that CI does not provide. This omission is
+      # a decision, not an oversight.
 
       # Override kotlin.compiler.execution.strategy (gradle.properties uses
       # 'in-process', which breaks KSP2 on CI runners).

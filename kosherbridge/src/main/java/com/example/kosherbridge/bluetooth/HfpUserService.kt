@@ -155,6 +155,21 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     return HiddenHfp.hangup(c, d)
   }
 
+  override fun setConnectionAllowed(address: String): Boolean {
+    val d = deviceFor(address) ?: return false
+    // The privileged process holds BLUETOOTH_PRIVILEGED, so this write —
+    // which the app process cannot perform — succeeds here. Restoring ALLOW
+    // before connect() undoes the FORBIDDEN policy a previous raw/AUTO
+    // session persisted for this device, which otherwise makes the stack
+    // refuse (or tear down seconds later) every hands-free connection.
+    return HiddenHfp.setProfilePriority(context, d, HiddenHfp.PROFILE_ID, HiddenHfp.POLICY_ALLOWED)
+  }
+
+  override fun connectionPolicy(address: String): Int {
+    val d = deviceFor(address) ?: return HiddenHfp.POLICY_UNREADABLE
+    return HiddenHfp.profilePolicy(context, d, HiddenHfp.PROFILE_ID)
+  }
+
   override fun currentCallSnapshot(): String {
     val c = client ?: return ""
     val d = connectedDevice() ?: return ""
