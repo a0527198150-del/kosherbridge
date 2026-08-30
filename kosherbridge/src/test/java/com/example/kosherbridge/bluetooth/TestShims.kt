@@ -15,16 +15,19 @@ object TestScopes {
 }
 
 /**
- * A concrete [Context] stand-in for JVM tests.
+ * A [Context] stand-in for JVM tests.
  *
- * The SLC tests never invoke any Context method (no sockets, SDP or wake
- * locks are exercised), so an empty subclass of the android.jar stub is
- * enough — no Robolectric needed.
- *
- * Previous versions used ReflectionFactory to skip the constructor, but
- * JDK 17+ rejects instantiation of abstract classes that way.
+ * Uses [sun.misc.Unsafe.allocateInstance] to create an instance without
+ * calling any constructor — this sidesteps the abstract-method requirement
+ * and the JDK 17+ restriction on [sun.reflect.ReflectionFactory] for
+ * abstract classes. The SLC tests never invoke any Context method (no
+ * sockets, SDP or wake locks are exercised), so the uninitialized instance
+ * is safe.
  */
-private class StubContext : Context()
-
-/** Singleton [Context] instance shared by all SLC tests. */
-val NoopContext: Context = StubContext()
+val NoopContext: Context by lazy {
+  val f = sun.misc.Unsafe::class.java.getDeclaredField("theUnsafe")
+  f.isAccessible = true
+  @Suppress("UNCHECKED_CAST")
+  val unsafe = f.get(null) as sun.misc.Unsafe
+  unsafe.allocateInstance(Context::class.java) as Context
+}
