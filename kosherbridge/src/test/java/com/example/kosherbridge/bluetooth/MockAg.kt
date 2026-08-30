@@ -19,6 +19,10 @@ import java.io.Writer
  * AG sends back (a rule may emit several lines; OK/ERROR included). Rules are
  * matched in order; the first whose [predicate] accepts the command wins.
  * Unsolicited events (+CIEV, RING, +CLIP, ...) are injected with [emit].
+ *
+ * A daemon pump thread runs automatically, reading client commands and
+ * writing scripted responses so the SLC handshake completes without manual
+ * intervention.
  */
 class MockAg {
 
@@ -36,9 +40,42 @@ class MockAg {
 
   private class Rule(val predicate: (String) -> Boolean, val respond: (String) -> List<String>)
 
+  /** Background thread that continuously pumps: reads client commands,
+   *  matches rules, and writes responses. */
+  private val pumpThread: Thread
+
   init {
     // Default AG behaviour: answer everything with OK unless a test overrides.
     respond({ true }) { listOf("OK") }
+
+    pumpThread = Thread({
+      try {
+        val buffer = CharArray(256)
+        while (open) {
+          val ready = runCatching { agReader.ready() }.getOrDefault(false)
+          if (!ready) {
+            Thread.sleep(5)
+            continue
+          }
+          val n = agReader.read(buffer)
+          if (n <= 0) break
+          val text = String(buffer, 0, n)
+          for (raw in text.split('\r')) {
+            val command = raw.trim()
+            if (command.isEmpty()) continue
+            received.add(command)
+            val rule = rules.firstOrNull { it.predicate(command) }
+            val lines = rule?.respond?.invoke(command) ?: listOf("OK")
+            lines.forEach { pending.add(it) }
+          }
+          drain()
+        }
+      } catch (_: Throwable) {
+        // Stream closed — normal when the test tears down.
+      }
+    }, "MockAg-pump")
+    pumpThread.isDaemon = true
+    pumpThread.start()
   }
 
   // ------------------------------------------------------------------ scripting
@@ -102,10 +139,12 @@ class MockAg {
   }
 
   fun close() {
+    open = false
     runCatching { clientWriter.close() }
     runCatching { agWriter.close() }
     runCatching { clientReader.close() }
     runCatching { agReader.close() }
+    pumpThread.interrupt()
   }
 
   /**
