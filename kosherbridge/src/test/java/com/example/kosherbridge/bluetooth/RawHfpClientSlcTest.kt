@@ -1,14 +1,19 @@
 package com.example.kosherbridge.bluetooth
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.BeforeClass
 import org.junit.Test
+import org.mockito.MockedStatic
+import org.mockito.Mockito
 
 /**
  * JVM tests for the RawHfpClient SLC/AT conversation against a scripted
@@ -22,6 +27,22 @@ import org.junit.Test
  * and the client's published state, never on wall-clock timing.
  */
 class RawHfpClientSlcTest {
+
+  companion object {
+    private lateinit var logMock: MockedStatic<Log>
+
+    @BeforeClass
+    @JvmStatic
+    fun setUpLogMock() {
+      logMock = Mockito.mockStatic(Log::class.java)
+    }
+
+    @AfterClass
+    @JvmStatic
+    fun tearDownLogMock() {
+      logMock.close()
+    }
+  }
 
   // ------------------------------------------------------------------ helpers
 
