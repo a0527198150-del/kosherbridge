@@ -127,7 +127,7 @@ class MockAg {
       }
 
       override fun write(b: ByteArray, off: Int, len: Int) {
-        agWriter.write(b, off, len)
+        agWriter.write(String(b, off, len, Charsets.UTF_8))
         // Deliver eagerly per write so pump() sees complete commands.
         agWriter.flush()
       }
