@@ -3,14 +3,13 @@ package com.example.kosherbridge.bluetooth
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
-import java.io.PipedReader
-import java.io.PipedWriter
-import java.io.Writer
+import java.net.ServerSocket
+import java.net.Socket
 
 /**
  * A scripted Audio Gateway (the kosher phone's side of HFP) for JVM tests.
  *
- * Speaks the AG side of the AT protocol over piped character streams — no
+ * Speaks the AG side of the AT protocol over a localhost socket pair — no
  * device, no emulator, no Robolectric. The client under test sees an ordinary
  * [HfpLink]; this class plays the phone and records everything the client
  * sends, so tests can assert on the exact AT transcript.
@@ -27,16 +26,21 @@ import java.io.Writer
 class MockAg {
 
   /** Everything the client sent, in order, one AT command per entry. */
-  val received = mutableListOf<String>()
+  @Volatile var received = mutableListOf<String>()
+    private set
 
   private val rules = mutableListOf<Rule>()
-  private val pending = ArrayDeque<String>()
 
-  private val clientReader = PipedReader()
-  private val clientWriter = PipedWriter(clientReader)
+  // Socket pair: server listens, client connects, accepted = AG side
+  private val serverSocket: ServerSocket
+  private val clientSocket: Socket
+  private val agSocket: Socket
 
-  private val agReader = PipedReader()
-  private val agWriter = PipedWriter(agReader)
+  private val agInput: BufferedReader
+  private val clientOutput: OutputStream
+
+  private val clientInput: BufferedReader
+  private val agOutput: OutputStream
 
   private class Rule(val predicate: (String) -> Boolean, val respond: (String) -> List<String>)
 
@@ -48,30 +52,38 @@ class MockAg {
     // Default AG behaviour: answer everything with OK unless a test overrides.
     respond({ true }) { listOf("OK") }
 
+    // Create a connected socket pair over localhost.
+    serverSocket = ServerSocket(0)
+    clientSocket = Socket("localhost", serverSocket.localPort)
+    agSocket = serverSocket.accept()
+    serverSocket.close()
+
+    // AG side: reads from client, writes responses to client
+    agInput = BufferedReader(InputStreamReader(agSocket.getInputStream()))
+    agOutput = agSocket.getOutputStream()
+
+    // Client side: writes commands to AG, reads responses from AG
+    clientOutput = clientSocket.getOutputStream()
+    clientInput = BufferedReader(InputStreamReader(clientSocket.getInputStream()))
+
     pumpThread = Thread({
       try {
-        val buffer = CharArray(256)
-        while (open) {
-          val ready = runCatching { agReader.ready() }.getOrDefault(false)
-          if (!ready) {
-            Thread.sleep(5)
-            continue
-          }
-          val n = agReader.read(buffer)
-          if (n <= 0) break
-          val text = String(buffer, 0, n)
-          for (raw in text.split('\r')) {
-            val command = raw.trim()
-            if (command.isEmpty()) continue
+        while (!agSocket.isClosed) {
+          val line = agInput.readLine() ?: break
+          val command = line.trim()
+          if (command.isEmpty()) continue
+          synchronized(received) {
             received.add(command)
-            val rule = rules.firstOrNull { it.predicate(command) }
-            val lines = rule?.respond?.invoke(command) ?: listOf("OK")
-            lines.forEach { pending.add(it) }
           }
-          drain()
+          val rule = rules.firstOrNull { it.predicate(command) }
+          val lines = rule?.respond?.invoke(command) ?: listOf("OK")
+          for (l in lines) {
+            agOutput.write((l + "\r\n").toByteArray(Charsets.US_ASCII))
+          }
+          agOutput.flush()
         }
       } catch (_: Throwable) {
-        // Stream closed — normal when the test tears down.
+        // Socket closed — normal when the test tears down.
       }
     }, "MockAg-pump")
     pumpThread.isDaemon = true
@@ -91,104 +103,44 @@ class MockAg {
   }
 
   /** Injects an unsolicited AG event (+CIEV, RING, +CLIP, +CLCC, ...). */
+  @Synchronized
   fun emit(line: String) {
-    pending.add(line)
-    drain()
+    runCatching {
+      agOutput.write((line + "\r\n").toByteArray(Charsets.US_ASCII))
+      agOutput.flush()
+    }
   }
 
-  /** Commands the client has sent so far, joined for assertions. */
-  fun sentCommands(): List<String> = received.toList()
+  /** Commands the client has sent so far. */
+  fun sentCommands(): List<String> = synchronized(received) { received.toList() }
 
   // ------------------------------------------------------------------ plumbing
 
   /** The client-side link handed to RawHfpClient. */
-  fun link(): HfpLink = MockAgLink()
-
-  /**
-   * Reads everything the client has written so far into [received] and
-   * writes scripted responses back. Called on demand from [pump].
-   */
-  fun pump() {
-    val buffer = CharArray(256)
-    while (true) {
-      val ready = runCatching { agReader.ready() }.getOrDefault(false)
-      if (!ready) break
-      val n = agReader.read(buffer)
-      if (n <= 0) break
-      val text = String(buffer, 0, n)
-      for (raw in text.split('\r')) {
-        val command = raw.trim()
-        if (command.isEmpty()) continue
-        received.add(command)
-        val rule = rules.firstOrNull { it.predicate(command) }
-        val lines = rule?.respond?.invoke(command) ?: listOf("OK")
-        lines.forEach { pending.add(it) }
-      }
-    }
-    drain()
-  }
-
-  /** Writes pending AG lines to the client stream (clientWriter → clientReader). */
-  private fun drain() {
-    while (pending.isNotEmpty()) {
-      val line = pending.removeFirst()
-      clientWriter.write(line)
-      clientWriter.write("\r\n")
-    }
-    clientWriter.flush()
-  }
+  fun link(): HfpLink = SocketLink()
 
   fun close() {
-    open = false
-    runCatching { clientWriter.close() }
-    runCatching { agWriter.close() }
-    runCatching { clientReader.close() }
-    runCatching { agReader.close() }
+    runCatching { clientSocket.close() }
+    runCatching { agSocket.close() }
     pumpThread.interrupt()
   }
 
   /**
-   * The [HfpLink] the client talks to. The client's output stream is what the
-   * AG reads (agReader); the client's input stream is what the AG writes
-   * (clientWriter). Reads block until the test pumps a scripted line, which
-   * is what makes the harness deterministic under virtual time.
+   * The [HfpLink] the client talks to. Uses the client side of the socket
+   * pair so reads/writes go over a real TCP connection to the AG side.
    */
-  private inner class MockAgLink : HfpLink {
-    override val input: BufferedReader =
-      BufferedReader(object : java.io.Reader() {
-        override fun read(cbuf: CharArray, off: Int, len: Int): Int = clientReader.read(cbuf, off, len)
-        override fun close() = clientReader.close()
-      })
-
-    override val output: OutputStream = object : OutputStream() {
-      override fun write(b: Int) {
-        agWriter.write(b)
-      }
-
-      override fun write(b: ByteArray, off: Int, len: Int) {
-        agWriter.write(String(b, off, len, Charsets.UTF_8))
-        // Deliver eagerly per write so pump() sees complete commands.
-        agWriter.flush()
-      }
-
-      override fun flush() {
-        agWriter.flush()
-      }
-    }
-
-    override val isOpen: Boolean get() = open
+  private inner class SocketLink : HfpLink {
+    override val input: BufferedReader = clientInput
+    override val output: OutputStream = clientOutput
+    override val isOpen: Boolean get() = !clientSocket.isClosed
 
     override fun close() {
-      open = false
-      runCatching { clientReader.close() }
+      runCatching { clientSocket.close() }
     }
   }
 
-  @Volatile private var open = true
-
   /** Simulates the AG closing the channel (the phone dropped the link). */
   fun dropLink() {
-    open = false
-    runCatching { clientWriter.close() }
+    runCatching { agSocket.close() }
   }
 }
