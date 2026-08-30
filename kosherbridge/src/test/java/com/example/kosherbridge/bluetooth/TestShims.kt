@@ -15,18 +15,16 @@ object TestScopes {
 }
 
 /**
- * A Context stand-in for JVM tests, instantiated without running any
- * constructor (Objenesis-style, via ReflectionFactory) so no Android runtime
- * is needed. RawHfpClient only touches the context when opening sockets,
- * discovering SDP, or acquiring wake locks - none of which the SLC tests
- * exercise - so the instance is never actually called.
+ * A concrete [Context] stand-in for JVM tests.
+ *
+ * The SLC tests never invoke any Context method (no sockets, SDP or wake
+ * locks are exercised), so an empty subclass of the android.jar stub is
+ * enough — no Robolectric needed.
+ *
+ * Previous versions used ReflectionFactory to skip the constructor, but
+ * JDK 17+ rejects instantiation of abstract classes that way.
  */
-val NoopContext: Context by lazy {
-  val rf = sun.reflect.ReflectionFactory.getReflectionFactory()
-  val ctor = rf.newConstructorForSerialization(
-    Context::class.java,
-    Any::class.java.getDeclaredConstructor(),
-  )
-  ctor.isAccessible = true
-  ctor.newInstance() as Context
-}
+private class StubContext : Context()
+
+/** Singleton [Context] instance shared by all SLC tests. */
+val NoopContext: Context = StubContext()
