@@ -128,14 +128,14 @@ class MockAg {
     drain()
   }
 
-  /** Writes pending AG lines to the client stream. */
+  /** Writes pending AG lines to the client stream (clientWriter → clientReader). */
   private fun drain() {
     while (pending.isNotEmpty()) {
       val line = pending.removeFirst()
-      agWriter.write(line)
-      agWriter.write("\r\n")
+      clientWriter.write(line)
+      clientWriter.write("\r\n")
     }
-    agWriter.flush()
+    clientWriter.flush()
   }
 
   fun close() {
