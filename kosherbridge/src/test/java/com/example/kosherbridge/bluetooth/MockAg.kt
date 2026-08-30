@@ -115,7 +115,11 @@ class MockAg {
    * is what makes the harness deterministic under virtual time.
    */
   private inner class MockAgLink : HfpLink {
-    override val input: BufferedReader = BufferedReader(InputStreamReader(clientReader))
+    override val input: BufferedReader =
+      BufferedReader(object : java.io.Reader() {
+        override fun read(cbuf: CharArray, off: Int, len: Int): Int = clientReader.read(cbuf, off, len)
+        override fun close() = clientReader.close()
+      })
 
     override val output: OutputStream = object : OutputStream() {
       override fun write(b: Int) {
