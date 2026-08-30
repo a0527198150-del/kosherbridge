@@ -163,7 +163,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * never touched.
    */
   fun restoreSystemProfiles(device: BluetoothDevice) {
-    if (channelMode in ("SHIZUKU", "ROOT", "DIRECT")) return
+    if (channelMode in listOf("SHIZUKU", "ROOT", "DIRECT")) return
     val address = device.address
     val keys = recordedPolicies.keys.filter { it.startsWith("$address:") }
     if (keys.isEmpty()) {
