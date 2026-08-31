@@ -434,7 +434,8 @@ class BridgeService : Service() {
    */
   fun refreshHeadsetClientPolicy() {
     scope.launch {
-      BridgeHub.update { it.copy(headsetClientPolicy = headsetClientPolicyText()) }
+      val text = headsetClientPolicyText()
+      BridgeHub.update { it.copy(headsetClientPolicy = text) }
     }
   }
 
@@ -527,7 +528,8 @@ class BridgeService : Service() {
       manager.connectionState
         .debounce(300)
         .collect {
-          BridgeHub.update { it.copy(headsetClientPolicy = headsetClientPolicyText()) }
+          val text = headsetClientPolicyText()
+          BridgeHub.update { it.copy(headsetClientPolicy = text) }
         }
     }
     scope.launch {
