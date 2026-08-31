@@ -13,7 +13,6 @@ import android.util.Log
 import com.example.kosherbridge.data.ServiceLocator
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -120,50 +119,48 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   @Volatile private var lastAclNudge = 0L
 
   /**
-   * The connection policies this app changed, keyed "address:profileId" -> the
-   * value read BEFORE the first FORBIDDEN write. Connection policy is a
-   * persistent per-device setting held by the Bluetooth stack: it survives app
-   * restarts, reboots, and even uninstall, so the original value must be
-   * remembered here or it can never be restored. Only the first write records
-   * the original — a later read may already see the app's own FORBIDDEN.
-   *
-   * This is also persisted in SettingsRepository (see `policy_*` keys) so the
-   * original survives a process restart, and it is a ConcurrentHashMap because
-   * it is written by recordOriginalPolicy (from disableSystemProfiles) while
-   * read/mutated inside coroutines by restoreSystemProfiles and
-   * repairConnectionPolicies.
+   * Pure policy bookkeeping (record original → restore / repair) behind the
+   * profile guard, extracted to [ConnectionPolicyGuard] so the actual fix — the
+   * `channelMode == "RAW"` gate for profile 16 and the record/restore/repair
+   * mechanism — is unit-tested with a fake read/write. The originals are also
+   * persisted in SettingsRepository (`policy_<address>_<profileId>` keys) so
+   * they survive a process restart; this class supplies the real policy
+   * reads/writes and the logging, and reconciles the guard's snapshot with
+   * that persistence.
    */
-  private val recordedPolicies = ConcurrentHashMap<String, Int>()
+  private val policyGuard = ConnectionPolicyGuard()
 
-  /** The profile ids disableSystemProfiles may set to FORBIDDEN. */
-  private val guardedProfiles = listOf(
-    BluetoothProfile.HEADSET,
-    16, // HEADSET_CLIENT — the profile the Shizuku/root channels drive
-    BluetoothProfile.A2DP,
-    11, // A2DP_SINK
-  )
+  private fun readPolicy(device: BluetoothDevice, profileId: Int): Int =
+    HiddenHfp.profilePolicy(context, device, profileId)
 
-  private fun policyKey(address: String, profileId: Int) = "$address:$profileId"
+  private fun writePolicy(device: BluetoothDevice, profileId: Int, policy: Int): Boolean {
+    val address = device.address
+    // Prefer the privileged channel when one is bound: the write then goes
+    // through the privileged process, whose BLUETOOTH_PRIVILEGED write is not
+    // refused by the locked-down stack and covers every guarded profile.
+    // Otherwise fall back to the unprivileged write, whose refusal the caller
+    // reports with a concrete instruction.
+    return when {
+      useShizuku -> shizuku?.setProfilePolicy(address, profileId, policy) ?: false
+      useRoot -> root?.setProfilePolicy(address, profileId, policy) ?: false
+      else -> HiddenHfp.setProfilePriority(context, device, profileId, policy)
+    }
+  }
 
   /**
-   * Reads and persists the current policy for (device, profile) before the
-   * first FORBIDDEN write. Later calls are no-ops: once an original is stored
-   * it must never be overwritten with a value the app itself wrote (putIfAbsent
-   * also keeps two concurrent calls from re-recording). Persists to
-   * SettingsRepository so the original survives a process restart.
+   * Records the pre-write original for every guarded profile of one device into
+   * the guard (once each — a later read may already observe the app's own
+   * FORBIDDEN), then persists what the guard recorded so the originals survive
+   * a process restart. Non-readable policies are skipped by the guard.
    */
-  private suspend fun recordOriginalPolicy(device: BluetoothDevice, profileId: Int) {
-    val key = policyKey(device.address, profileId)
-    if (recordedPolicies.containsKey(key)) return
-    val current = withContext(Dispatchers.IO) {
-      HiddenHfp.profilePolicy(context, device, profileId)
-    }
-    if (current != HiddenHfp.POLICY_UNREADABLE) {
-      val recorded = recordedPolicies.putIfAbsent(key, current)
-      if (recorded == null) {
-        ServiceLocator.settings.setRecordedPolicy(device.address, profileId, current)
+  private suspend fun recordPolicyOriginals(device: BluetoothDevice) {
+    policyGuard.recordOriginals(device.address) { profileId -> readPolicy(device, profileId) }
+    policyGuard.recordedSnapshot
+      .filterKeys { it.startsWith("${device.address}:") }
+      .forEach { (key, original) ->
+        val profileId = key.substringAfter(':').toIntOrNull() ?: return@forEach
+        ServiceLocator.settings.setRecordedPolicy(device.address, profileId, original)
       }
-    }
   }
 
   /**
@@ -179,31 +176,29 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun restoreSystemProfiles(device: BluetoothDevice) {
     if (channelMode in listOf("SHIZUKU", "ROOT", "DIRECT")) return
     val address = device.address
-    val keys = recordedPolicies.keys.filter { it.startsWith("$address:") }
-    if (keys.isEmpty()) {
+    if (!policyGuard.hasRecorded(address)) {
       logConnection("שחזור מדיניות חיבור: אין מה לשחזר עבור ${device.name ?: address}", false)
       return
     }
     scope.launch {
       systemProfilesMutex.withLock {
-        for (key in keys) {
-          val profileId = key.substringAfter(':').toIntOrNull() ?: continue
-          val original = recordedPolicies[key] ?: continue
-          val applied = withContext(Dispatchers.IO) {
-            HiddenHfp.setProfilePriority(context, device, profileId, original)
+        val results = withContext(Dispatchers.IO) {
+          policyGuard.restore(address) { profileId, original ->
+            writePolicy(device, profileId, original)
           }
-          if (applied) {
-            recordedPolicies.remove(key)
-            ServiceLocator.settings.clearRecordedPolicy(address, profileId)
+        }
+        for (r in results) {
+          if (r.applied) {
+            ServiceLocator.settings.clearRecordedPolicy(address, r.profileId)
             logConnection(
-              "מדיניות החיבור של פרופיל $profileId שוחזרה לערך המקורי ($original)",
+              "מדיניות החיבור של פרופיל ${r.profileId} שוחזרה לערך המקורי (${r.original})",
               false,
             )
           } else {
             // The write failed (unprivileged process on a locked-down stack).
             // Keep the record so a later repair attempt can try again.
             logConnection(
-              "לא ניתן לשחזר את מדיניות החיבור של פרופיל $profileId - ינוסה שוב בתיקון הבא",
+              "לא ניתן לשחזר את מדיניות החיבור של פרופיל ${r.profileId} - ינוסה שוב בתיקון הבא",
               true,
             )
           }
@@ -225,22 +220,19 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     val address = device.address
     logConnection("מתקן מדיניות חיבור עבור ${device.name ?: address}", false)
     scope.launch {
-      for (profileId in guardedProfiles) {
-        val applied = withContext(Dispatchers.IO) {
-          when {
-            useShizuku -> shizuku?.setProfilePolicy(address, profileId, HiddenHfp.POLICY_ALLOWED) ?: false
-            useRoot -> root?.setProfilePolicy(address, profileId, HiddenHfp.POLICY_ALLOWED) ?: false
-            else -> HiddenHfp.setProfilePriority(context, device, profileId, HiddenHfp.POLICY_ALLOWED)
-          }
+      val results = withContext(Dispatchers.IO) {
+        policyGuard.repair(address) { profileId, policy ->
+          writePolicy(device, profileId, policy)
         }
-        if (applied) {
-          recordedPolicies.remove(policyKey(address, profileId))
-          ServiceLocator.settings.clearRecordedPolicy(address, profileId)
-          logConnection("פרופיל $profileId: מדיניות הוחזרה למאושר", false)
+      }
+      for (r in results) {
+        if (r.applied) {
+          ServiceLocator.settings.clearRecordedPolicy(address, r.profileId)
+          logConnection("פרופיל ${r.profileId}: מדיניות הוחזרה למאושר", false)
         } else if (useShizuku || useRoot) {
           // A privileged write that fails is unusual - it means the remote
           // process or the Bluetooth stack refused it for another reason.
-          logConnection("פרופיל $profileId: הכתיבה נדחתה גם דרך הערוץ המיוחס", true)
+          logConnection("פרופיל ${r.profileId}: הכתיבה נדחתה גם דרך הערוץ המיוחס", true)
         } else {
           // No privileged channel: the unprivileged write was refused because
           // the app lacks BLUETOOTH_PRIVILEGED. Tell the user how to proceed
@@ -295,9 +287,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // later restore can put back what the stack originally held. Connection
     // policy is persistent per device — without this record the change is
     // irreversible (it survives restart, reboot, and uninstall).
-    for (profileId in guardedProfiles) {
-      recordOriginalPolicy(device, profileId)
-    }
+    recordPolicyOriginals(device)
     // Pairing broadcasts and a manual connect can arrive together. Serialize
     // this operation so the raw socket never starts while the system profile
     // is still being disabled, and do not cache a failed priority change as if
@@ -333,7 +323,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       // every hands-free connection for this device, with no visible cause and
       // no recovery short of unpairing. Only the explicit RAW choice may
       // sacrifice the privileged channels.
-      if (channelMode == "RAW") {
+      if (policyGuard.shouldForbidHeadsetClient(channelMode)) {
         withContext(Dispatchers.IO) {
           runCatching { HiddenHfp.setProfilePriority(context, device, 16 /* HEADSET_CLIENT */, 0) }
           runCatching { HiddenHfp.forceDisconnectProfile(context, device, 16 /* HEADSET_CLIENT */) }
@@ -511,7 +501,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // while the policy it guards survives in the Bluetooth stack. The hot path
     // stays synchronous - only this one-time load touches DataStore.
     scope.launch {
-      recordedPolicies.putAll(ServiceLocator.settings.allRecordedPolicies())
+      policyGuard.seedRecorded(ServiceLocator.settings.allRecordedPolicies())
     }
   }
 
