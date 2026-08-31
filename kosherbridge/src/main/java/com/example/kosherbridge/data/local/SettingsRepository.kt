@@ -3,9 +3,11 @@ package com.example.kosherbridge.data.local
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore by preferencesDataStore(name = "bridge_settings")
@@ -133,4 +135,44 @@ class SettingsRepository(private val context: Context) {
   /** Records that a backend proved itself working on this exact player. */
   suspend fun learnChannel(fp: String, backend: String) =
     context.dataStore.edit { it[channelLearnedKey(fp)] = backend }
+
+  // ------------------------------------------------------------ policy record
+
+  /**
+   * The original connection policy this app recorded before the first
+   * FORBIDDEN write, so it survives a process restart and can always be
+   * restored. Connection policy itself is a persistent per-device setting held
+   * by the Bluetooth stack (it survives app restarts, reboots and uninstall), so
+   * an in-memory-only record dies with the process and restore becomes
+   * impossible after any restart. Keys look like
+   * `policy_AA:BB:CC:DD:EE:FF_16` (address uses ':', profile id is the tail).
+   */
+  private fun policyKey(address: String, profileId: Int) =
+    intPreferencesKey("policy_${address}_$profileId")
+
+  /** Persists the original policy recorded for (address, profile) — a no-op once
+   * the original has already been recorded elsewhere. */
+  suspend fun setRecordedPolicy(address: String, profileId: Int, policy: Int) =
+    context.dataStore.edit { it[policyKey(address, profileId)] = policy }
+
+  /** Removes a recorded original once it has been successfully restored. */
+  suspend fun clearRecordedPolicy(address: String, profileId: Int) =
+    context.dataStore.edit { it.remove(policyKey(address, profileId)) }
+
+  /** Loads every persisted original, keyed `"address:profileId"` -> original Int. */
+  suspend fun allRecordedPolicies(): Map<String, Int> =
+    context.dataStore.data.first().asMap().mapNotNull { (key, value) ->
+      val name = key.name
+      val prefix = "policy_"
+      if (!name.startsWith(prefix)) return@mapNotNull null
+      val rest = name.removePrefix(prefix)
+      // rest = "<address>_<profileId>" — a MAC address contains no '_', so the
+      // LAST underscore is the address/profile separator.
+      val sep = rest.lastIndexOf('_')
+      if (sep <= 0 || sep >= rest.length - 1) return@mapNotNull null
+      val address = rest.substring(0, sep)
+      val profileId = rest.substring(sep + 1).toIntOrNull() ?: return@mapNotNull null
+      val policy = value as? Int ?: return@mapNotNull null
+      "$address:$profileId" to policy
+    }.toMap()
 }
