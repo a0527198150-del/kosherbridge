@@ -155,15 +155,17 @@ class MockAg {
    */
   suspend fun awaitSent(timeoutMs: Long = 20_000, predicate: (String) -> Boolean): String {
     ensureStarted()
-    return withTimeout(timeoutMs) {
-      while (true) {
+    var result: String? = null
+    withTimeout(timeoutMs) {
+      while (result == null) {
         synchronized(lock) {
           val idx = unconsumed.indexOfFirst { predicate(it) }
-          if (idx >= 0) return@withTimeout unconsumed.removeAt(idx)
+          if (idx >= 0) result = unconsumed.removeAt(idx)
         }
-        arrived.receive()
+        if (result == null) arrived.receive()
       }
     }
+    return result!! // non-null once withTimeout returns
   }
 
   /** Any harness failure the pump hit (null when the pump is healthy). */
