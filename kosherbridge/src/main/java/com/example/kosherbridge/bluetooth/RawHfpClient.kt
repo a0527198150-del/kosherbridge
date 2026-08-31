@@ -724,13 +724,31 @@ class RawHfpClient(
    * runSession() does (sendCommand's ownership check requires it) and leaves
    * it installed so post-SLC commands can be exercised; the caller's
    * disconnect() tears it down. Production behavior is unchanged. */
+  /** Test seam only: how long runHandshakeForTest waits for a silent AG before
+   * tearing the link down (mirrors the production 12s watchdog in runSession).
+   * Lowered by a test that models an AG going silent mid-SLC. */
+  internal var handshakeWatchdogMsForTest: Long = 12_000L
+
   internal suspend fun runHandshakeForTest(link: HfpLink): Boolean {
     synchronized(writeLock) {
       socket = link
       input = link.input
       output = link.output
     }
-    return handshake(link)
+    // A silent AG (fails to answer a command it must answer) would otherwise
+    // block handshake() forever on a stream read with no timeout in this test
+    // path - the production connect() path is guarded by the watchdog in
+    // runSession(), so mirror it here so the test proves the handshake is torn
+    // down instead of hanging.
+    val watchdog = scope.launch(Dispatchers.IO) {
+      delay(handshakeWatchdogMsForTest)
+      runCatching { link.close() }
+    }
+    return try {
+      handshake(link)
+    } finally {
+      watchdog.cancel()
+    }
   }
 
   /** Visibility-for-tests only: feed one AG line through the same parser the

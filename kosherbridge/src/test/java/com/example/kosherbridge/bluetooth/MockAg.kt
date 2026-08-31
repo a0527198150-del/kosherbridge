@@ -1,10 +1,14 @@
 package com.example.kosherbridge.bluetooth
 
 import java.io.BufferedReader
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.ArrayDeque
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeout
 
 /**
  * A scripted Audio Gateway (the kosher phone's side of HFP) for JVM tests.
@@ -16,22 +20,29 @@ import java.net.Socket
  *
  * Scripting model: each [respond] rule maps one AT command to the lines the
  * AG sends back (a rule may emit several lines; OK/ERROR included). Rules are
- * matched in order; the first whose [predicate] accepts the command wins.
- * Unsolicited events (+CIEV, RING, +CLIP, ...) are injected with [emit].
+ * matched newest-first; all rules are registered BEFORE the pump thread starts
+ * (the pump starts lazily on the first [link()] call), so there is no race
+ * between registering a rule and the pump reading it. Unsolicited events
+ * (+CIEV, RING, +CLIP, ...) are injected with [emit].
  *
- * A daemon pump thread runs automatically, reading client commands and
- * writing scripted responses so the SLC handshake completes without manual
- * intervention.
+ * Synchronization: the full transcript and the rule list are guarded by an
+ * internal lock; awaiting is channel-based, never a busy-wait. A harness bug
+ * surfaces as [harnessError] rather than a silent pump death followed by a
+ * test timeout.
  */
 class MockAg {
 
-  /** Everything the client sent, in order, one AT command per entry. */
-  @Volatile var received = mutableListOf<String>()
-    private set
+  private val lock = Any()
+  private val received = mutableListOf<String>()
+  private val unconsumed = ArrayDeque<String>()
+  private val rules = ArrayList<Rule>()
+  /** Signalled whenever the pump adds a command, to wake [awaitSent]. */
+  private val arrived = Channel<Unit>(Channel.UNLIMITED)
 
-  private val rules = mutableListOf<Rule>()
+  @Volatile private var pumpStarted = false
+  @Volatile private var pumpError: Throwable? = null
 
-  // Socket pair: server listens, client connects, accepted = AG side
+  // Socket pair: server listens, client connects, accepted = AG side.
   private val serverSocket: ServerSocket
   private val clientSocket: Socket
   private val agSocket: Socket
@@ -44,12 +55,11 @@ class MockAg {
 
   private class Rule(val predicate: (String) -> Boolean, val respond: (String) -> List<String>)
 
-  /** Background thread that continuously pumps: reads client commands,
-   *  matches rules, and writes responses. */
   private val pumpThread: Thread
 
   init {
     // Default AG behaviour: answer everything with OK unless a test overrides.
+    // Registered first so it reads last (newest rule wins).
     respond({ true }) { listOf("OK") }
 
     // Create a connected socket pair over localhost.
@@ -58,43 +68,64 @@ class MockAg {
     agSocket = serverSocket.accept()
     serverSocket.close()
 
-    // AG side: reads from client, writes responses to client
     agInput = BufferedReader(InputStreamReader(agSocket.getInputStream()))
     agOutput = agSocket.getOutputStream()
 
-    // Client side: writes commands to AG, reads responses from AG
     clientOutput = clientSocket.getOutputStream()
     clientInput = BufferedReader(InputStreamReader(clientSocket.getInputStream()))
 
-    pumpThread = Thread({
-      try {
-        while (!agSocket.isClosed) {
-          val line = agInput.readLine() ?: break
-          val command = line.trim()
-          if (command.isEmpty()) continue
-          synchronized(received) {
-            received.add(command)
-          }
-          val rule = rules.firstOrNull { it.predicate(command) }
-          val lines = rule?.respond?.invoke(command) ?: listOf("OK")
-          for (l in lines) {
-            agOutput.write((l + "\r\n").toByteArray(Charsets.US_ASCII))
-          }
-          agOutput.flush()
-        }
-      } catch (_: Throwable) {
-        // Socket closed — normal when the test tears down.
-      }
-    }, "MockAg-pump")
+    pumpThread = Thread(::pumpLoop, "MockAg-pump")
     pumpThread.isDaemon = true
-    pumpThread.start()
+    // The pump does NOT start here: it starts lazily on the first link(), by
+    // which point the test has registered all of its respond() rules.
+  }
+
+  /** Starts the pump exactly once; safe to call from any thread. */
+  private fun ensureStarted() {
+    if (pumpStarted) return
+    synchronized(lock) {
+      if (pumpStarted) return
+      pumpStarted = true
+      pumpThread.start()
+    }
+  }
+
+  private fun pumpLoop() {
+    try {
+      while (!agSocket.isClosed) {
+        val line = agInput.readLine() ?: break
+        val command = line.trim()
+        if (command.isEmpty()) continue
+        val response = synchronized(lock) {
+          received.add(command)
+          unconsumed.add(command)
+          rules.firstOrNull { it.predicate(command) }
+            ?.respond?.invoke(command) ?: listOf("OK")
+        }
+        arrived.trySend(Unit)
+        for (l in response) {
+          agOutput.write((l + "\r\n").toByteArray(Charsets.US_ASCII))
+        }
+        agOutput.flush()
+      }
+    } catch (e: IOException) {
+      // Expected teardown case: a test closes the socket. Only treat it as a
+      // harness failure if neither side chose to close.
+      if (!agSocket.isClosed && !clientSocket.isClosed) pumpError = e
+    } catch (e: Throwable) {
+      // Anything unexpected is a harness bug - surface it so the test fails
+      // with the real error instead of a misleading timeout.
+      pumpError = e
+    }
   }
 
   // ------------------------------------------------------------------ scripting
 
   /** Adds a response rule: when the client sends a command matching [on], the AG sends [lines]. */
   fun respond(on: (String) -> Boolean, lines: (command: String) -> List<String>) {
-    rules.add(0, Rule(on, lines)) // newest rule wins
+    synchronized(lock) {
+      rules.add(0, Rule(on, lines)) // newest rule wins
+    }
   }
 
   /** Convenience: respond to commands whose trimmed text equals [command]. */
@@ -103,21 +134,50 @@ class MockAg {
   }
 
   /** Injects an unsolicited AG event (+CIEV, RING, +CLIP, +CLCC, ...). */
-  @Synchronized
   fun emit(line: String) {
-    runCatching {
-      agOutput.write((line + "\r\n").toByteArray(Charsets.US_ASCII))
-      agOutput.flush()
+    ensureStarted()
+    synchronized(lock) {
+      runCatching {
+        agOutput.write((line + "\r\n").toByteArray(Charsets.US_ASCII))
+        agOutput.flush()
+      }
     }
   }
 
-  /** Commands the client has sent so far. */
-  fun sentCommands(): List<String> = synchronized(received) { received.toList() }
+  /** Commands the client has sent so far, in order (full transcript). */
+  fun sentCommands(): List<String> = synchronized(lock) { received.toList() }
+
+  /**
+   * Suspends until the client sends a command matching [predicate] and returns
+   * it. Non-matching commands stay buffered for later awaits. This replaces the
+   * old busy-wait polling: the test suspends on a channel instead of sleeping
+   * against a wall-clock deadline. [timeoutMs] is only a safety net so a truly
+   * stuck harness fails the test rather than hanging it forever.
+   */
+  suspend fun awaitSent(timeoutMs: Long = 20_000, predicate: (String) -> Boolean): String {
+    ensureStarted()
+    return withTimeout(timeoutMs) {
+      while (true) {
+        val found = synchronized(lock) {
+          val idx = unconsumed.indexOfFirst { predicate(it) }
+          if (idx >= 0) unconsumed.removeAt(idx) else null
+        }
+        if (found != null) return@withTimeout found
+        arrived.receive()
+      }
+    }
+  }
+
+  /** Any harness failure the pump hit (null when the pump is healthy). */
+  fun harnessError(): Throwable? = pumpError
 
   // ------------------------------------------------------------------ plumbing
 
-  /** The client-side link handed to RawHfpClient. */
-  fun link(): HfpLink = SocketLink()
+  /** The client-side link handed to RawHfpClient. Starts the pump on first call. */
+  fun link(): HfpLink {
+    ensureStarted()
+    return SocketLink()
+  }
 
   fun close() {
     runCatching { clientSocket.close() }
