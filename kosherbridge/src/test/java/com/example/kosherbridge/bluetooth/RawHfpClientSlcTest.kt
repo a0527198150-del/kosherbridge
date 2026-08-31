@@ -1,6 +1,7 @@
 package com.example.kosherbridge.bluetooth
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
@@ -26,6 +27,7 @@ import org.junit.Test
  * `withTimeout` is used only as a safety net so a genuinely stuck harness
  * fails instead of hanging.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class RawHfpClientSlcTest {
 
   // ------------------------------------------------------------------ helpers
