@@ -47,8 +47,8 @@ class ConnectionPolicyGuard {
    */
   fun recordOriginals(
     address: String,
-    read: (profileId: Int) -> Int,
     unreadableValue: Int = HiddenHfp.POLICY_UNREADABLE,
+    read: (profileId: Int) -> Int,
   ) {
     for (profileId in guardedProfiles) {
       val key = policyKey(address, profileId)
@@ -93,8 +93,8 @@ class ConnectionPolicyGuard {
    */
   fun repair(
     address: String,
-    write: (profileId: Int, policy: Int) -> Boolean,
     allowedPolicy: Int = HiddenHfp.POLICY_ALLOWED,
+    write: (profileId: Int, policy: Int) -> Boolean,
   ): List<Result> = guardedProfiles.map { profileId ->
     val applied = write(profileId, allowedPolicy)
     if (applied) recorded.remove(policyKey(address, profileId))

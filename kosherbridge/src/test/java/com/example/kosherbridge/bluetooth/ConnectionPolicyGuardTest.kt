@@ -109,7 +109,7 @@ class ConnectionPolicyGuardTest {
     guard.recordOriginals(ADDR) { HiddenHfp.POLICY_FORBIDDEN }
 
     val fake = FakeWrite()
-    val results = guard.repair(ADDR, fake::write)
+    val results = guard.repair(ADDR, write = fake::write)
 
     // All four guarded profiles are written with ALLOWED.
     assertEquals(guard.guardedProfiles.size, results.size)
