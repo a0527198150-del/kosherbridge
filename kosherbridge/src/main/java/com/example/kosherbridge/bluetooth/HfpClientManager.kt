@@ -13,6 +13,7 @@ import android.util.Log
 import com.example.kosherbridge.data.ServiceLocator
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Proxy
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -125,8 +126,14 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * restarts, reboots, and even uninstall, so the original value must be
    * remembered here or it can never be restored. Only the first write records
    * the original — a later read may already see the app's own FORBIDDEN.
+   *
+   * This is also persisted in SettingsRepository (see `policy_*` keys) so the
+   * original survives a process restart, and it is a ConcurrentHashMap because
+   * it is written by recordOriginalPolicy (from disableSystemProfiles) while
+   * read/mutated inside coroutines by restoreSystemProfiles and
+   * repairConnectionPolicies.
    */
-  private val recordedPolicies = mutableMapOf<String, Int>()
+  private val recordedPolicies = ConcurrentHashMap<String, Int>()
 
   /** The profile ids disableSystemProfiles may set to FORBIDDEN. */
   private val guardedProfiles = listOf(
@@ -141,14 +148,21 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   /**
    * Reads and persists the current policy for (device, profile) before the
    * first FORBIDDEN write. Later calls are no-ops: once an original is stored
-   * it must never be overwritten with a value the app itself wrote.
+   * it must never be overwritten with a value the app itself wrote (putIfAbsent
+   * also keeps two concurrent calls from re-recording). Persists to
+   * SettingsRepository so the original survives a process restart.
    */
-  private fun recordOriginalPolicy(device: BluetoothDevice, profileId: Int) {
+  private suspend fun recordOriginalPolicy(device: BluetoothDevice, profileId: Int) {
     val key = policyKey(device.address, profileId)
     if (recordedPolicies.containsKey(key)) return
-    val current = HiddenHfp.profilePolicy(context, device, profileId)
+    val current = withContext(Dispatchers.IO) {
+      HiddenHfp.profilePolicy(context, device, profileId)
+    }
     if (current != HiddenHfp.POLICY_UNREADABLE) {
-      recordedPolicies[key] = current
+      val recorded = recordedPolicies.putIfAbsent(key, current)
+      if (recorded == null) {
+        ServiceLocator.settings.setRecordedPolicy(device.address, profileId, current)
+      }
     }
   }
 
@@ -180,6 +194,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           }
           if (applied) {
             recordedPolicies.remove(key)
+            ServiceLocator.settings.clearRecordedPolicy(address, profileId)
             logConnection(
               "מדיניות החיבור של פרופיל $profileId שוחזרה לערך המקורי ($original)",
               false,
@@ -220,6 +235,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         }
         if (applied) {
           recordedPolicies.remove(policyKey(address, profileId))
+          ServiceLocator.settings.clearRecordedPolicy(address, profileId)
           logConnection("פרופיל $profileId: מדיניות הוחזרה למאושר", false)
         } else if (useShizuku || useRoot) {
           // A privileged write that fails is unusual - it means the remote
@@ -490,6 +506,13 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   init {
     audio.onScoDropped = { if (autoAudio) connectAudio() }
     audio.onAudioStolen = { if (autoAudio) connectAudio() }
+    // Reload any originals persisted by a previous process run, so restore
+    // still works after a restart: the in-memory record dies with the process
+    // while the policy it guards survives in the Bluetooth stack. The hot path
+    // stays synchronous - only this one-time load touches DataStore.
+    scope.launch {
+      recordedPolicies.putAll(ServiceLocator.settings.allRecordedPolicies())
+    }
   }
 
   /** Applies the "שמע אוטומטי" and "הגברת עוצמה בשיחה" settings. */
