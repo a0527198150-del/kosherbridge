@@ -6,7 +6,6 @@ import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.ArrayDeque
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeout
 
@@ -34,7 +33,7 @@ class MockAg {
 
   private val lock = Any()
   private val received = mutableListOf<String>()
-  private val unconsumed = ArrayDeque<String>()
+  private val unconsumed = mutableListOf<String>()
   private val rules = ArrayList<Rule>()
   /** Signalled whenever the pump adds a command, to wake [awaitSent]. */
   private val arrived = Channel<Unit>(Channel.UNLIMITED)
@@ -158,11 +157,10 @@ class MockAg {
     ensureStarted()
     return withTimeout(timeoutMs) {
       while (true) {
-        val found = synchronized(lock) {
+        synchronized(lock) {
           val idx = unconsumed.indexOfFirst { predicate(it) }
-          if (idx >= 0) unconsumed.removeAt(idx) else null
+          if (idx >= 0) return@withTimeout unconsumed.removeAt(idx)
         }
-        if (found != null) return@withTimeout found
         arrived.receive()
       }
     }
