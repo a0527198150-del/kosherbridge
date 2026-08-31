@@ -60,7 +60,7 @@ class ConnectionPolicyGuard {
 
   /** True when any original has been recorded for [address] (restore has something to do). */
   fun hasRecorded(address: String): Boolean =
-    recorded.keys.any { it.startsWith("$address:") }
+    guardedProfiles.any { recorded.containsKey(policyKey(address, it)) }
 
   /** Outcome of one per-profile restore/repair write. */
   data class Result(val profileId: Int, val original: Int?, val applied: Boolean)
@@ -69,20 +69,21 @@ class ConnectionPolicyGuard {
    * Restores every recorded original for one device by writing it back; an
    * entry is forgotten only when its write actually succeeded, so a failed
    * write leaves the record for a later retry. Returns one [Result] per
-   * restored profile (in key order). A no-op when nothing was recorded.
+   * restored profile, in [guardedProfiles] order. A no-op when nothing was
+   * recorded.
+   *
+   * The profile id comes from [guardedProfiles] (not parsed out of the key):
+   * keys are "<address>:<profileId>" and a MAC address itself contains ':', so
+   * a naive split would grab the wrong segment.
    */
   fun restore(
     address: String,
     write: (profileId: Int, policy: Int) -> Boolean,
-  ): List<Result> {
-    val keys = recorded.keys.filter { it.startsWith("$address:") }.sorted()
-    return keys.mapNotNull { key ->
-      val profileId = key.substringAfter(':').toIntOrNull() ?: return@mapNotNull null
-      val original = recorded[key] ?: return@mapNotNull null
-      val applied = write(profileId, original)
-      if (applied) recorded.remove(key)
-      Result(profileId, original, applied)
-    }
+  ): List<Result> = guardedProfiles.mapNotNull { profileId ->
+    val original = recorded[policyKey(address, profileId)] ?: return@mapNotNull null
+    val applied = write(profileId, original)
+    if (applied) recorded.remove(policyKey(address, profileId))
+    Result(profileId, original, applied)
   }
 
   /**
