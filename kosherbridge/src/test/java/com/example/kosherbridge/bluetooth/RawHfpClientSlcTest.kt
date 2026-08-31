@@ -1,8 +1,10 @@
 package com.example.kosherbridge.bluetooth
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -24,6 +26,11 @@ class RawHfpClientSlcTest {
 
   // ------------------------------------------------------------------ helpers
 
+  /** The currently running handshake's death signal, or null when none is running. */
+  private var testHandshakeDeath: CompletableDeferred<Throwable>? = null
+
+  private fun handshakeDeath(): CompletableDeferred<Throwable>? = testHandshakeDeath
+
   private fun standardAg(): MockAg {
     val ag = MockAg()
     // A minimal but complete AG: answers BRSF with features, CIND test with
@@ -42,7 +49,7 @@ class RawHfpClientSlcTest {
   /**
    * Runs the handshake on a background dispatcher and returns its job.
    * The job's failure is captured so awaitTrue can re-throw it - a dead
-   * handshake must fail the test with the real exception, never with a
+   * handshake must fail the test with the REAL exception, never with a
    * timeout message (that is how 10 commits were spent chasing a swallowed
    * android.util.Log "not mocked" error).
    */
@@ -57,7 +64,7 @@ class RawHfpClientSlcTest {
       }
     }
     job.invokeOnCompletion { t -> if (t != null) death.complete(t) }
-    client.testHandshakeDeath = death
+    testHandshakeDeath = death
     return job
   }
 
@@ -65,7 +72,7 @@ class RawHfpClientSlcTest {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (!condition()) {
       // If the handshake died, fail with the REAL exception, never a timeout.
-      client?.testHandshakeDeath?.let { death ->
+      handshakeDeath()?.let { death ->
         if (death.isCompleted) throw death.getCompleted()
       }
       if (System.currentTimeMillis() > deadline) {
