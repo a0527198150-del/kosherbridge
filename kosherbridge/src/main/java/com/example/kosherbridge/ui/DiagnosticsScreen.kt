@@ -26,6 +26,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +50,14 @@ fun DiagnosticsScreen(
 ) {
   val context = LocalContext.current
   var micResult by remember { mutableStateOf<String?>(null) }
+
+  // Re-read the HFP connection-policy row each time this screen opens. The read
+  // is a blocking binder round trip, so it runs off the main thread (see
+  // BridgeService.refreshHeadsetClientPolicy) and the previously cached value
+  // renders until it completes.
+  LaunchedEffect(Unit) {
+    BridgeHub.service?.refreshHeadsetClientPolicy()
+  }
 
   val micPermission = rememberLauncherForActivityResult(
     ActivityResultContracts.RequestPermission(),
