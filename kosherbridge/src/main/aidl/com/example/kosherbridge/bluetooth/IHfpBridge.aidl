@@ -36,6 +36,13 @@ interface IHfpBridge {
     // (CONNECTION_POLICY_ALLOWED = 100, FORBIDDEN = 0, UNKNOWN = -1).
     // Returns -1000 when the policy cannot be read. Diagnostics only.
     int connectionPolicy(String address) = 18;
+    // Generalizes setConnectionAllowed: sets the connection policy (100 = ALLOWED,
+    // 0 = FORBIDDEN) for a device and ANY guarded profile in the privileged
+    // process. The privileged identity holds BLUETOOTH_PRIVILEGED, so unlike the
+    // same call from the app process the write actually succeeds on a stock
+    // player - letting the repair action restore not only the HFP-client profile
+    // but Headset, A2DP and A2DP-Sink too. Returns false when the write is refused.
+    boolean setProfilePolicy(String address, int profileId, int policy) = 19;
     // Reserved "destroy" transaction code defined by the Shizuku server
     // (see the official Shizuku-API demo). Without the explicit code the
     // server cannot signal this service to shut down.
