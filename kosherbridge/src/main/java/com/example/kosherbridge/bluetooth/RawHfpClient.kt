@@ -748,6 +748,7 @@ class RawHfpClient(
   /** Visibility-for-tests only: the current gateway rotation order. */
   internal fun gatewayOrderForTest(): List<Pair<UUID, String>> = gatewayOrder.toList()
 
+
   private fun readLoop(ownedSocket: HfpLink) {
     val r = synchronized(writeLock) {
       if (socket === ownedSocket) input else null
