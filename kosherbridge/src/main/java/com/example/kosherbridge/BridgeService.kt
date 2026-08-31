@@ -29,8 +29,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Foreground service that owns the bridge to the kosher phone:
@@ -424,14 +426,33 @@ class BridgeService : Service() {
     }
   }
 
-  /** Human-readable HFP-client connection-policy line for the diagnostics tab. */
-  private fun headsetClientPolicyText(): String {
+  /**
+   * Re-reads the HFP connection policy and republishes it to BridgeHub, for
+   * when the diagnostics screen opens. Runs the blocking read off the main
+   * thread; the existing cached value in BridgeUiState renders immediately
+   * meanwhile.
+   */
+  fun refreshHeadsetClientPolicy() {
+    scope.launch {
+      BridgeHub.update { it.copy(headsetClientPolicy = headsetClientPolicyText()) }
+    }
+  }
+
+  /**
+   * Human-readable HFP-client connection-policy line for the diagnostics tab.
+   *
+   * NOTE: this read is a binding/await/unbinding binder round trip with a
+   * multi-second timeout (HiddenHfp.profilePolicy). It is neither cheap nor
+   * side-effect-free, and it MUST never run on the main thread - always call it
+   * from a suspending context that dispatches to IO.
+   */
+  private suspend fun headsetClientPolicyText(): String = withContext(Dispatchers.IO) {
     val policy = manager.headsetClientPolicy(
       BridgeHub.state.value.deviceAddress?.let { addr ->
         runCatching { adapter()?.getRemoteDevice(addr) }.getOrNull()
       },
     )
-    return when (policy) {
+    when (policy) {
       HiddenHfp.POLICY_ALLOWED -> "מאושר"
       HiddenHfp.POLICY_FORBIDDEN -> "חסום"
       HiddenHfp.POLICY_UNREADABLE -> "לא ניתן לקריאה"
@@ -492,15 +513,22 @@ class BridgeService : Service() {
     scope.launch {
       manager.connectionLog.collect { lines ->
         BridgeHub.update { it.copy(connectionLog = lines) }
-        // The policy row is not a flow: refresh it whenever anything in the
-        // bridge changes (it is cheap and read-only).
-        BridgeHub.update { it.copy(headsetClientPolicy = headsetClientPolicyText()) }
       }
     }
     scope.launch {
-      manager.connectionState.collect {
-        BridgeHub.update { it.copy(headsetClientPolicy = headsetClientPolicyText()) }
-      }
+      // The HFP policy row is not a flow and must NOT refresh per connection-log
+      // line: the read is a blocking binder round trip (up to several seconds)
+      // and a connection attempt writes dozens of lines in a burst, so updating
+      // it here was a multi-second IPC on the main thread for every line. Refresh
+      // it only when the connection state actually changes, debounced so a burst
+      // of state events triggers at most one read. The read itself runs off the
+      // main thread inside headsetClientPolicyText(); the diagnostics screen also
+      // triggers a refresh when it opens (rendering is served from cache).
+      manager.connectionState
+        .debounce(300)
+        .collect {
+          BridgeHub.update { it.copy(headsetClientPolicy = headsetClientPolicyText()) }
+        }
     }
     scope.launch {
       manager.lastError.collect { e -> BridgeHub.update { it.copy(lastError = e) } }
