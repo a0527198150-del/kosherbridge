@@ -200,9 +200,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   /**
    * The escape hatch for every player already stuck in the poisoned state:
    * sets all guarded profiles back to ALLOWED for the device, whether or not
-   * this app recorded an original. Unprivileged writes may still fail on a
-   * locked-down stack — the log line says so, and the privileged channels
-   * perform the same repair through the privileged process.
+   * this app recorded an original. When a privileged channel (Shizuku/root) is
+   * bound, the repair runs through the privileged process, whose write is not
+   * refused by the locked-down stack and covers every guarded profile;
+   * otherwise it falls back to the unprivileged write, whose refusal is
+   * reported with a concrete instruction.
    */
   fun repairConnectionPolicies(device: BluetoothDevice) {
     val address = device.address
@@ -210,15 +212,28 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     scope.launch {
       for (profileId in guardedProfiles) {
         val applied = withContext(Dispatchers.IO) {
-          HiddenHfp.setProfilePriority(context, device, profileId, HiddenHfp.POLICY_ALLOWED)
+          when {
+            useShizuku -> shizuku?.setProfilePolicy(address, profileId, HiddenHfp.POLICY_ALLOWED) ?: false
+            useRoot -> root?.setProfilePolicy(address, profileId, HiddenHfp.POLICY_ALLOWED) ?: false
+            else -> HiddenHfp.setProfilePriority(context, device, profileId, HiddenHfp.POLICY_ALLOWED)
+          }
         }
         if (applied) {
           recordedPolicies.remove(policyKey(address, profileId))
+          logConnection("פרופיל $profileId: מדיניות הוחזרה למאושר", false)
+        } else if (useShizuku || useRoot) {
+          // A privileged write that fails is unusual - it means the remote
+          // process or the Bluetooth stack refused it for another reason.
+          logConnection("פרופיל $profileId: הכתיבה נדחתה גם דרך הערוץ המיוחס", true)
+        } else {
+          // No privileged channel: the unprivileged write was refused because
+          // the app lacks BLUETOOTH_PRIVILEGED. Tell the user how to proceed
+          // instead of just that it failed.
+          logConnection(
+            "לא ניתן לתקן ללא הרשאת מערכת - הפעל את ערוץ Shizuku או רוט ונסה שוב",
+            true,
+          )
         }
-        logConnection(
-          "פרופיל $profileId: ${if (applied) "מדיניות הוחזרה למאושר" else "הכתיבה נדחתה (נדרש תהליך מיוחס)"}",
-          !applied,
-        )
       }
     }
   }
@@ -226,10 +241,21 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   /**
    * The current HFP-client (profile 16) connection policy for one device, for
    * the diagnostics row and report. POLICY_UNREADABLE when it cannot be read.
+   *
+   * Prefers the privileged read when a privileged channel is bound: the
+   * unprivileged path reflects into getConnectionPolicy, which needs
+   * BLUETOOTH_PRIVILEGED exactly like the write does, so on a stock player it
+   * throws, is swallowed and returns POLICY_UNREADABLE - "לא ניתן לקריאה" on
+   * precisely the devices where the poisoned policy matters. The privileged
+   * process can read it.
    */
   fun headsetClientPolicy(device: BluetoothDevice?): Int {
     val d = device ?: return HiddenHfp.POLICY_UNREADABLE
-    return HiddenHfp.profilePolicy(context, d, 16)
+    return when {
+      useShizuku -> shizuku?.connectionPolicy(d.address) ?: HiddenHfp.POLICY_UNREADABLE
+      useRoot -> root?.connectionPolicy(d.address) ?: HiddenHfp.POLICY_UNREADABLE
+      else -> HiddenHfp.profilePolicy(context, d, 16)
+    }
   }
 
   private suspend fun disableSystemProfiles(device: BluetoothDevice) {

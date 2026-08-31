@@ -170,6 +170,14 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     return HiddenHfp.profilePolicy(context, d, HiddenHfp.PROFILE_ID)
   }
 
+  override fun setProfilePolicy(address: String, profileId: Int, policy: Int): Boolean {
+    val d = deviceFor(address) ?: return false
+    // The privileged process holds BLUETOOTH_PRIVILEGED, so this write - which
+    // the app process cannot perform on a stock player - succeeds here. Lets
+    // the repair action restore any guarded profile, not just HFP-client.
+    return HiddenHfp.setProfilePriority(context, d, profileId, policy)
+  }
+
   override fun currentCallSnapshot(): String {
     val c = client ?: return ""
     val d = connectedDevice() ?: return ""

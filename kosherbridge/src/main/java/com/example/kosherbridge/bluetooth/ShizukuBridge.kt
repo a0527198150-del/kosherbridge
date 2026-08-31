@@ -223,4 +223,12 @@ class ShizukuBridge(private val context: Context) {
   /** Reads the HFP-client connection policy for one device (diagnostics). */
   fun connectionPolicy(address: String): Int =
     runCatching { remote?.connectionPolicy(address) ?: -1000 }.getOrDefault(-1000)
+
+  /**
+   * Asks the privileged process to set the connection policy for one device
+   * and guarded profile (generalization of [setConnectionAllowed]). Lets the
+   * repair action restore every guarded profile, not just HFP-client.
+   */
+  fun setProfilePolicy(address: String, profileId: Int, policy: Int): Boolean =
+    runCatching { remote?.setProfilePolicy(address, profileId, policy) ?: false }.getOrDefault(false)
 }
