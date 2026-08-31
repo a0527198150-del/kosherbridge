@@ -748,6 +748,14 @@ class RawHfpClient(
   /** Visibility-for-tests only: the current gateway rotation order. */
   internal fun gatewayOrderForTest(): List<Pair<UUID, String>> = gatewayOrder.toList()
 
+  /**
+   * Visibility-for-tests only: the test harness installs a
+   * [CompletableDeferred] here so a dead handshake surfaces its REAL
+   * exception instead of a wall-clock timeout. The handshake coroutine
+   * completes it with the failure before rethrowing.
+   */
+  internal var testHandshakeDeath: CompletableDeferred<Throwable>? = null
+
   private fun readLoop(ownedSocket: HfpLink) {
     val r = synchronized(writeLock) {
       if (socket === ownedSocket) input else null

@@ -68,6 +68,14 @@ android {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
   }
+  // JVM unit tests touch Android framework stubs (android.util.Log etc.).
+  // Without isReturnDefaultValues every stub method throws "not mocked" on
+  // ANY thread - the static Log mock in the test only covers the JUnit thread,
+  // so the handshake coroutine on Dispatchers.IO crashed and the tests timed
+  // out with a misleading 5-second AssertionError.
+  testOptions {
+    unitTests.isReturnDefaultValues = true
+  }
   buildFeatures {
     compose = true
     aidl = true

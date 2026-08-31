@@ -1,19 +1,13 @@
 package com.example.kosherbridge.bluetooth
 
-import android.util.Log
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import org.junit.AfterClass
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
-import org.junit.BeforeClass
 import org.junit.Test
-import org.mockito.MockedStatic
-import org.mockito.Mockito
 
 /**
  * JVM tests for the RawHfpClient SLC/AT conversation against a scripted
@@ -27,22 +21,6 @@ import org.mockito.Mockito
  * and the client's published state, never on wall-clock timing.
  */
 class RawHfpClientSlcTest {
-
-  companion object {
-    private lateinit var logMock: MockedStatic<Log>
-
-    @BeforeClass
-    @JvmStatic
-    fun setUpLogMock() {
-      logMock = Mockito.mockStatic(Log::class.java)
-    }
-
-    @AfterClass
-    @JvmStatic
-    fun tearDownLogMock() {
-      logMock.close()
-    }
-  }
 
   // ------------------------------------------------------------------ helpers
 
@@ -61,15 +39,35 @@ class RawHfpClientSlcTest {
     return ag
   }
 
-  /** Runs the handshake on a background dispatcher and returns its job. */
-  private fun handshakeAsync(client: RawHfpClient, link: HfpLink): Job =
-    GlobalScope.launch(Dispatchers.IO) {
-      client.runHandshakeForTest(link)
+  /**
+   * Runs the handshake on a background dispatcher and returns its job.
+   * The job's failure is captured so awaitTrue can re-throw it - a dead
+   * handshake must fail the test with the real exception, never with a
+   * timeout message (that is how 10 commits were spent chasing a swallowed
+   * android.util.Log "not mocked" error).
+   */
+  private fun handshakeAsync(client: RawHfpClient, link: HfpLink): Job {
+    val death = CompletableDeferred<Throwable>()
+    val job = GlobalScope.launch(Dispatchers.IO) {
+      try {
+        client.runHandshakeForTest(link)
+      } catch (t: Throwable) {
+        death.complete(t)
+        throw t
+      }
     }
+    job.invokeOnCompletion { t -> if (t != null) death.complete(t) }
+    client.testHandshakeDeath = death
+    return job
+  }
 
   private fun awaitTrue(timeoutMs: Long = 5_000, condition: () -> Boolean) {
     val deadline = System.currentTimeMillis() + timeoutMs
     while (!condition()) {
+      // If the handshake died, fail with the REAL exception, never a timeout.
+      client?.testHandshakeDeath?.let { death ->
+        if (death.isCompleted) throw death.getCompleted()
+      }
       if (System.currentTimeMillis() > deadline) {
         throw AssertionError("condition not met within ${timeoutMs}ms")
       }
