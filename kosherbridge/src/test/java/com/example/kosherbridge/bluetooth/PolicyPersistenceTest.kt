@@ -121,10 +121,12 @@ class PolicyPersistenceTest {
     PolicyPersistence(store).seedGuard(restarted)
 
     val restored = mutableListOf<Pair<Int, Int>>() // (profileId, original)
-    restarted.restore(ADDR) { profileId, original ->
+    val results = restarted.restore(ADDR) { profileId, original ->
       restored += profileId to original
       true
     }
+    // Production flow: a successful restore clears the persisted record too.
+    PolicyPersistence(store).clearApplied(ADDR, results)
 
     // Every guarded profile restored, to the ORIGINAL recorded value — proving
     // the key never got mangled by a colon split on the way back.
