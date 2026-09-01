@@ -152,12 +152,14 @@ class SettingsRepository(private val context: Context) : PolicyStore {
 
   /** Persists the original policy recorded for (address, profile) — a no-op once
    * the original has already been recorded elsewhere. */
-  override suspend fun save(address: String, profileId: Int, policy: Int) =
+  override suspend fun save(address: String, profileId: Int, policy: Int) {
     context.dataStore.edit { it[policyKey(address, profileId)] = policy }
+  }
 
   /** Removes a recorded original once it has been successfully restored. */
-  override suspend fun clear(address: String, profileId: Int) =
+  override suspend fun clear(address: String, profileId: Int) {
     context.dataStore.edit { it.remove(policyKey(address, profileId)) }
+  }
 
   /** Loads every persisted original, keyed `"address:profileId"` -> original Int. */
   override suspend fun loadAll(): Map<String, Int> =
