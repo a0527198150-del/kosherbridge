@@ -152,15 +152,17 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * the guard (once each — a later read may already observe the app's own
    * FORBIDDEN), then persists what the guard recorded so the originals survive
    * a process restart. Non-readable policies are skipped by the guard.
+   *
+   * The profiles come from [ConnectionPolicyGuard.recordedFor], keyed by
+   * profile id — the guard owns the "address:profileId" key format, and a MAC
+   * address itself contains ':', so the id is never parsed back out of a key
+   * here.
    */
   private suspend fun recordPolicyOriginals(device: BluetoothDevice) {
     policyGuard.recordOriginals(device.address) { profileId -> readPolicy(device, profileId) }
-    policyGuard.recordedSnapshot
-      .filterKeys { it.startsWith("${device.address}:") }
-      .forEach { (key, original) ->
-        val profileId = key.substringAfter(':').toIntOrNull() ?: return@forEach
-        ServiceLocator.settings.setRecordedPolicy(device.address, profileId, original)
-      }
+    for ((profileId, original) in policyGuard.recordedFor(device.address)) {
+      ServiceLocator.settings.setRecordedPolicy(device.address, profileId, original)
+    }
   }
 
   /**
