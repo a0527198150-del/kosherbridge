@@ -313,6 +313,12 @@ class RawHfpClient(
     // The atomic claim is important: without it, a watchdog waking at the
     // same moment as a successful handshake could close a live socket after
     // the handshake had already been accepted.
+    // Note: this production watchdog has NO direct test coverage - it belongs
+    // to the service scope and is exercised only through the mirrored,
+    // injectable timeout in runHandshakeForTest (handshakeWatchdogMsForTest),
+    // so a regression of the wiring here would not be caught by the unit
+    // suite; ag_goes_silent_after_cmer_triggers_watchdog only proves the test
+    // seam's own watchdog fires.
     val handshakeClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
     val watchdog = scope.launch(Dispatchers.IO) {
       delay(12_000)
@@ -718,17 +724,17 @@ class RawHfpClient(
 
   // ------------------------------------------------- test seams (no behavior change)
 
+  /** Test seam only: how long runHandshakeForTest waits for a silent AG before
+   * tearing the link down (mirrors the production 12s watchdog in runSession).
+   * Lowered by a test that models an AG going silent mid-SLC. */
+  internal var handshakeWatchdogMsForTest: Long = 12_000L
+
   /** Visibility-for-tests only: the SLC/AT conversation is a pure text
    * protocol over an [HfpLink], so the JVM test harness (MockAg) drives it
    * over piped streams without a device. Installs the link exactly as
    * runSession() does (sendCommand's ownership check requires it) and leaves
    * it installed so post-SLC commands can be exercised; the caller's
    * disconnect() tears it down. Production behavior is unchanged. */
-  /** Test seam only: how long runHandshakeForTest waits for a silent AG before
-   * tearing the link down (mirrors the production 12s watchdog in runSession).
-   * Lowered by a test that models an AG going silent mid-SLC. */
-  internal var handshakeWatchdogMsForTest: Long = 12_000L
-
   internal suspend fun runHandshakeForTest(link: HfpLink): Boolean {
     synchronized(writeLock) {
       socket = link
