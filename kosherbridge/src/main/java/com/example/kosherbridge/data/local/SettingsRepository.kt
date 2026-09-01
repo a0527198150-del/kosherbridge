@@ -25,7 +25,7 @@ data class ChannelState(val effective: String, val manual: String, val learned: 
 private fun channelManualKey(fp: String) = stringPreferencesKey("channel_manual_$fp")
 private fun channelLearnedKey(fp: String) = stringPreferencesKey("channel_learned_$fp")
 
-class SettingsRepository(private val context: Context) {
+class SettingsRepository(private val context: Context) : PolicyStore {
 
   private object Keys {
     val AUTO_CONNECT = booleanPreferencesKey("auto_connect")
@@ -152,15 +152,15 @@ class SettingsRepository(private val context: Context) {
 
   /** Persists the original policy recorded for (address, profile) — a no-op once
    * the original has already been recorded elsewhere. */
-  suspend fun setRecordedPolicy(address: String, profileId: Int, policy: Int) =
+  override suspend fun save(address: String, profileId: Int, policy: Int) =
     context.dataStore.edit { it[policyKey(address, profileId)] = policy }
 
   /** Removes a recorded original once it has been successfully restored. */
-  suspend fun clearRecordedPolicy(address: String, profileId: Int) =
+  override suspend fun clear(address: String, profileId: Int) =
     context.dataStore.edit { it.remove(policyKey(address, profileId)) }
 
   /** Loads every persisted original, keyed `"address:profileId"` -> original Int. */
-  suspend fun allRecordedPolicies(): Map<String, Int> =
+  override suspend fun loadAll(): Map<String, Int> =
     context.dataStore.data.first().asMap().mapNotNull { (key, value) ->
       val name = key.name
       val prefix = "policy_"

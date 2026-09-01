@@ -130,6 +130,14 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   private val policyGuard = ConnectionPolicyGuard()
 
+  /**
+   * Writes the guard's records through to DataStore and seeds it back on
+   * startup, through the [com.example.kosherbridge.data.local.PolicyStore]
+   * seam — the record/clear/load round trip is unit-tested in
+   * PolicyPersistenceTest with a fake store.
+   */
+  private val policyPersistence = PolicyPersistence(ServiceLocator.settings)
+
   private fun readPolicy(device: BluetoothDevice, profileId: Int): Int =
     HiddenHfp.profilePolicy(context, device, profileId)
 
@@ -160,9 +168,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   private suspend fun recordPolicyOriginals(device: BluetoothDevice) {
     policyGuard.recordOriginals(device.address) { profileId -> readPolicy(device, profileId) }
-    for ((profileId, original) in policyGuard.recordedFor(device.address)) {
-      ServiceLocator.settings.setRecordedPolicy(device.address, profileId, original)
-    }
+    policyPersistence.persistRecorded(policyGuard, device.address)
   }
 
   /**
@@ -191,7 +197,6 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         }
         for (r in results) {
           if (r.applied) {
-            ServiceLocator.settings.clearRecordedPolicy(address, r.profileId)
             logConnection(
               "מדיניות החיבור של פרופיל ${r.profileId} שוחזרה לערך המקורי (${r.original})",
               false,
@@ -205,6 +210,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
             )
           }
         }
+        // Clear only the records whose write actually succeeded.
+        policyPersistence.clearApplied(address, results)
       }
     }
   }
@@ -229,7 +236,6 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
       for (r in results) {
         if (r.applied) {
-          ServiceLocator.settings.clearRecordedPolicy(address, r.profileId)
           logConnection("פרופיל ${r.profileId}: מדיניות הוחזרה למאושר", false)
         } else if (useShizuku || useRoot) {
           // A privileged write that fails is unusual - it means the remote
@@ -245,6 +251,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           )
         }
       }
+      // Clear only the records whose write actually succeeded.
+      policyPersistence.clearApplied(address, results)
     }
   }
 
@@ -503,7 +511,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // while the policy it guards survives in the Bluetooth stack. The hot path
     // stays synchronous - only this one-time load touches DataStore.
     scope.launch {
-      policyGuard.seedRecorded(ServiceLocator.settings.allRecordedPolicies())
+      policyPersistence.seedGuard(policyGuard)
     }
   }
 
