@@ -176,9 +176,8 @@ Shizuku, רוט, או מודול Magisk הכתיבה מבוצעת בתהליך �
 
 ## בנייה
 
-```bash
-gradle :kosherbridge:assembleDebug
-```
+- בנייה מקומית: `./gradlew :kosherbridge:assembleDebug`
+- בדיקות: `./gradlew :kosherbridge:test`
 
 קובץ ה-APK ייווצר ב-`kosherbridge/build/outputs/apk/debug/`.
 

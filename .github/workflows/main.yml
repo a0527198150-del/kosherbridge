@@ -43,21 +43,31 @@ jobs:
           keytool -list -keystore debug.keystore -storepass android > /dev/null \
             || { echo "::error::restored debug.keystore is not a valid keystore" && exit 1; }
 
+      # setup-gradle@v4 auto-detects ./gradlew and installs the exact version
+      # pinned in gradle/wrapper/gradle-wrapper.properties — so local builds
+      # and CI always run the same Gradle 9.3.1.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
 
       # Unit tests are plain JVM tests (no emulator needed) — see
       # kosherbridge/src/test. A regression in the SLC/AT protocol logic now
       # fails CI instead of shipping silently.
       - name: Test kosherbridge
-        run: gradle :kosherbridge:test --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew :kosherbridge:test --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
+
+      # A red run must be diagnosable from the run page (the test task only
+      # prints a local file:// link), so upload the report on failure.
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kosherbridge-test-report
+          path: kosherbridge/build/reports/tests/
 
       # Lint reports but does not block; the HTML report is uploaded so the
       # findings stay inspectable.
       - name: Lint kosherbridge
-        run: gradle :kosherbridge:lintDebug --no-daemon --continue -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew :kosherbridge:lintDebug --no-daemon --continue -Pkotlin.compiler.execution.strategy=daemon
         continue-on-error: true
 
       - name: Upload lint report
@@ -76,7 +86,7 @@ jobs:
       # Override kotlin.compiler.execution.strategy (gradle.properties uses
       # 'in-process', which breaks KSP2 on CI runners).
       - name: Build kosherbridge (debug APK)
-        run: gradle :kosherbridge:assembleDebug --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew :kosherbridge:assembleDebug --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
 
       - name: Upload kosherbridge APK
         uses: actions/upload-artifact@v4
