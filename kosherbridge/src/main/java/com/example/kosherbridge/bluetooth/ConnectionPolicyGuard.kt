@@ -44,6 +44,19 @@ class ConnectionPolicyGuard {
     recorded.putAll(entries)
   }
 
+  /**
+   * The originals recorded for one device, keyed by profile id - never by
+   * string key. The persistence glue (and anything else outside this class)
+   * must not reconstruct or decompose `"address:profileId"` keys: a MAC
+   * address is full of ':' so parsing the profile id back out of a key with
+   * `substringAfter(':')` grabs the wrong segment. The guard owns [policyKey]
+   * and everything that knows the key format lives here.
+   */
+  fun recordedFor(address: String): Map<Int, Int> =
+    guardedProfiles.mapNotNull { profileId ->
+      recorded[policyKey(address, profileId)]?.let { profileId to it }
+    }.toMap()
+
   private fun policyKey(address: String, profileId: Int) = "$address:$profileId"
 
   /**
