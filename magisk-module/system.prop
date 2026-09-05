@@ -1,0 +1,16 @@
+# Enables the Bluetooth HFP Hands-Free (client) profile.
+#
+# This is the profile that lets the player act as a car-kit/handsfree unit for
+# the kosher phone, and it is what makes call AUDIO possible: without it the
+# stack exposes no TYPE_BLUETOOTH_SCO device, so the voice always stays on the
+# phone.
+#
+# On the tested player (Fanvace M36, Android 13) the profile service
+# com.android.bluetooth/.hfpclient.HeadsetClientService IS present in the
+# Bluetooth APK but never runs, because this property is unset and an unset
+# profile property defaults to disabled.
+#
+# Magisk applies system.prop with resetprop at the post-fs-data stage, i.e.
+# BEFORE the Bluetooth process starts and reads it. A `setprop` from service.sh
+# would run far too late to have any effect.
+bluetooth.profile.hfp.hf.enabled=true
