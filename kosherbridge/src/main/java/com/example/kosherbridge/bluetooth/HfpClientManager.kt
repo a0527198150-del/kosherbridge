@@ -525,6 +525,18 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   init {
     audio.onScoDropped = { if (autoAudio) connectAudio() }
     audio.onAudioStolen = { if (autoAudio) connectAudio() }
+    // RAW/direct channel on a player without an HFP-Client profile: there is
+    // no SCO device to route to, so forcing SCO can never make the player hear
+    // the call - and it can leave the phone's AG holding the call audio on a
+    // headset link that carries nothing (silent on BOTH devices). Explain that
+    // once so the user knows the voice belongs to the phone on this channel.
+    audio.onForcedScoImpossible = {
+      logConnection(
+        "ערוץ ישיר: אין בנגן ערוץ שמע (SCO) לשיחה - הקול נשאר בטלפון עצמו. " +
+          "אם גם הטלפון שקט, ענה על הטלפון ישירות, או השתמש בערוץ רוט/Shizuku/מודול Magisk לקול בנגן",
+        false,
+      )
+    }
     // Reload any originals persisted by a previous process run, so restore
     // still works after a restart: the in-memory record dies with the process
     // while the policy it guards survives in the Bluetooth stack. The hot path
@@ -1280,8 +1292,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   fun connectAudio() {
     if (rawActive) {
-      // Raw RFCOMM has no profile-level SCO, so also force the stack to open
-      // the SCO voice channel directly - harmless if the stack refuses.
+      // Raw RFCOMM has no profile-level SCO. When this player provably exposes
+      // no SCO path (see CallAudioManager.rawAudioRoutable) forcing one cannot
+      // make the player hear anything - and on some AGs it pins the call audio
+      // to a dead headset link, silencing the phone too. Leave the audio with
+      // the phone and let the user know, instead of poking a black hole.
+      if (!audio.rawAudioRoutable(device.value)) return
       audio.ensureCallAudio(device.value, volumeBoost, forceVirtualSco = true)
       return
     }
@@ -1293,7 +1309,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   fun toggleAudio(): Boolean {
     if (rawActive) {
-      audio.ensureCallAudio(device.value, volumeBoost)
+      // Same gate as connectAudio(): never claim a SCO route that cannot exist
+      // on this player (see rawAudioRoutable for the reasoning).
+      if (audio.rawAudioRoutable(device.value)) {
+        audio.ensureCallAudio(device.value, volumeBoost)
+      }
       return true
     }
     val connected = audioState.value == 2
