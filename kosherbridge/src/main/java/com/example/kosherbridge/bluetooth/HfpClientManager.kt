@@ -39,7 +39,26 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private val adapter: BluetoothAdapter? =
     (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
+  /**
+   * Does the SYSTEM expose the HFP client (hands-free) profile — i.e. can a
+   * profile proxy actually bind? Set only by the real profile paths (the
+   * in-process proxy, or isProfileReady() from the Shizuku/root user service).
+   * The raw RFCOMM path deliberately never sets this: a raw socket talks AT
+   * commands to the phone without any profile, so a successful raw link says
+   * nothing about profile support. That distinction is what diagnostics
+   * reports to the user; the live-link fact has its own flow below.
+   */
   val profileReady = MutableStateFlow(false)
+
+  /**
+   * A live raw RFCOMM link exists right now — independent of [profileReady].
+   * On a player whose stack has no HFP-Client profile, call control still
+   * works through this link, and diagnostics must show BOTH facts: profile
+   * unsupported AND link active. Call control paths may read either; nothing
+   * may collapse them into one.
+   */
+  val rawLinkActive = MutableStateFlow(false)
+
   val connectionState = MutableStateFlow(BluetoothProfile.STATE_DISCONNECTED)
   val audioState = MutableStateFlow(0)
   val device = MutableStateFlow<BluetoothDevice?>(null)
@@ -976,8 +995,15 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           connectionState.value =
             if (connected) BluetoothProfile.STATE_CONNECTED else BluetoothProfile.STATE_DISCONNECTED
           if (connected) {
-            profileReady.value = true
+            // A raw socket is NOT the system HFP-Client profile — it must not
+            // set profileReady, which means "the system exposes the profile".
+            // Marking profile support here reported "נתמך" on players whose
+            // stack provably lacks the profile and kept the Shizuku dead-end
+            // alive. The live-link fact has its own flow.
+            rawLinkActive.value = true
             onBackendWorked?.invoke("RAW")
+          } else {
+            rawLinkActive.value = false
           }
           if (!connected) call.value = null
         }
