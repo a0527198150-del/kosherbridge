@@ -30,7 +30,7 @@ cp "$APK_SRC" "$DEST"
 
 STAGING=$(mktemp -d)
 cp -r system "$STAGING/system"
-cp module.prop customize.sh service.sh "$STAGING/"
+cp module.prop customize.sh service.sh system.prop "$STAGING/"
 OUT="../kosherbridge-magisk-v1.zip"
 rm -f "$OUT"
 (cd "$STAGING" && zip -r -q "$OLDPWD/$OUT" .)

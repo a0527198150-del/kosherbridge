@@ -95,7 +95,21 @@ fun DiagnosticsScreen(
         Spacer(Modifier.height(4.dp))
       }
       DiagRow("פרופיל דיבורית (HFP Client)", if (state.profileReady) "נתמך" else "לא נתמך", state.profileReady)
-      DiagRow("ערוץ פעיל", state.backendLabel ?: "לא פעיל", state.profileReady)
+      // The live-link fact is independent of profile support: on a player whose
+      // stack lacks the HFP-Client profile, a raw RFCOMM link can still be up
+      // (call control works), and both facts must be visible side by side
+      // instead of the link masquerading as profile support.
+      DiagRow(
+        "קישור פעיל",
+        when {
+          state.profileReady && state.connectionState == BluetoothProfile.STATE_CONNECTED -> "כן (פרופיל)"
+          state.rawLinkActive -> "כן (RFCOMM ישיר)"
+          state.connectionState == BluetoothProfile.STATE_CONNECTED -> "כן"
+          else -> "לא"
+        },
+        state.profileReady || state.rawLinkActive,
+      )
+      DiagRow("ערוץ פעיל", state.backendLabel ?: "לא פעיל", state.profileReady || state.rawLinkActive)
       DiagRow("בלוטוס", if (state.adapterOn) "פועל" else "כבוי", state.adapterOn)
       DiagRow("חיבור", connectionText(state), state.connectionState == BluetoothProfile.STATE_CONNECTED)
       DiagRow(
@@ -241,8 +255,24 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
   appendLine("גרסת אפליקציה: ${com.example.kosherbridge.BuildConfig.VERSION_NAME}")
   appendLine("מכשיר: ${state.deviceInfo ?: "-"}")
   appendLine("API נסתר (HFP): ${if (state.hiddenApiAvailable) "זמין" else "לא זמין"}")
-  appendLine("פרופיל דיבורית: ${if (state.profileReady) "נתמך" else "לא נתמך"}")
+  appendLine("פרופיל דיבורית (HFP Client): ${if (state.profileReady) "נתמך" else "לא נתמך"}")
+  appendLine(
+    "קישור פעיל: ${
+      when {
+        state.profileReady && state.connectionState == BluetoothProfile.STATE_CONNECTED -> "כן (פרופיל)"
+        state.rawLinkActive -> "כן (RFCOMM ישיר)"
+        state.connectionState == BluetoothProfile.STATE_CONNECTED -> "כן"
+        else -> "לא"
+      }
+    }",
+  )
   appendLine("ערוץ פעיל: ${state.backendLabel ?: "לא פעיל"}")
+  if (!state.profileReady && state.rawLinkActive) {
+    appendLine(
+      "הנגן לא חושף את פרופיל הדיבורית - בקרת שיחות תעבוד בערוץ הישיר, אבל הקול יישאר בטלפון. " +
+        "ערוץ Shizuku לא יעזור כאן. ראו מודול Magisk ב-README.",
+    )
+  }
   appendLine("חסימת הרשאות: ${if (state.privilegedBlocked) "נחסמה - דרוש Shizuku" else "לא נחסמה"}")
   appendLine(
     "Shizuku: ${

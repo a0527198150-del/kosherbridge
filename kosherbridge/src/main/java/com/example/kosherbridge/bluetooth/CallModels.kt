@@ -36,6 +36,7 @@ data class BridgeUiState(
 
   val scoSupport: String? = null, // does this player expose SCO at all?
   val scoTechnique: String? = null, // last SCO technique the stack was asked for
+  val rawLinkActive: Boolean = false, // a live raw RFCOMM link exists right now (independent of the system profile)
   val rawDropInfo: String? = null, // raw RFCOMM link drop stats (count + last duration)
   val rawConnectionDiagnostics: String? = null, // SDP/channel attempts before connection
   val headsetClientPolicy: String? = null, // HFP-client connection policy, for diagnostics

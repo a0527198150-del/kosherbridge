@@ -711,6 +711,13 @@ class RawHfpClient(
     // (AG bit 0) AND the HF advertises it (HF bit 1). hfFeatures does not
     // set HF bit 1, so it is skipped by design. Logged so an AG that waits
     // for CHLD anyway can be identified from the journal.
+    //
+    // FIELD-VERIFIED (Note #4): the theory that some AGs wait silently for
+    // AT+CHLD=? and then close the channel is DISPROVEN for the kosher phone.
+    // A real AG advertising bit 0 (+BRSF:355) completed the SLC with this app
+    // deliberately not sending the query:
+    //   +BRSF:355 -> ... -> AT+CMER=3,0,0,1 -> OK -> SLC established.
+    // Skipping CHLD is confirmed correct by experiment, not just in theory.
     if (agFeaturesKnown && (agBrsfFeatures and 0x01) != 0) {
       onLog("SLC: ה-AG מכריז על שיחה משולשת (ביט 0) - AT+CHLD=? לא נשלח בכוונה", false)
     }
