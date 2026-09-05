@@ -75,6 +75,9 @@ class CallAudioManager(private val context: Context) {
   /** True once any TYPE_BLUETOOTH_SCO device ever appeared as available. */
   @Volatile private var everSawScoDevice = false
 
+  /** True once the SCO device list has been probed at least once this process. */
+  @Volatile private var scoProbeDone = false
+
   /** True once the stack ever confirmed a connected SCO link (broadcast). */
   @Volatile private var scoEverConnected = false
 
@@ -92,6 +95,14 @@ class CallAudioManager(private val context: Context) {
 
   /** Invoked when another app stole the audio stream (ACTION_AUDIO_BECOMING_NOISY). */
   var onAudioStolen: (() -> Unit)? = null
+
+  /**
+   * Invoked once when the forced-SCO path is given up as impossible on this
+   * player (no TYPE_BLUETOOTH_SCO device exists and none ever connected). The
+   * owner (HfpClientManager) logs the user-facing explanation. Nulled after
+   * the first invocation so a repeating call-state poll cannot spam the log.
+   */
+  var onForcedScoImpossible: (() -> Unit)? = null
 
   private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
     if (change == AudioManager.AUDIOFOCUS_LOSS ||
@@ -236,6 +247,43 @@ class CallAudioManager(private val context: Context) {
     }
     return available.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
       ?.also { everSawScoDevice = true }
+  }
+
+  /**
+   * Gate for the RAW (direct RFCOMM) call-audio path.
+   *
+   * A raw socket carries call *control* only - it is not an HFP-Client link,
+   * so on a player whose stack never exposes the profile there is no
+   * TYPE_BLUETOOTH_SCO device for this call, and no consumer for SCO audio.
+   * Still forcing SCO there (startBluetoothSco / virtual voice call) cannot
+   * make the player hear anything; worse, on AGs that accept a controller-level
+   * eSCO from the HF without a profile behind it, the phone marks the call
+   * audio as "connected to the headset" and keeps its own speaker silent -
+   * nothing is audible on the phone OR the player, which is the exact symptom
+   * reported on the Fanvace M36 class of players.
+   *
+   * When no SCO path exists, the RAW call audio must be left with the AG (the
+   * kosher phone) so it stays on / falls back to the phone's own speaker.
+   *
+   * The first call probes the device list (a profile-enabled player exposes a
+   * SCO device, so forcing is worthwhile there). Later calls only force again
+   * when a SCO device exists or one ever connected this session; otherwise the
+   * one-shot [onForcedScoImpossible] hook fires and this returns false.
+   */
+  fun rawAudioRoutable(device: BluetoothDevice?): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+      // Pre-S there is no device-list probe; the classic startBluetoothSco is
+      // the only tool and its attempt is the standard, harmless behavior.
+      return true
+    }
+    if (scoEverConnected || everSawScoDevice) return true
+    if (!scoProbeDone) {
+      scoProbeDone = true
+      return findScoDevice(device) != null
+    }
+    onForcedScoImpossible?.invoke()
+    onForcedScoImpossible = null
+    return false
   }
 
   private fun startLegacySco() {
