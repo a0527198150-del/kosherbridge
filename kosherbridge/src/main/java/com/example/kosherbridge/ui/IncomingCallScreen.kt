@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.kosherbridge.bluetooth.CallAudioOutcome
 import com.example.kosherbridge.bluetooth.CallInfo
 import com.example.kosherbridge.bluetooth.CallState
 
@@ -37,6 +38,7 @@ fun IncomingCallScreen(
   name: String?,
   photoUri: String?,
   state: CallInfo?,
+  audioOutcome: CallAudioOutcome,
   onAnswer: () -> Unit,
   onReject: () -> Unit,
   onHangup: () -> Unit,
@@ -86,6 +88,27 @@ fun IncomingCallScreen(
           style = MaterialTheme.typography.titleMedium,
         )
       }
+      // Where the conversation actually is. Silence with no explanation is the
+      // worst outcome of all, so an active call always says which device is
+      // carrying the voice - and the "שמע" button below is the way to pull it
+      // over when it stayed on the phone.
+      if (active) {
+        val audioNote = when (audioOutcome) {
+          CallAudioOutcome.ON_PLAYER -> "הקול עובר דרך המכשיר הזה"
+          CallAudioOutcome.ON_PHONE -> "הקול נשאר בטלפון הכשר - דבר ושמע בטלפון"
+          CallAudioOutcome.ROUTING -> "מחבר את הקול..."
+          CallAudioOutcome.IDLE -> null
+        }
+        if (audioNote != null) {
+          Spacer(Modifier.height(20.dp))
+          Text(
+            audioNote,
+            color = Color.White.copy(alpha = 0.85f),
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+          )
+        }
+      }
       Spacer(Modifier.height(48.dp))
       Row(horizontalArrangement = Arrangement.spacedBy(48.dp)) {
         when {
@@ -95,7 +118,12 @@ fun IncomingCallScreen(
           }
           active -> {
             CallActionButton("נתק", Icons.Filled.CallEnd, Color(0xFFD32F2F), onHangup)
-            CallActionButton("שמע", Icons.Filled.VolumeUp, Color(0xFF1E88E5), onToggleAudio)
+            CallActionButton(
+              if (audioOutcome == CallAudioOutcome.ON_PHONE) "העבר שמע" else "שמע",
+              Icons.Filled.VolumeUp,
+              Color(0xFF1E88E5),
+              onToggleAudio,
+            )
           }
           else -> {
             Text(

@@ -62,9 +62,48 @@ class CallAudioManager(private val context: Context) {
   @Volatile private var receiversRegistered = false
   @Volatile private var micWasMuted = false // mic muted at OS level when the call started
   @Volatile private var fallbackScheduled = false // legacy-SCO retry already queued
+  @Volatile private var outcomeCheckScheduled = false // outcome measurement already queued
+  /** Latched once a call is proven unroutable to the player: further automatic
+   * attempts are suppressed so the retry loop cannot keep re-muting the player
+   * every couple of seconds for a route that is not coming. Only an explicit
+   * user request ([forceRetry]) clears it. */
+  @Volatile private var stayOnPhone = false
 
   /** True while the Bluetooth stack reports a live SCO (voice) link. */
   val scoConnected = MutableStateFlow(false)
+
+  /**
+   * Where the conversation actually ended up. The bridge used to assume that
+   * asking for the route was the same as getting it, so when the stack
+   * silently refused, the app kept holding MODE_IN_COMMUNICATION and the audio
+   * focus over a route that carried nothing - the user heard the caller
+   * neither on the player nor on the kosher phone, with nothing on screen
+   * saying so. [CallAudioOutcome] is the measured answer, published for the
+   * UI and for the diagnostics report.
+   */
+  val outcome = MutableStateFlow(CallAudioOutcome.IDLE)
+
+  /** Invoked once per call when the voice did NOT reach the player, so the
+   * bridge can tell the user (and stop pretending otherwise). The argument is
+   * true when the player provably has nowhere to put call audio, false when
+   * the evidence is only that no link showed up in time. */
+  var onAudioStayedOnPhone: ((certain: Boolean) -> Unit)? = null
+
+  /**
+   * Second opinion on whether the voice link is live, supplied by the owner.
+   *
+   * ACTION_SCO_AUDIO_STATE_UPDATED is broadcast for the *gateway* side of SCO;
+   * a player whose voice arrives through the system HFP-**client** profile can
+   * carry a perfectly good call without that broadcast ever firing. Reading the
+   * profile's own audio state as well is what keeps the fallback below from
+   * tearing down audio that is working.
+   */
+  var profileAudioConnected: (() -> Boolean)? = null
+
+  /** Grace period before declaring the voice unreachable. Long enough for a
+   * slow stack to negotiate SCO, short enough that the user is not left
+   * guessing through the first half of the conversation. */
+  private val scoGraceMs = 6_000L
 
   /** Short human-readable description of the current routing attempt. */
   val routeLabel = MutableStateFlow<String?>(null)
@@ -86,6 +125,10 @@ class CallAudioManager(private val context: Context) {
 
   /** For diagnostics: has the voice link ever actually come up on this player? */
   val scoEverConnectedValue: Boolean get() = scoEverConnected
+
+  /** True once this call was measured as unroutable to the player, so callers
+   * stop re-requesting audio the phone cannot deliver here. */
+  val audioGivenUp: Boolean get() = stayOnPhone
 
   /** Invoked by HfpClientManager when the SCO link dropped mid-call. */
   var onScoDropped: (() -> Unit)? = null
@@ -111,7 +154,17 @@ class CallAudioManager(private val context: Context) {
           )
           val connected = state == AudioManager.SCO_AUDIO_STATE_CONNECTED
           scoConnected.value = connected
-          if (connected) scoEverConnected = true
+          if (connected) {
+            scoEverConnected = true
+            if (inCall) {
+              // The voice link came up - late or on time. Re-assert the local
+              // claim in case the grace window already released it, otherwise
+              // the SCO link is live while the player still plays nothing.
+              outcome.value = CallAudioOutcome.ON_PLAYER
+              stayOnPhone = false
+              claimVoicePipeline()
+            }
+          }
           // If the forced (virtual) SCO dropped, forget it so the next
           // connectAudio() re-forces it instead of no-op'ing.
           if (!connected) virtualScoOn = false
@@ -138,10 +191,43 @@ class CallAudioManager(private val context: Context) {
    *   profile-level call - the stack doesn't know about the raw link, so this
    *   is the only way to get call audio flowing.
    */
-  fun ensureCallAudio(device: BluetoothDevice?, boostVolume: Boolean, forceVirtualSco: Boolean = false) {
+  fun ensureCallAudio(
+    device: BluetoothDevice?,
+    boostVolume: Boolean,
+    forceVirtualSco: Boolean = false,
+    force: Boolean = false,
+  ) {
+    val firstClaim = !inCall
+    if (firstClaim) {
+      stayOnPhone = false
+    } else if (stayOnPhone && !force) {
+      // Already measured on this call: the voice does not reach this player.
+      // Re-claiming would only silence the player again, every retry tick.
+      return
+    }
+    if (force) stayOnPhone = false
     inCall = true
     registerReceivers()
+    if (firstClaim || force) outcome.value = CallAudioOutcome.ROUTING
 
+    claimVoicePipeline()
+
+    routeToDevice(device)
+
+    if (forceVirtualSco) startVirtualSco(device)
+
+    if (boostVolume) boostVolume()
+
+    scheduleOutcomeCheck()
+  }
+
+  /**
+   * Takes the player's voice pipeline: communication mode, an un-muted
+   * microphone and the voice-call audio focus. Split out of [ensureCallAudio]
+   * because it is also needed when a SCO link shows up *after* the grace
+   * window released the claim.
+   */
+  private fun claimVoicePipeline() {
     runCatching { am.mode = AudioManager.MODE_IN_COMMUNICATION }
       .onFailure { Log.w(tag, "setMode failed: ${it.message}") }
 
@@ -149,20 +235,106 @@ class CallAudioManager(private val context: Context) {
     // or a system state), un-mute it for the call so the far side can hear
     // us - and remember to restore it when the call ends.
     runCatching {
-      micWasMuted = am.isMicrophoneMute
-      if (micWasMuted) {
+      val muted = am.isMicrophoneMute
+      if (muted) {
+        // Only remember the ORIGINAL state: a second claim during the same
+        // call must not overwrite it with the value this class just set.
+        micWasMuted = true
         am.isMicrophoneMute = false
         Log.i(tag, "microphone was muted - unmuted for the call")
       }
     }
 
     requestFocus()
+  }
 
-    routeToDevice(device)
+  /**
+   * Measures whether the claim actually produced a voice link, once per call.
+   *
+   * This is the check the bridge never had. Holding MODE_IN_COMMUNICATION and
+   * the voice-call focus over a route the stack refused does not merely fail
+   * to deliver the caller - it silences whatever else the player was playing
+   * and leaves the user with no idea where the conversation went. When the
+   * grace window passes with no SCO link, the claim is dropped, the phone is
+   * left to carry the call on its own earpiece, and [onAudioStayedOnPhone]
+   * tells the rest of the app to say so on screen.
+   */
+  private fun scheduleOutcomeCheck() {
+    if (outcomeCheckScheduled) return
+    outcomeCheckScheduled = true
+    Thread {
+      runCatching { Thread.sleep(scoGraceMs) }
+      outcomeCheckScheduled = false
+      if (!inCall) return@Thread
+      if (voiceLinkLive()) {
+        outcome.value = CallAudioOutcome.ON_PLAYER
+        return@Thread
+      }
+      if (outcome.value == CallAudioOutcome.ON_PHONE) return@Thread
+      outcome.value = CallAudioOutcome.ON_PHONE
 
-    if (forceVirtualSco) startVirtualSco(device)
+      // Releasing the claim is only safe with positive evidence that this
+      // player has nowhere to put call audio. When a SCO device *does* exist,
+      // a late link is still plausible and a wrong release would silence a
+      // call that was about to work - so the claim is kept and only the
+      // report changes. The asymmetry is deliberate: a false "stayed on the
+      // phone" costs the user a working call, a false "still trying" costs
+      // nothing but a retry.
+      val certain = !scoDeviceAvailable()
+      routeLabel.value =
+        if (certain) "השמע נשאר בטלפון - הנגן משמש כשלט"
+        else "ערוץ הקול טרם נפתח - ממשיך לנסות"
+      Log.w(tag, "no voice link after ${scoGraceMs}ms (scoDevice=${!certain})")
+      if (certain) {
+        stayOnPhone = true
+        releaseLocalClaim()
+      }
+      onAudioStayedOnPhone?.invoke(certain)
+    }.start()
+  }
 
-    if (boostVolume) boostVolume()
+  /**
+   * True when the conversation is provably flowing through this player: either
+   * the gateway-side SCO broadcast fired, or the system HFP-client profile
+   * reports its audio link up.
+   */
+  private fun voiceLinkLive(): Boolean =
+    scoConnected.value || runCatching { profileAudioConnected?.invoke() }.getOrDefault(false) == true
+
+  /**
+   * Gives the player's audio back to the rest of the system without ending
+   * the call: no communication mode, no focus, no forced SCO route. The
+   * receivers stay registered, so a SCO link that arrives late still re-claims
+   * the pipeline through [claimVoicePipeline].
+   */
+  private fun releaseLocalClaim() {
+    stopVirtualSco()
+    runCatching { am.stopBluetoothSco() }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      runCatching { am.clearCommunicationDevice() }
+    }
+    runCatching { am.isBluetoothScoOn = false }
+    if (micWasMuted) {
+      runCatching { am.isMicrophoneMute = true }
+      micWasMuted = false
+    }
+    abandonFocus()
+    runCatching { am.mode = AudioManager.MODE_NORMAL }
+  }
+
+  /**
+   * True when this player currently exposes a Bluetooth SCO audio device -
+   * i.e. the stack has somewhere to put call audio. Callers use it to avoid
+   * asking the phone to hand over a conversation that provably cannot land
+   * anywhere (which would take the voice off the phone's own earpiece too).
+   */
+  fun scoDeviceAvailable(device: BluetoothDevice? = null): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+      // Pre-31 there is no getAvailableCommunicationDevices(); isBluetoothScoAvailableOffCall
+      // is the only capability signal the platform offers.
+      return runCatching { am.isBluetoothScoAvailableOffCall }.getOrDefault(true)
+    }
+    return findScoDevice(device) != null
   }
 
   /**
@@ -170,11 +342,21 @@ class CallAudioManager(private val context: Context) {
    * SCO link is not up, and after SCO drops / audio gets stolen.
    */
   fun retryAudio(device: BluetoothDevice?, boostVolume: Boolean, forceVirtualSco: Boolean = false) {
-    if (!inCall) return
-    requestFocus()
+    if (!inCall || stayOnPhone) return
+    claimVoicePipeline()
     routeToDevice(device)
     if (forceVirtualSco) startVirtualSco(device)
     if (boostVolume) boostVolume()
+    scheduleOutcomeCheck()
+  }
+
+  /**
+   * The user explicitly asked to pull the conversation onto the player after
+   * the bridge had given up on it. Clears the latch and runs the whole claim
+   * again, including a fresh measurement.
+   */
+  fun forceRetry(device: BluetoothDevice?, boostVolume: Boolean, forceVirtualSco: Boolean = false) {
+    ensureCallAudio(device, boostVolume, forceVirtualSco, force = true)
   }
 
   private fun routeToDevice(device: BluetoothDevice?) {
@@ -265,20 +447,11 @@ class CallAudioManager(private val context: Context) {
   fun releaseCallAudio() {
     if (!inCall && !receiversRegistered) return
     inCall = false
-    stopVirtualSco()
-    runCatching { am.stopBluetoothSco() }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      runCatching { am.clearCommunicationDevice() }
-    }
-    runCatching { am.isBluetoothScoOn = false }
-    if (micWasMuted) {
-      runCatching { am.isMicrophoneMute = true }
-      micWasMuted = false
-    }
-    abandonFocus()
-    runCatching { am.mode = AudioManager.MODE_NORMAL }
+    stayOnPhone = false
+    releaseLocalClaim()
     scoConnected.value = false
     routeLabel.value = null
+    outcome.value = CallAudioOutcome.IDLE
     unregisterReceivers()
   }
 

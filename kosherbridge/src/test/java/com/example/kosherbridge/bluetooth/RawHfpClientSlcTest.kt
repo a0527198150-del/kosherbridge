@@ -311,4 +311,136 @@ class RawHfpClientSlcTest {
     job.cancel()
     ag.close()
   }
+
+  // ------------------------------------------------- call-audio negotiation
+  //
+  // The bridge used to hold a complete SLC and still leave the call silent on
+  // BOTH devices: it never asked the gateway for the voice channel (AT+BCC)
+  // and never answered the gateway's codec selection (+BCS). These tests pin
+  // the exchange that fixes that.
+
+  /** A gateway that advertises codec negotiation (AG BRSF bit 9 = 512). */
+  private fun codecCapableAg(): MockAg {
+    val ag = MockAg()
+    ag.respond({ it.startsWith("AT+BRSF") }) { listOf("+BRSF: 553", "OK") } // 512 + 41
+    ag.respond({ it == "AT+CIND=?" }) {
+      listOf(
+        "+CIND: (\"service\",(0,1)),(\"call\",(0,1)),(\"callsetup\",(0,3)),(\"callheld\",(0,2))",
+        "OK",
+      )
+    }
+    ag.respond({ it == "AT+CIND?" }) { listOf("+CIND: 1,0,0,0", "OK") }
+    return ag
+  }
+
+  @Test
+  fun slc_sends_codec_list_when_both_sides_negotiate() = runBlocking {
+    val ag = codecCapableAg()
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    val job = handshakeAsync(client, ag.link())
+    val brsf = failFast(ag) { ag.awaitSent { it.startsWith("AT+BRSF=") } }
+    // HF bit 7 (codec negotiation) must be advertised, or the gateway will
+    // never offer a codec and AT+BCC is not a legal request.
+    assertEquals(0x0080, brsf.substringAfter("AT+BRSF=").toInt() and 0x0080)
+    // AT+BAC is mandatory right after BRSF when both sides set the bit, and
+    // must come BEFORE the indicator exchange.
+    failFast(ag) { ag.awaitSent { it.startsWith("AT+BAC=") } }
+    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    val order = ag.sentCommands()
+    val bacIndex = order.indexOfFirst { it.startsWith("AT+BAC") }
+    val cindIndex = order.indexOfFirst { it == "AT+CIND=?" }
+    assertTrue("AT+BAC was not sent", bacIndex >= 0)
+    assertTrue("AT+BAC must precede AT+CIND=?", bacIndex < cindIndex)
+    client.disconnect()
+    job.cancel()
+    ag.close()
+  }
+
+  @Test
+  fun slc_skips_codec_list_when_ag_cannot_negotiate() = runBlocking {
+    // standardAg advertises +BRSF: 41 - no bit 9. Sending AT+BAC there is off
+    // spec and a feature-phone parser can answer ERROR and wedge the SLC.
+    val ag = standardAg()
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    val job = handshakeAsync(client, ag.link())
+    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    assertTrue(ag.sentCommands().none { it.startsWith("AT+BAC") })
+    client.disconnect()
+    job.cancel()
+    ag.close()
+  }
+
+  @Test
+  fun brsf_retries_without_codec_bit_when_ag_rejects_it() = runBlocking {
+    // A gateway too old to parse the codec bit must not cost the whole link:
+    // the ladder drops that bit and completes the SLC on the base feature set.
+    val ag = MockAg()
+    ag.respond({ it.startsWith("AT+BRSF") }) { command ->
+      val features = command.substringAfter("AT+BRSF=").toIntOrNull() ?: 0
+      if (features and 0x0080 != 0) listOf("ERROR") else listOf("+BRSF: 41", "OK")
+    }
+    ag.respond({ it == "AT+CIND=?" }) {
+      listOf("+CIND: (\"service\",(0,1)),(\"call\",(0,1)),(\"callsetup\",(0,3))", "OK")
+    }
+    ag.respond({ it == "AT+CIND?" }) { listOf("+CIND: 1,0,0", "OK") }
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    val job = handshakeAsync(client, ag.link())
+    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    val brsfCommands = ag.sentCommands().filter { it.startsWith("AT+BRSF=") }
+    assertEquals(2, brsfCommands.size)
+    assertEquals(0, brsfCommands[1].substringAfter("AT+BRSF=").toInt() and 0x0080)
+    client.disconnect()
+    job.cancel()
+    ag.close()
+  }
+
+  @Test
+  fun codec_selection_is_echoed_back() = runBlocking {
+    // +BCS is the gateway saying "I am about to open the voice channel with
+    // this codec". Without the echo the codec connection is aborted and the
+    // call stays silent - on the player AND on the phone, because the phone
+    // has already handed the conversation to the hands-free.
+    val ag = codecCapableAg()
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    val job = handshakeAsync(client, ag.link())
+    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    // Fed through the same parser the read loop uses (the test path installs
+    // the link but runs no read loop of its own).
+    client.handleLineForTest("+BCS: 2")
+    val echo = failFast(ag) { ag.awaitSent { it.startsWith("AT+BCS=") } }
+    assertEquals("AT+BCS=2", echo)
+    client.disconnect()
+    job.cancel()
+    ag.close()
+  }
+
+  @Test
+  fun request_audio_sends_bcc_after_codec_negotiation() = runBlocking {
+    val ag = codecCapableAg()
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    val job = handshakeAsync(client, ag.link())
+    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    assertTrue(client.audioRequestSupported)
+    assertTrue(client.requestAudio())
+    failFast(ag) { ag.awaitSent { it == "AT+BCC" } }
+    client.disconnect()
+    job.cancel()
+    ag.close()
+  }
+
+  @Test
+  fun request_audio_is_refused_when_ag_cannot_negotiate() = runBlocking {
+    // AT+BCC does not exist for a gateway that never advertised codec
+    // negotiation; asking anyway earns an ERROR and tells the user nothing.
+    val ag = standardAg()
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    val job = handshakeAsync(client, ag.link())
+    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    assertFalse(client.audioRequestSupported)
+    assertFalse(client.requestAudio())
+    assertTrue(ag.sentCommands().none { it == "AT+BCC" })
+    client.disconnect()
+    job.cancel()
+    ag.close()
+  }
 }

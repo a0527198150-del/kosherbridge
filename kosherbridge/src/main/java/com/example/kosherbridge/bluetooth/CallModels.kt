@@ -6,6 +6,32 @@ enum class CallState { IDLE, INCOMING, WAITING, DIALING, ALERTING, ACTIVE, HELD,
 
 enum class CallDirection { INCOMING, OUTGOING }
 
+/**
+ * Where the conversation actually is, as measured by CallAudioManager rather
+ * than assumed from the routing attempt.
+ *
+ * The distinction matters because a bridge that *asks* for the voice and does
+ * not get it is worse than one that never asked: the kosher phone has already
+ * handed the call to the "hands-free", so the caller is audible on neither
+ * device. ON_PHONE is the honest answer - the player is a remote control for
+ * this call, and the UI says so.
+ */
+enum class CallAudioOutcome {
+  /** No call, or the call ended. */
+  IDLE,
+
+  /** The claim is in flight; the voice link has not been measured yet. */
+  ROUTING,
+
+  /** A live SCO link: the caller is heard on the player, the player's
+   * microphone is what the caller hears. */
+  ON_PLAYER,
+
+  /** No voice link on this player. The kosher phone carries the conversation
+   * on its own earpiece and the bridge holds nothing. */
+  ON_PHONE,
+}
+
 data class CallInfo(
   val state: CallState,
   val number: String?,
@@ -23,6 +49,8 @@ data class BridgeUiState(
   val deviceAddress: String? = null,
   val audioState: Int = 0, // 0 disconnected, 1 connecting, 2 connected
   val audioRoute: String? = null, // last routing attempt, for diagnostics
+  val audioOutcome: CallAudioOutcome = CallAudioOutcome.IDLE, // where the voice actually is
+  val audioRouteAllowed: String? = null, // HFP-client audio gate, for diagnostics
   val backendLabel: String? = null, // active bridge path, for diagnostics
   val call: CallInfo? = null,
   val lastError: String? = null,

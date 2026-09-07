@@ -17,6 +17,38 @@ HFP client profile — the Shizuku, root, or Magisk-module channels. On the
 raw RFCOMM channel the voice stays on the kosher phone and the player acts
 as a remote control, dialer, and call screen.
 
+### The audio-route gate
+
+Having the HFP client profile is necessary but not sufficient. AOSP's
+`HeadsetClientStateMachine` keeps a per-device `mAudioRouteAllowed` flag,
+initialised from a build resource that is only true on automotive builds.
+While it is false the stack answers the phone's incoming SCO (voice) link
+with an immediate disconnect — and because the phone has *already* handed
+the conversation to the "hands-free", the call is then audible on neither
+device. That is the classic "connected, but total silence" failure.
+
+The bridge now opens that gate itself via `setAudioRouteAllowed`:
+
+- **Android 8–12** the call needs only `BLUETOOTH_CONNECT`, so it works from
+  the plain app process — **no root, no Shizuku**.
+- **Android 13+** the same method moved behind `BLUETOOTH_PRIVILEGED`, so it
+  is made through the privileged bridges instead (Shizuku over wireless adb,
+  or root).
+
+The gate's state is reported in Diagnostics under "ניתוב שמע השיחה", with a
+"פתח ניתוב שמע לשיחה" action to retry it on demand.
+
+### When the voice cannot reach the player
+
+The bridge no longer assumes that asking for the route is the same as getting
+it. Six seconds after claiming the player's voice pipeline it checks whether a
+voice link actually exists (the SCO broadcast, or the HFP-client profile's own
+audio state). If nothing is carrying the call and the player provably exposes
+no SCO device, the bridge releases the claim — communication mode, audio focus
+and the forced route — so the kosher phone keeps the conversation on its own
+earpiece, and both the call screen and the home screen say so explicitly
+instead of leaving the user in silence.
+
 ## Repository layout
 
 This Gradle root contains **two unrelated applications**:

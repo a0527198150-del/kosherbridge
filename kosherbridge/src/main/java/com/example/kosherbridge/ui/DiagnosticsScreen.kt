@@ -35,7 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.kosherbridge.BridgeHub
+import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.bluetooth.BridgeUiState
+import com.example.kosherbridge.bluetooth.CallAudioOutcome
 
 /**
  * Device/connection diagnostics previously shown under the "אבחון" card on the
@@ -144,6 +146,9 @@ fun DiagnosticsScreen(
       state.scoSupport?.let {
         DiagRow("שמע (SCO)", it, it.startsWith("מחובר") || it.startsWith("נתמך"))
       }
+      state.audioRouteAllowed?.let {
+        DiagRow("ניתוב שמע השיחה (HFP Client)", it, it.startsWith("מאושר"))
+      }
       state.scoTechnique?.let {
         DiagRow("טכניקת שמע אחרונה", it, true)
       }
@@ -179,6 +184,15 @@ fun DiagnosticsScreen(
             }
           }
         }
+      }
+      SettingRow(
+        "פתח ניתוב שמע לשיחה",
+        "מבקש מהמערכת לאשר קליטת קול השיחה בנגן. הרץ אם השיחה מתחברת אבל אין קול באף צד",
+      ) {
+        BridgeService.withManager(context) { bridge ->
+          bridge.allowAudioRoute(null, forceRetry = true)
+        }
+        onSnackbar("הבקשה נשלחה - התוצאה מופיעה בשורה 'ניתוב שמע השיחה'")
       }
       SettingRow("בדיקת מיקרופון", micResult ?: "מוודא שהמיקרופון קולט קול לשיחה") {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
@@ -243,8 +257,18 @@ private fun buildGuidance(state: BridgeUiState): String? = when {
       else -> "בחר את הטלפון הכשר ב'בחר מכשיר'."
     }
   }
+  // The audio-route gate is the single most common reason a connected bridge
+  // is silent on BOTH devices, so it is checked before the generic advice.
+  state.audioRouteAllowed?.startsWith("חסום") == true ->
+    "המערכת חוסמת את ניתוב קול השיחה לנגן, ולכן הטלפון מוסר את השיחה והקול אובד בשני הצדדים. " +
+      "הרץ 'פתח ניתוב שמע לשיחה'; אם הוא נשאר חסום, עבור ל'ערוץ חיבור' → Shizuku או רוט, " +
+      "או ל-RFCOMM ישיר - שם השמע נשאר בטלפון והנגן משמש כשלט."
+  state.audioOutcome == CallAudioOutcome.ON_PHONE ->
+    "השיחה מחוברת אבל הקול נשאר בטלפון הכשר - דבר ושמע בטלפון. " +
+      "לחיצה על 'העבר שמע' במסך השיחה מנסה למשוך את הקול לנגן."
   state.audioState != 2 ->
-    "מחובר. אם אין קול: רוץ 'בדיקת מיקרופון', ואם הקול לא עובר - נסה לשנות את 'ערוץ חיבור' ל-RFCOMM ישיר."
+    "מחובר. אם אין קול: רוץ 'פתח ניתוב שמע לשיחה' ואז 'בדיקת מיקרופון', " +
+      "ואם הקול עדיין לא עובר - נסה לשנות את 'ערוץ חיבור' ל-RFCOMM ישיר."
   else -> null
 }
 
@@ -298,6 +322,7 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
   state.audioRoute?.let { appendLine("ניתוב שמע: $it") }
   state.scoSupport?.let { appendLine("שמע (SCO): $it") }
   state.scoTechnique?.let { appendLine("טכניקת שמע אחרונה: $it") }
+  state.audioRouteAllowed?.let { appendLine("ניתוב שמע השיחה (HFP Client): $it") }
   state.rawDropInfo?.let { appendLine("ניתוקי קישור: $it") }
   state.rawConnectionDiagnostics?.let { appendLine("ניסיונות SDP/RFCOMM: $it") }
   state.headsetClientPolicy?.let { appendLine("מדיניות חיבור (פרופיל דיבורית): $it") }

@@ -496,6 +496,14 @@ class BridgeService : Service() {
       }
     }
     scope.launch {
+      manager.audio.outcome.collect { o -> BridgeHub.update { it.copy(audioOutcome = o) } }
+    }
+    scope.launch {
+      manager.audioRouteAllowed.collect { a ->
+        BridgeHub.update { it.copy(audioRouteAllowed = a) }
+      }
+    }
+    scope.launch {
       manager.privilegedBlockedFlow.collect { blocked ->
         BridgeHub.update { it.copy(privilegedBlocked = blocked) }
       }

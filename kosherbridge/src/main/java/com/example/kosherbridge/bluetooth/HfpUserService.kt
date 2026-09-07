@@ -119,8 +119,8 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     return HiddenHfp.audioState(c, d)
   }
 
-  override fun connectAudio(): Boolean = HiddenHfp.connectAudio(client)
-  override fun disconnectAudio(): Boolean = HiddenHfp.disconnectAudio(client)
+  override fun connectAudio(): Boolean = HiddenHfp.connectAudio(client, connectedDevice())
+  override fun disconnectAudio(): Boolean = HiddenHfp.disconnectAudio(client, connectedDevice())
 
   private fun connectedDevice(): BluetoothDevice? =
     client?.let { HiddenHfp.connectedDevices(it).firstOrNull() as? BluetoothDevice }
@@ -176,6 +176,24 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     // the app process cannot perform on a stock player - succeeds here. Lets
     // the repair action restore any guarded profile, not just HFP-client.
     return HiddenHfp.setProfilePriority(context, d, profileId, policy)
+  }
+
+  override fun setAudioRouteAllowed(address: String, allowed: Boolean): Boolean {
+    val c = client ?: return false
+    val d = deviceFor(address) ?: connectedDevice() ?: return false
+    val result = HiddenHfp.setAudioRouteAllowed(c, d, allowed)
+    return result == HiddenHfp.AudioRoutePermission.ALLOWED ||
+      result == HiddenHfp.AudioRoutePermission.ALREADY_ALLOWED
+  }
+
+  override fun audioRouteAllowed(address: String): Int {
+    val c = client ?: return -1
+    val d = deviceFor(address) ?: connectedDevice()
+    return when (HiddenHfp.getAudioRouteAllowed(c, d)) {
+      true -> 1
+      false -> 0
+      null -> -1
+    }
   }
 
   override fun currentCallSnapshot(): String {

@@ -499,6 +499,81 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var audioRetry = 0
 
   /**
+   * State of the HFP-client audio-route gate, in Hebrew, for the diagnostics
+   * report: whether this player will let the kosher phone's voice link land at
+   * all. See [HiddenHfp.setAudioRouteAllowed].
+   */
+  val audioRouteAllowed = MutableStateFlow<String?>(null)
+
+  /** Address the gate was already opened for, so it is not re-run every poll. */
+  @Volatile private var audioRouteOpenedFor: String? = null
+
+  /**
+   * Opens the stack's call-audio gate for this device.
+   *
+   * On a player that is not an automotive build, AOSP's HFP-client state
+   * machine starts with the audio route DENIED and answers the phone's
+   * incoming voice link with an immediate disconnect - the call connects, and
+   * nobody hears anything, on either device. This is the call that fixes that,
+   * and on Android 8-12 it needs no privilege at all. On Android 13+ the same
+   * method moved behind BLUETOOTH_PRIVILEGED, so the privileged bridges get
+   * the first try and the in-process attempt is the fallback.
+   */
+  fun allowAudioRoute(target: BluetoothDevice?, forceRetry: Boolean = false) {
+    val d = target ?: device.value ?: return
+    if (!forceRetry && audioRouteOpenedFor == d.address) return
+    // Privileged bridges first: they can make the call on every Android
+    // version, the app process only on 8-12.
+    if (useShizuku || useRoot) {
+      val ok = if (useShizuku) shizuku?.setAudioRouteAllowed(d.address, true) ?: false
+      else root?.setAudioRouteAllowed(d.address, true) ?: false
+      if (ok) {
+        audioRouteOpenedFor = d.address
+        audioRouteAllowed.value = "מאושר (ערוץ מורשה)"
+        logConnection("ניתוב שמע השיחה אושר בערוץ המורשה", false)
+        return
+      }
+    }
+    val privileged = useShizuku || useRoot
+    val c = client
+    if (c == null) {
+      audioRouteAllowed.value = if (privileged) {
+        "הערוץ המורשה לא הצליח לפתוח את הניתוב"
+      } else {
+        // Raw RFCOMM: there is no profile object to open a gate on. The gate
+        // is not what blocks that path, so this is not an error.
+        "לא רלוונטי (ללא פרופיל)"
+      }
+      return
+    }
+    when (HiddenHfp.setAudioRouteAllowed(c, d, true)) {
+      HiddenHfp.AudioRoutePermission.ALLOWED -> {
+        audioRouteOpenedFor = d.address
+        audioRouteAllowed.value = "מאושר"
+        logConnection("ניתוב שמע השיחה נפתח - הקול יוכל לעבור לנגן", false)
+      }
+      HiddenHfp.AudioRoutePermission.ALREADY_ALLOWED -> {
+        audioRouteOpenedFor = d.address
+        audioRouteAllowed.value = "מאושר"
+      }
+      HiddenHfp.AudioRoutePermission.BLOCKED -> {
+        audioRouteAllowed.value =
+          if (HiddenHfp.audioRouteGateNeedsPrivilege) "חסום - נדרש Shizuku או רוט" else "חסום"
+        logConnection(
+          "המערכת חסמה את פתיחת ניתוב השמע - ללא זה הטלפון מוסר את השיחה והקול אובד. " +
+            "נדרש ערוץ Shizuku/רוט, או ערוץ RFCOMM שמשאיר את השמע בטלפון",
+          true,
+        )
+      }
+      HiddenHfp.AudioRoutePermission.UNSUPPORTED -> {
+        // Nothing to open: this build has no such gate, so an absent voice
+        // link has some other cause.
+        audioRouteAllowed.value = "אין שער כזה בגרסה זו"
+      }
+    }
+  }
+
+  /**
    * Which connection channel to use: "AUTO" (probe everything in order),
    * "DIRECT" (in-process hidden API, no fallbacks), "SHIZUKU" (privileged
    * process), "RAW" (direct RFCOMM). Set by BridgeService from
@@ -525,6 +600,25 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   init {
     audio.onScoDropped = { if (autoAudio) connectAudio() }
     audio.onAudioStolen = { if (autoAudio) connectAudio() }
+    // The SCO broadcast only covers the gateway role; on the profile paths the
+    // HFP-client's own audio state is the authoritative signal.
+    audio.profileAudioConnected = { audioState.value == 2 }
+    audio.onAudioStayedOnPhone = { certain ->
+      val gate = when {
+        rawActive && raw?.audioRequestSupported != true ->
+          ", הטלפון אינו תומך בבקשת שמע (AT+BCC)"
+        else -> audioRouteAllowed.value?.let { ", ניתוב שמע: $it" } ?: ""
+      }
+      logConnection(
+        if (certain) {
+          "לא נפתח ערוץ קול אל הנגן - השמע נשאר בטלפון הכשר. " +
+            "הנגן ממשיך לשמש כשלט (מענה, ניתוק, חיוג)$gate"
+        } else {
+          "ערוץ הקול טרם נפתח - ממשיך לנסות לנתב את השיחה אל הנגן$gate"
+        },
+        true,
+      )
+    }
     // Reload any originals persisted by a previous process run, so restore
     // still works after a restart: the in-memory record dies with the process
     // while the policy it guards survives in the Bluetooth stack. The hot path
@@ -709,6 +803,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
             backendLabel.value = "ישיר"
             onBackendWorked?.invoke("DIRECT")
           }
+          // Open the call-audio gate as early as the profile allows. Doing it
+          // at connect time rather than when the phone rings means the stack
+          // is already willing to accept the voice link when the first call
+          // arrives, instead of rejecting it while the app catches up.
+          allowAudioRoute(device.value)
           registerCallback()
           registerStateReceiver()
           startPolling()
@@ -1282,21 +1381,40 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     if (rawActive) {
       // Raw RFCOMM has no profile-level SCO, so also force the stack to open
       // the SCO voice channel directly - harmless if the stack refuses.
+      //
+      // AT+BCC is only sent when this player actually exposes somewhere for
+      // call audio to land. Asking the phone to hand over a conversation that
+      // provably cannot be received would take the voice off the phone's own
+      // earpiece as well, which is precisely the failure this bridge had.
+      if (audio.scoDeviceAvailable(device.value) && !audio.audioGivenUp) {
+        raw?.requestAudio()
+      }
       audio.ensureCallAudio(device.value, volumeBoost, forceVirtualSco = true)
       return
     }
+    // Open the stack's audio gate before asking for the link: with the gate
+    // shut the stack answers the phone's voice link with a disconnect, and the
+    // call is silent on both devices.
+    allowAudioRoute(device.value)
     if (useShizuku) shizuku?.connectAudio()
     else if (useRoot) root?.connectAudio()
-    else HiddenHfp.connectAudio(client)
+    else HiddenHfp.connectAudio(client, device.value)
     if (autoAudio) audio.ensureCallAudio(device.value, volumeBoost)
   }
 
+  /**
+   * The user asked for the voice on the player. Unlike the automatic path this
+   * always retries, even after the bridge measured that the audio stayed on
+   * the phone - an explicit request overrides that latch.
+   */
   fun toggleAudio(): Boolean {
     if (rawActive) {
-      audio.ensureCallAudio(device.value, volumeBoost)
+      if (audio.scoDeviceAvailable(device.value)) raw?.requestAudio()
+      audio.forceRetry(device.value, volumeBoost, forceVirtualSco = true)
       return true
     }
     val connected = audioState.value == 2
+    if (!connected) allowAudioRoute(device.value, forceRetry = true)
     val ok = if (useShizuku) {
       if (connected) shizuku?.disconnectAudio() ?: false
       else shizuku?.connectAudio() ?: false
@@ -1304,10 +1422,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       if (connected) root?.disconnectAudio() ?: false
       else root?.connectAudio() ?: false
     } else {
-      if (connected) HiddenHfp.disconnectAudio(client)
-      else HiddenHfp.connectAudio(client)
+      if (connected) HiddenHfp.disconnectAudio(client, device.value)
+      else HiddenHfp.connectAudio(client, device.value)
     }
-    if (ok && !connected && autoAudio) audio.ensureCallAudio(device.value, volumeBoost)
+    if (!connected) audio.forceRetry(device.value, volumeBoost)
     return ok
   }
 
@@ -1420,6 +1538,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
                 connectionState.value = HiddenHfp.connectionState(c, d)
                 audioState.value = HiddenHfp.audioState(c, d)
                 if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
+                  // Cheap after the first success: allowAudioRoute() memoizes
+                  // per address and only re-runs when the device changes.
+                  allowAudioRoute(d)
                   val calls = HiddenHfp.currentCalls(c, d)
                   val key = callKey(calls)
                   if (key != lastKey) {
@@ -1505,6 +1626,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     connectionState.value = s.connectionState(d.address)
     audioState.value = s.audioState(d.address)
     if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
+      allowAudioRoute(d)
       call.value = snapshotToCall(s.currentCallSnapshot())
     } else {
       call.value = null
@@ -1532,6 +1654,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     connectionState.value = b.connectionState(d.address)
     audioState.value = b.audioState(d.address)
     if (connectionState.value == BluetoothProfile.STATE_CONNECTED) {
+      allowAudioRoute(d)
       call.value = snapshotToCall(b.currentCallSnapshot())
     } else {
       call.value = null

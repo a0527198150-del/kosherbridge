@@ -278,4 +278,18 @@ class RootBridge(private val context: Context) {
    */
   fun setProfilePolicy(address: String, profileId: Int, policy: Int): Boolean =
     runCatching { remote?.setProfilePolicy(address, profileId, policy) ?: false }.getOrDefault(false)
+
+  /**
+   * Flips the HFP-client audio-route gate for one device in the privileged
+   * process. On Android 13+ that call needs BLUETOOTH_PRIVILEGED, so this is
+   * the only way to open it - and without it the stack rejects the phone's
+   * SCO (voice) link and the call is audible nowhere.
+   */
+  fun setAudioRouteAllowed(address: String, allowed: Boolean): Boolean =
+    runCatching { remote?.setAudioRouteAllowed(address, allowed) ?: false }.getOrDefault(false)
+
+  /** Reads the same gate: true, false, or null when it cannot be read. */
+  fun audioRouteAllowed(address: String): Boolean? =
+    runCatching { remote?.audioRouteAllowed(address) }.getOrNull()
+      ?.let { if (it < 0) null else it == 1 }
 }

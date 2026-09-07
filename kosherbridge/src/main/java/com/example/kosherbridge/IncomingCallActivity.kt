@@ -73,6 +73,7 @@ class IncomingCallActivity : ComponentActivity() {
             name = intent.getStringExtra(EXTRA_NAME) ?: resolvedName,
             photoUri = photoUri,
             state = call,
+            audioOutcome = state.audioOutcome,
             onAnswer = { BridgeHub.service?.answer() },
             onReject = { BridgeHub.service?.reject() },
             onHangup = { BridgeHub.service?.hangup() },

@@ -43,6 +43,15 @@ interface IHfpBridge {
     // player - letting the repair action restore not only the HFP-client profile
     // but Headset, A2DP and A2DP-Sink too. Returns false when the write is refused.
     boolean setProfilePolicy(String address, int profileId, int policy) = 19;
+    // Flips HeadsetClientStateMachine.mAudioRouteAllowed for one device. On
+    // Android 13+ that call is @SystemApi behind BLUETOOTH_PRIVILEGED, so the
+    // app process cannot make it - but this privileged process can. Without it
+    // the stack answers the phone's incoming SCO (voice) link with an
+    // immediate disconnect and the conversation is audible nowhere. Returns
+    // true when the gate is allowed afterwards.
+    boolean setAudioRouteAllowed(String address, boolean allowed) = 20;
+    // Reads the same gate: 1 = allowed, 0 = blocked, -1 = unreadable.
+    int audioRouteAllowed(String address) = 21;
     // Reserved "destroy" transaction code defined by the Shizuku server
     // (see the official Shizuku-API demo). Without the explicit code the
     // server cannot signal this service to shut down.

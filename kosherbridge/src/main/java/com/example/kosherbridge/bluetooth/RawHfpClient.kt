@@ -105,7 +105,34 @@ class RawHfpClient(
   // Do not advertise enhanced call control unless the implementation also
   // supports the CHLD procedures; falsely advertising it makes some basic AGs
   // send an incompatible call-hold query during SLC.
-  private val hfFeatures = 0x0004 or 0x0020
+  private val hfFeaturesBase = 0x0004 or 0x0020
+
+  /** HF bit 7 - codec negotiation. Honest: [handshake] sends AT+BAC and
+   * [handleBcs] answers every +BCS, which is what advertising this bit
+   * obliges the HF to do. It is what unlocks AT+BCC, the only way an HF can
+   * ASK the gateway to open the voice channel instead of waiting for it. */
+  private val hfCodecNegotiation = 0x0080
+
+  private val hfFeatures = hfFeaturesBase or hfCodecNegotiation
+
+  /** AG feature bit 9: codec negotiation. Both sides must set their bit
+   * before AT+BAC / AT+BCC / +BCS are part of the conversation. */
+  private val agCodecNegotiationBit = 0x0200
+
+  /** Codecs this HF accepts, in AT+BAC order: 1 = CVSD (mandatory), 2 = mSBC
+   * (wideband). Both are decoded by the Bluetooth controller, not by us. */
+  private val supportedCodecs = "1,2"
+
+  /** True once the SLC proved both sides negotiate codecs, i.e. AT+BCC is
+   * available as an audio request. */
+  @Volatile private var codecNegotiation = false
+
+  /** True while this client advertises codec negotiation. Cleared for the
+   * retry ladder when an AG rejects the richer AT+BRSF feature set. */
+  @Volatile private var offerCodecNegotiation = true
+
+  /** True once the SLC left AT+BCC available as an audio request on this link. */
+  val audioRequestSupported: Boolean get() = codecNegotiation
 
   @Volatile private var socket: HfpLink? = null
   /** Socket currently inside BluetoothSocket.connect(), before it becomes socket. */
@@ -181,6 +208,11 @@ class RawHfpClient(
     // target address changes while the old RFCOMM link remains alive and the
     // phone can reject both connections.
     if (sameTarget && reconnectEnabled && (isConnected.value || attemptInFlight)) return
+    if (!sameTarget) {
+      // A different gateway gets a fresh capability probe: codec negotiation
+      // disabled for the previous phone says nothing about this one.
+      offerCodecNegotiation = true
+    }
     targetDevice = target
     onLog("נבחר מכשיר ${target.name ?: target.address}", false)
     reconnectEnabled = true
@@ -681,13 +713,40 @@ class RawHfpClient(
     agBrsfFeatures = 0
     agFeaturesKnown = false
     cmerAccepted = false
-    // 1. BRSF - mandatory first step. Retry with the minimal feature set
-    // before giving up, as some AGs reject unfamiliar feature bits.
-    if (!sendAndWait("AT+BRSF=$hfFeatures", handshakeSocket) &&
-      !sendAndWait("AT+BRSF=0", handshakeSocket)
-    ) {
-      onLog("SLC נכשל: AT+BRSF נדחה", true)
-      return false
+    codecNegotiation = false
+    // 1. BRSF - mandatory first step. Retry with a smaller feature set before
+    // giving up, as some AGs reject unfamiliar feature bits. The ladder drops
+    // codec negotiation first (the newest bit, and the one a 2G feature phone
+    // is most likely to choke on) and only then falls back to no features.
+    var announced = if (offerCodecNegotiation) hfFeatures else hfFeaturesBase
+    if (!sendAndWait("AT+BRSF=$announced", handshakeSocket)) {
+      announced = hfFeaturesBase
+      if (sendAndWait("AT+BRSF=$announced", handshakeSocket)) {
+        // This AG cannot parse the codec-negotiation bit. Remember it so the
+        // next reconnect does not waste a round trip proving it again.
+        offerCodecNegotiation = false
+        onLog("SLC: ה-AG דחה משא ומתן קודק - ממשיך בלי", true)
+      } else {
+        announced = 0
+        if (!sendAndWait("AT+BRSF=0", handshakeSocket)) {
+          onLog("SLC נכשל: AT+BRSF נדחה", true)
+          return false
+        }
+        offerCodecNegotiation = false
+      }
+    }
+    // 1b. AT+BAC - mandatory immediately after BRSF when BOTH sides advertise
+    // codec negotiation (HFP 1.7 §4.2.1). Skipping it there leaves the AG
+    // waiting for the codec list and the voice channel never opens.
+    codecNegotiation = (announced and hfCodecNegotiation) != 0 &&
+      agFeaturesKnown && (agBrsfFeatures and agCodecNegotiationBit) != 0
+    if (codecNegotiation) {
+      if (sendAndWait("AT+BAC=$supportedCodecs", handshakeSocket)) {
+        onLog("SLC: משא ומתן קודק פעיל (AT+BAC=$supportedCodecs) - ניתן לבקש שמע ב-AT+BCC", false)
+      } else {
+        codecNegotiation = false
+        onLog("SLC: AT+BAC נדחה - בקשת שמע (AT+BCC) לא תהיה זמינה", true)
+      }
     }
     // 2. CIND=? - indicator names and ranges.
     if (!sendAndWait("AT+CIND=?", handshakeSocket)) {
@@ -908,6 +967,28 @@ class RawHfpClient(
     else sendCommand("AT+CHUP", ownedSocket)
   }
 
+  /**
+   * Asks the gateway to open the voice channel to this hands-free (AT+BCC,
+   * HFP 1.7 §4.11.2). Until now the bridge only ever waited for the phone to
+   * offer the audio; a gateway that waits for the hands-free to ask instead
+   * left the call permanently silent.
+   *
+   * Only valid when both sides negotiated codecs during the SLC - AT+BCC does
+   * not exist otherwise, and sending it to a gateway that never advertised
+   * codec negotiation earns an ERROR at best. Returns false when unavailable,
+   * so the caller can report why no voice arrived.
+   */
+  fun requestAudio(): Boolean {
+    val ownedSocket = socket ?: return false
+    if (hspMode || !codecNegotiation) return false
+    val sent = sendCommand("AT+BCC", ownedSocket)
+    onLog(
+      if (sent) "נשלחה בקשת שמע (AT+BCC) לטלפון" else "בקשת השמע (AT+BCC) לא נשלחה",
+      !sent,
+    )
+    return sent
+  }
+
   fun hangup(): Boolean {
     val ownedSocket = socket ?: return false
     return if (hspMode) sendCommand("AT+CKPD=200", ownedSocket)
@@ -969,6 +1050,7 @@ class RawHfpClient(
       line.startsWith("+CLCC:") -> handleClcc(line)
       line.startsWith("+CIND:") -> handleCind(line)
       line.startsWith("+BRSF:") -> handleBrsf(line)
+      line.startsWith("+BCS:") -> handleBcs(line)
       line == "OK" || line == "ERROR" -> finishClccBatch()
       // In HSP mode the primary incoming-call signal is an unsolicited RING
       // event. HFP devices send +CIEV (callsetup=1) instead and never reach
@@ -1013,6 +1095,29 @@ class RawHfpClient(
     }
     onLog("תכונות ה-AG: $agBrsfFeatures [${bits.joinToString(", ")}]", false)
     Log.i(tag, "AG features: $agBrsfFeatures")
+  }
+
+  /**
+   * Codec selection from the gateway, the last step before it opens the voice
+   * channel. HFP 1.7 §4.11.3 obliges the HF to echo the SAME codec id back as
+   * AT+BCS=<id> *immediately*; an AG that does not get that answer aborts the
+   * codec connection, and the call ends up silent on both sides. This is the
+   * one AT exchange that is genuinely time-critical, so it is answered inline
+   * from the read loop rather than queued.
+   */
+  private fun handleBcs(line: String) {
+    val codec = line.substringAfter("+BCS:").trim().toIntOrNull() ?: return
+    val name = when (codec) {
+      1 -> "CVSD"
+      2 -> "mSBC (רחב פס)"
+      else -> "קודק $codec"
+    }
+    val ownedSocket = socket
+    if (sendCommand("AT+BCS=$codec", ownedSocket)) {
+      onLog("ה-AG בחר $name - נשלח אישור, ערוץ הקול נפתח", false)
+    } else {
+      onLog("ה-AG בחר $name אך לא ניתן היה לאשר - ערוץ הקול לא ייפתח", true)
+    }
   }
 
   private fun handleCiev(line: String) {

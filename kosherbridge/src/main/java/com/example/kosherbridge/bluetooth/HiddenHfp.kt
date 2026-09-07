@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.util.Log
+import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -49,7 +50,15 @@ object HiddenHfp {
   private var mGetConnectionState: Method? = null
   private var mGetAudioState: Method? = null
   private var mConnectAudio: Method? = null
+  private var mConnectAudioDevice: Method? = null
   private var mDisconnectAudio: Method? = null
+  private var mDisconnectAudioDevice: Method? = null
+  /** setAudioRouteAllowed(boolean) - Android 8..12 signature. */
+  private var mSetAudioRouteAllowed: Method? = null
+  /** setAudioRouteAllowed(BluetoothDevice, boolean) - Android 13+ signature. */
+  private var mSetAudioRouteAllowedDevice: Method? = null
+  private var mGetAudioRouteAllowed: Method? = null
+  private var mGetAudioRouteAllowedDevice: Method? = null
   private var mDial: Method? = null
   private var mRedial: Method? = null
   private var mAccept: Method? = null
@@ -123,8 +132,22 @@ object HiddenHfp {
     mGetConnected = method(c, "getConnectedDevices")
     mGetConnectionState = method(c, "getConnectionState", BluetoothDevice::class.java)
     mGetAudioState = method(c, "getAudioState", BluetoothDevice::class.java)
-    mConnectAudio = method(c, "connectAudio")
-    mDisconnectAudio = method(c, "disconnectAudio")
+    // connectAudio()/disconnectAudio() lost their no-arg form on Android 13,
+    // where they take the device. Resolve both and use whichever exists.
+    mConnectAudio = optionalMethod(c, "connectAudio")
+    mConnectAudioDevice = optionalMethod(c, "connectAudio", BluetoothDevice::class.java)
+    mDisconnectAudio = optionalMethod(c, "disconnectAudio")
+    mDisconnectAudioDevice = optionalMethod(c, "disconnectAudio", BluetoothDevice::class.java)
+    // THE call-audio gate. See [setAudioRouteAllowed].
+    mSetAudioRouteAllowed = optionalMethod(
+      c, "setAudioRouteAllowed", Boolean::class.javaPrimitiveType!!,
+    )
+    mSetAudioRouteAllowedDevice = optionalMethod(
+      c, "setAudioRouteAllowed", BluetoothDevice::class.java, Boolean::class.javaPrimitiveType!!,
+    )
+    mGetAudioRouteAllowed = optionalMethod(c, "getAudioRouteAllowed")
+    mGetAudioRouteAllowedDevice =
+      optionalMethod(c, "getAudioRouteAllowed", BluetoothDevice::class.java)
     mDial = method(c, "dial", BluetoothDevice::class.java, String::class.java)
     mRedial = method(c, "redial", BluetoothDevice::class.java)
     mAccept = method(c, "acceptCall", BluetoothDevice::class.java, Int::class.javaPrimitiveType!!)
@@ -168,8 +191,93 @@ object HiddenHfp {
     else int(mGetConnectionState, client, BluetoothProfile.STATE_DISCONNECTED, device)
   fun audioState(client: Any?, device: BluetoothDevice?): Int =
     if (device == null) 0 else int(mGetAudioState, client, 0, device)
-  fun connectAudio(client: Any?): Boolean = bool(mConnectAudio, client)
-  fun disconnectAudio(client: Any?): Boolean = bool(mDisconnectAudio, client)
+  fun connectAudio(client: Any?, device: BluetoothDevice? = null): Boolean {
+    if (mConnectAudio != null) return bool(mConnectAudio, client)
+    if (device != null) return bool(mConnectAudioDevice, client, device)
+    return false
+  }
+
+  fun disconnectAudio(client: Any?, device: BluetoothDevice? = null): Boolean {
+    if (mDisconnectAudio != null) return bool(mDisconnectAudio, client)
+    if (device != null) return bool(mDisconnectAudioDevice, client, device)
+    return false
+  }
+
+  /** Outcome of an [setAudioRouteAllowed] attempt, for logs and diagnostics. */
+  enum class AudioRoutePermission {
+    /** The stack now accepts the call's SCO link on this player. */
+    ALLOWED,
+
+    /** Already allowed - nothing to do. */
+    ALREADY_ALLOWED,
+
+    /** The method exists but the system refused the call (needs privileges). */
+    BLOCKED,
+
+    /** This Android build has no such method (nothing to gate - or nothing to fix). */
+    UNSUPPORTED,
+  }
+
+  /**
+   * **The single most important call in the no-root audio path.**
+   *
+   * AOSP's `HeadsetClientStateMachine` keeps a per-device `mAudioRouteAllowed`
+   * flag, initialised from the build's `hfp_client_connection_service_enabled`
+   * resource - which is `false` on every player that is not an automotive
+   * build. While it is false the state machine answers the audio gateway's
+   * incoming SCO (voice) connection with an immediate DISCONNECT_AUDIO: the
+   * phone has already handed the conversation to the "hands-free", and the
+   * hands-free throws it away. That is exactly the symptom this bridge had -
+   * the call connects, and the voice is audible neither on the player nor on
+   * the kosher phone.
+   *
+   * `setAudioRouteAllowed` flips that flag. On Android 8-12 it is
+   * `setAudioRouteAllowed(boolean)` and needs only BLUETOOTH_CONNECT, so it
+   * works **in the plain app process, with no root and no Shizuku**. Android
+   * 13 changed it to `setAudioRouteAllowed(BluetoothDevice, boolean)` behind
+   * BLUETOOTH_PRIVILEGED; there the privileged bridges (Shizuku / root) run
+   * this same code under an identity that is allowed to make the call.
+   */
+  fun setAudioRouteAllowed(client: Any?, device: BluetoothDevice?, allowed: Boolean): AudioRoutePermission {
+    if (client == null) return AudioRoutePermission.UNSUPPORTED
+    if (getAudioRouteAllowed(client, device) == allowed) return AudioRoutePermission.ALREADY_ALLOWED
+    // Deliberately NOT routed through the marking invoker: this is an
+    // auxiliary capability probe, and a refusal here should be reported as
+    // "the audio gate is shut", not latch the app-wide "the whole profile is
+    // privileged-blocked" verdict that drives channel fallbacks.
+    val invoked = when {
+      mSetAudioRouteAllowed != null -> quietInvoke(mSetAudioRouteAllowed, client, allowed)
+      mSetAudioRouteAllowedDevice != null && device != null ->
+        quietInvoke(mSetAudioRouteAllowedDevice, client, device, allowed)
+      else -> return AudioRoutePermission.UNSUPPORTED
+    }
+    if (!invoked) return AudioRoutePermission.BLOCKED
+    // Trust the read-back when the getter exists: a stack can accept the
+    // setter and still refuse the change (vendor overlays do this).
+    val readBack = getAudioRouteAllowed(client, device)
+    return if (readBack == null || readBack == allowed) AudioRoutePermission.ALLOWED
+    else AudioRoutePermission.BLOCKED
+  }
+
+  /** Current value of the audio-route gate, or null when unreadable. */
+  fun getAudioRouteAllowed(client: Any?, device: BluetoothDevice?): Boolean? {
+    if (client == null) return null
+    return when {
+      mGetAudioRouteAllowed != null -> quietRead(mGetAudioRouteAllowed, client)
+      mGetAudioRouteAllowedDevice != null && device != null ->
+        quietRead(mGetAudioRouteAllowedDevice, client, device)
+      else -> null
+    }
+  }
+
+  /**
+   * True when the gate can be flipped from the unprivileged app process:
+   * the Android 8-12 `setAudioRouteAllowed(boolean)` form. When only the
+   * Android 13+ device form exists the call needs BLUETOOTH_PRIVILEGED, i.e.
+   * the Shizuku or root channel.
+   */
+  val audioRouteGateNeedsPrivilege: Boolean
+    get() = mSetAudioRouteAllowed == null && mSetAudioRouteAllowedDevice != null
   fun dial(client: Any?, device: BluetoothDevice?, number: String): Boolean =
     if (device == null) false else bool(mDial, client, device, number)
 
@@ -268,28 +376,67 @@ object HiddenHfp {
     if (c == null) null
     else try { c.getMethod(name, *p) } catch (e: Throwable) { Log.w(TAG, "missing method $name"); null }
 
+  /** Like [method] but silent: used for methods that legitimately exist only
+   * on some Android versions, where a missing one is normal, not a warning. */
+  private fun optionalMethod(c: Class<*>?, name: String, vararg p: Class<*>): Method? =
+    if (c == null) null else try { c.getMethod(name, *p) } catch (e: Throwable) { null }
+
   private fun intConstant(c: Class<*>?, name: String, fallback: Int): Int =
     try { c?.getField(name)?.getInt(null) ?: fallback } catch (e: Throwable) { fallback }
 
+  /**
+   * Single invocation point for every reflected profile call.
+   *
+   * Method.invoke wraps whatever the target threw in an
+   * InvocationTargetException, so a plain `catch (e: SecurityException)` around
+   * invoke() never fires - which is why the missing-BLUETOOTH_PRIVILEGED wall
+   * used to go undetected and the app kept believing the direct channel worked.
+   * Unwrap the cause before classifying it.
+   */
+  private fun invoke(m: Method?, recv: Any?, vararg args: Any?): Result<Any?> {
+    if (m == null) return Result.failure(NoSuchMethodException())
+    return try {
+      Result.success(m.invoke(recv, *args))
+    } catch (e: InvocationTargetException) {
+      val cause = e.cause ?: e
+      if (cause is SecurityException) markPrivilegedBlocked()
+      Result.failure(cause)
+    } catch (e: SecurityException) {
+      markPrivilegedBlocked()
+      Result.failure(e)
+    } catch (e: Throwable) {
+      Result.failure(e)
+    }
+  }
+
+  /** Invokes without classifying a refusal as the app-wide privileged wall.
+   * True when the call went through. */
+  private fun quietInvoke(m: Method?, recv: Any?, vararg args: Any?): Boolean =
+    try { m?.invoke(recv, *args); m != null } catch (e: Throwable) { false }
+
+  /** Reads a boolean without the privileged-wall side effect; null when unreadable. */
+  private fun quietRead(m: Method?, recv: Any?, vararg args: Any?): Boolean? =
+    try { m?.invoke(recv, *args) as? Boolean } catch (e: Throwable) { null }
+
   private fun bool(m: Method?, recv: Any?, vararg args: Any?): Boolean =
-    try { (m?.invoke(recv, *args) as? Boolean) ?: false }
-    catch (e: SecurityException) { markPrivilegedBlocked(); false }
-    catch (e: Throwable) { false }
+    invoke(m, recv, *args).getOrNull() as? Boolean ?: false
+
+  /** For void methods: true when the call went through without throwing. */
+  private fun unit(m: Method?, recv: Any?, vararg args: Any?): Boolean =
+    invoke(m, recv, *args).isSuccess
+
+  /** For boolean getters where "could not read" must not look like `false`. */
+  private fun nullableBool(m: Method?, recv: Any?, vararg args: Any?): Boolean? =
+    invoke(m, recv, *args).getOrNull() as? Boolean
 
   private fun int(m: Method?, recv: Any?, def: Int, vararg args: Any?): Int =
-    try { (m?.invoke(recv, *args) as? Int) ?: def }
-    catch (e: SecurityException) { markPrivilegedBlocked(); def }
-    catch (e: Throwable) { def }
+    invoke(m, recv, *args).getOrNull() as? Int ?: def
 
   private fun string(m: Method?, recv: Any?, vararg args: Any?): String? =
-    try { m?.invoke(recv, *args) as? String }
-    catch (e: SecurityException) { markPrivilegedBlocked(); null }
-    catch (e: Throwable) { null }
+    invoke(m, recv, *args).getOrNull() as? String
 
   private fun list(m: Method?, recv: Any?, vararg args: Any?): List<*> =
-    try { m?.invoke(recv, *args) as? List<*> ?: emptyList<Any>() }
-    catch (e: SecurityException) { markPrivilegedBlocked(); emptyList<Any>() }
-    catch (e: Throwable) { emptyList<Any>() }
+    invoke(m, recv, *args).getOrNull() as? List<*> ?: emptyList<Any>()
 
   // ------------------------------------------------------ system profile priorities
 

@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.bluetooth.BridgeUiState
+import com.example.kosherbridge.bluetooth.CallAudioOutcome
 import com.example.kosherbridge.bluetooth.CallInfo
 import com.example.kosherbridge.bluetooth.CallState
 import com.example.kosherbridge.data.ServiceLocator
@@ -73,7 +74,7 @@ fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifie
     verticalArrangement = Arrangement.spacedBy(16.dp),
   ) {
     ConnectionCard(state, onShowDevices = { showDevices = true }, onGoToDialer = onGoToDialer)
-    state.call?.let { CallCard(it, state.audioState) }
+    state.call?.let { CallCard(it, state.audioState, state.audioOutcome) }
     state.lastError?.let { ErrorCard(it) }
     FollowUpCard()
     RecentCallsCard()
@@ -130,9 +131,18 @@ private fun ConnectionCard(state: BridgeUiState, onShowDevices: () -> Unit, onGo
           )
         }
       }
-      if (state.audioState == 2) {
-        Text(
+      // Only claim the voice is on the player when something actually says so.
+      // The profile's audio state covers the profile channels; the measured
+      // outcome covers the raw channel, where nothing reports an audio state.
+      val voiceOnPlayer = state.audioState == 2 || state.audioOutcome == CallAudioOutcome.ON_PLAYER
+      when {
+        voiceOnPlayer -> Text(
           "🔊 שמע שיחה מנותב לנגן",
+          color = Color.White,
+          style = MaterialTheme.typography.bodySmall,
+        )
+        state.audioOutcome == CallAudioOutcome.ON_PHONE -> Text(
+          "📱 שמע השיחה נשאר בטלפון הכשר - הנגן משמש כשלט",
           color = Color.White,
           style = MaterialTheme.typography.bodySmall,
         )
@@ -174,7 +184,7 @@ private fun ConnectionCard(state: BridgeUiState, onShowDevices: () -> Unit, onGo
 }
 
 @Composable
-private fun CallCard(call: CallInfo, audioState: Int) {
+private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOutcome) {
   val ringing = call.state == CallState.INCOMING || call.state == CallState.WAITING
   val active = call.state == CallState.ACTIVE
   val outgoing = call.state == CallState.DIALING || call.state == CallState.ALERTING
@@ -242,7 +252,13 @@ private fun CallCard(call: CallInfo, audioState: Int) {
               Text("נתק")
             }
             OutlinedButton(onClick = { BridgeHub.service?.toggleAudio() }) {
-              Text(if (audioState == 2) "כבה שמע" else "הפעל שמע")
+              Text(
+                when {
+                  audioState == 2 -> "כבה שמע"
+                  audioOutcome == CallAudioOutcome.ON_PHONE -> "העבר שמע לנגן"
+                  else -> "הפעל שמע"
+                },
+              )
             }
           }
           else -> {
