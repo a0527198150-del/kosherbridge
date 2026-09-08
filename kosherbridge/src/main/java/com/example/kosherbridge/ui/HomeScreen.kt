@@ -93,6 +93,7 @@ fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifie
 
 @Composable
 private fun ConnectionCard(state: BridgeUiState, onShowDevices: () -> Unit, onGoToDialer: () -> Unit) {
+  val context = LocalContext.current
   val connected = state.connectionState == BluetoothProfile.STATE_CONNECTED
   val connecting = state.connectionState == BluetoothProfile.STATE_CONNECTING
   Card(
@@ -161,7 +162,7 @@ private fun ConnectionCard(state: BridgeUiState, onShowDevices: () -> Unit, onGo
         }
         if (connected) {
           OutlinedButton(
-            onClick = { BridgeHub.service?.disconnect() },
+            onClick = { BridgeService.requestDisconnect(context) },
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
           ) {
             Text("ניתוק")
@@ -185,6 +186,7 @@ private fun ConnectionCard(state: BridgeUiState, onShowDevices: () -> Unit, onGo
 
 @Composable
 private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOutcome) {
+  val context = LocalContext.current
   val ringing = call.state == CallState.INCOMING || call.state == CallState.WAITING
   val active = call.state == CallState.ACTIVE
   val outgoing = call.state == CallState.DIALING || call.state == CallState.ALERTING
@@ -220,7 +222,7 @@ private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOut
         when {
           ringing -> {
             OutlinedButton(
-              onClick = { BridgeHub.service?.reject() },
+              onClick = { BridgeService.requestReject(context) },
               colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
             ) {
               Icon(Icons.Filled.CallEnd, contentDescription = null)
@@ -228,7 +230,7 @@ private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOut
               Text("דחה")
             }
             Button(
-              onClick = { BridgeHub.service?.answer() },
+              onClick = { BridgeService.requestAnswer(context) },
               colors = ButtonDefaults.buttonColors(
                 containerColor = Color(0xFF00875A),
                 contentColor = Color.White,
@@ -241,7 +243,7 @@ private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOut
           }
           active -> {
             Button(
-              onClick = { BridgeHub.service?.hangup() },
+              onClick = { BridgeService.requestHangup(context) },
               colors = ButtonDefaults.buttonColors(
                 containerColor = Color(0xFFD32F2F),
                 contentColor = Color.White,
@@ -251,7 +253,7 @@ private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOut
               Spacer(Modifier.width(6.dp))
               Text("נתק")
             }
-            OutlinedButton(onClick = { BridgeHub.service?.toggleAudio() }) {
+            OutlinedButton(onClick = { BridgeService.requestToggleAudio(context) }) {
               Text(
                 when {
                   audioState == 2 -> "כבה שמע"
@@ -263,7 +265,7 @@ private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOut
           }
           else -> {
             Button(
-              onClick = { BridgeHub.service?.hangup() },
+              onClick = { BridgeService.requestHangup(context) },
               colors = ButtonDefaults.buttonColors(
                 containerColor = Color(0xFFD32F2F),
                 contentColor = Color.White,
@@ -306,6 +308,7 @@ private fun ErrorCard(message: String) {
 /** Calls the user flagged for follow-up: the app surfaces them until handled. */
 @Composable
 private fun FollowUpCard() {
+  val context = LocalContext.current
   val followUps by ServiceLocator.contacts.followUps().collectAsStateWithLifecycle(emptyList())
   val scope = rememberCoroutineScope()
   if (followUps.isEmpty()) return
@@ -328,7 +331,7 @@ private fun FollowUpCard() {
           verticalAlignment = Alignment.CenterVertically,
         ) {
           Column(
-            Modifier.weight(1f).clickable { BridgeHub.service?.dial(c.number) },
+            Modifier.weight(1f).clickable { BridgeService.requestDial(context, c.number) },
           ) {
             Text(
               c.name ?: c.number,
@@ -376,12 +379,13 @@ private fun RecentCallsCard() {
 
 @Composable
 private fun CallRow(c: CallLogEntity) {
+  val context = LocalContext.current
   val missed = c.missed && c.direction == "INCOMING"
   val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(c.timestamp))
   Row(
     modifier = Modifier
       .fillMaxWidth()
-      .clickable { BridgeHub.service?.dial(c.number) }
+      .clickable { BridgeService.requestDial(context, c.number) }
       .padding(vertical = 10.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {

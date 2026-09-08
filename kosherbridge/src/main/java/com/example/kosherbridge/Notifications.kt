@@ -17,7 +17,11 @@ import com.example.kosherbridge.bluetooth.CallState
 
 object Notifications {
   private const val CH_BRIDGE = "bridge"
-  private const val CH_CALLS = "calls"
+  // Bumped from "calls": a notification channel is immutable once created,
+  // and the old one carried the default notification sound. The service
+  // now plays a real ringtone itself, so the channel must be silent or
+  // every incoming call arrives as a "ding" over a ringtone.
+  private const val CH_CALLS = "calls_v2"
   private const val NOTIF_BRIDGE = 1
   private const val NOTIF_CALL = 2
 
@@ -45,8 +49,15 @@ object Notifications {
       NotificationChannel(CH_CALLS, "שיחות", NotificationManager.IMPORTANCE_HIGH).apply {
         description = "שיחות נכנסות ויוצאות דרך הטלפון הכשר"
         enableVibration(true)
+        // Silent by design - BridgeService plays the actual ringtone, and it
+        // keeps playing until the call is answered or ends. A channel sound
+        // here would be a one-shot notification "ding" on top of it.
+        setSound(null, null)
       },
     )
+    // Remove the pre-v2 channel so its old sound setting cannot linger in the
+    // notification settings UI as a second, confusing "שיחות" entry.
+    runCatching { nm.deleteNotificationChannel("calls") }
   }
 
   fun bridgeNotification(context: Context, text: String): Notification {
@@ -102,7 +113,7 @@ object Notifications {
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
       .setOngoing(true)
       .setAutoCancel(false)
-      // No DEFAULT_SOUND here: IncomingCallActivity plays the ringtone itself.
+      // No DEFAULT_SOUND here: BridgeService plays (and loops) the ringtone.
       .setDefaults(if (vibrate) NotificationCompat.DEFAULT_VIBRATE else 0)
       .setContentIntent(full)
       .addAction(0, "ענה", answer)

@@ -108,10 +108,28 @@ fun MainScreen() {
   }
 }
 
-internal fun connectionText(state: BridgeUiState): String = when (state.connectionState) {
-  android.bluetooth.BluetoothProfile.STATE_CONNECTED ->
-    "מחובר ל-${state.deviceName ?: "טלפון כשר"}"
-  android.bluetooth.BluetoothProfile.STATE_CONNECTING -> "מתחבר..."
-  android.bluetooth.BluetoothProfile.STATE_DISCONNECTING -> "מתנתק..."
-  else -> if (state.deviceName != null) "מנותק" else "לא מחובר למכשיר"
+/**
+ * What the user is told about the connection.
+ *
+ * Reading only `connectionState` produced the "it is connected but the app
+ * says disconnected" reports: on the direct RFCOMM channel the live link is
+ * `rawLinkActive`, and the profile-shaped connectionState can lag behind it or
+ * be overwritten by a poll that does not own the link. A retry in progress
+ * also used to render as a flat "מנותק", which reads as broken rather than
+ * busy. Every one of those facts now has its own wording.
+ */
+internal fun connectionText(state: BridgeUiState): String {
+  val name = state.deviceName ?: "טלפון כשר"
+  return when {
+    state.connectionState == android.bluetooth.BluetoothProfile.STATE_CONNECTED ->
+      "מחובר ל-$name"
+    state.rawLinkActive -> "מחובר ל-$name (ערוץ ישיר)"
+    state.connectionState == android.bluetooth.BluetoothProfile.STATE_CONNECTING ->
+      "מתחבר..."
+    state.connectionState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTING ->
+      "מתנתק..."
+    state.reconnecting -> "מנותק - מנסה להתחבר מחדש..."
+    state.deviceName != null -> "מנותק"
+    else -> "לא מחובר למכשיר"
+  }
 }

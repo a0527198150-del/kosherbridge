@@ -51,7 +51,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.platform.LocalContext
 import com.example.kosherbridge.BridgeHub
+import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.CallLogEntity
 import com.example.kosherbridge.data.local.ContactEntity
@@ -78,6 +80,7 @@ private sealed interface LogItem {
 /** Full call-log screen: search, filters, day grouping, follow-up and details. */
 @Composable
 fun CallLogScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
+  val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val repo = ServiceLocator.contacts
   var query by rememberSaveable { mutableStateOf("") }
@@ -211,7 +214,7 @@ fun CallLogScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
       contact = photoByNumber[ContactsRepository.normalizePhone(c.number)],
       onDismiss = { detailFor = null },
       onCall = {
-        BridgeHub.service?.dial(c.number)
+        BridgeService.requestDial(context, c.number)
         detailFor = null
       },
       onToggleFollowUp = {

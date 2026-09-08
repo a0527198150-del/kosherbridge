@@ -79,7 +79,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import androidx.compose.ui.platform.LocalContext
 import com.example.kosherbridge.BridgeHub
+import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ContactWithDetails
 import com.example.kosherbridge.data.local.ContactsRepository
@@ -91,6 +93,7 @@ private val EMAIL_LABELS = listOf("אימייל", "עבודה", "אחר")
 
 @Composable
 fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
+  val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val repo = ServiceLocator.contacts
   var query by rememberSaveable { mutableStateOf("") }
@@ -151,9 +154,9 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
           )
         }
       } else if (query.isBlank()) {
-        GroupedContactList(list = list, onOpen = { detailFor = it }, onCall = { number -> BridgeHub.service?.dial(number) })
+        GroupedContactList(list = list, onOpen = { detailFor = it }, onCall = { number -> BridgeService.requestDial(context, number) })
       } else {
-        FlatContactList(list = list, onOpen = { detailFor = it }, onCall = { number -> BridgeHub.service?.dial(number) })
+        FlatContactList(list = list, onOpen = { detailFor = it }, onCall = { number -> BridgeService.requestDial(context, number) })
       }
     }
     FloatingActionButton(
@@ -205,7 +208,7 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
       contact = c,
       onDismiss = { detailFor = null },
       onCall = { number ->
-        BridgeHub.service?.dial(number)
+        BridgeService.requestDial(context, number)
         detailFor = null
       },
       onToggleFavorite = { scope.launch { repo.toggleFavorite(c.contact) } },

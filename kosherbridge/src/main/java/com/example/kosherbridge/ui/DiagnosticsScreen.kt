@@ -129,7 +129,11 @@ fun DiagnosticsScreen(
       )
       DiagRow("ערוץ פעיל", state.backendLabel ?: "לא פעיל", state.profileReady || state.rawLinkActive)
       DiagRow("בלוטוס", if (state.adapterOn) "פועל" else "כבוי", state.adapterOn)
-      DiagRow("חיבור", connectionText(state), state.connectionState == BluetoothProfile.STATE_CONNECTED)
+      DiagRow(
+        "חיבור",
+        connectionText(state),
+        state.connectionState == BluetoothProfile.STATE_CONNECTED || state.rawLinkActive,
+      )
       DiagRow(
         "שמע",
         when (state.audioState) {

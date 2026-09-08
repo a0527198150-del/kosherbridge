@@ -9,6 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -26,6 +29,7 @@ import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ContactsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -45,6 +49,11 @@ class BridgeService : Service() {
   companion object {
     private const val TAG = "BridgeService"
     private const val NOTIF_BRIDGE = 1
+
+    /** How long a ringing/dialing state may stay unchanged before it is
+     * treated as stale. Longer than any real ring cycle, short enough that a
+     * stuck notification is not the user's problem for the rest of the day. */
+    private const val STALE_RINGING_MS = 120_000L
 
     const val ACTION_START = "com.example.kosherbridge.action.START"
     const val ACTION_CONNECT = "com.example.kosherbridge.action.CONNECT"
@@ -86,6 +95,46 @@ class BridgeService : Service() {
     }
 
     /**
+     * Fires a call command whether or not the service is currently running.
+     *
+     * Every call button used to go through `BridgeHub.service?.answer()` and
+     * friends, which is null the moment the service is not alive - so the tap
+     * did nothing at all: the ringing notification stayed on screen, the call
+     * kept ringing, and there was no error anywhere. Routing through a
+     * foreground-service intent means the tap always reaches a live service,
+     * starting it first if the system had killed it.
+     */
+    fun requestCallAction(context: Context, action: String, number: String? = null) {
+      val intent = Intent(context, BridgeService::class.java).setAction(action)
+      if (number != null) intent.putExtra(EXTRA_NUMBER, number)
+      runCatching { ContextCompat.startForegroundService(context, intent) }
+        .onFailure { error ->
+          // Starting a foreground service from the background is refused in
+          // some states (Android 12+). The in-process path still works when
+          // the service happens to be alive, so fall back to it rather than
+          // dropping the user's tap.
+          Log.w(TAG, "startForegroundService($action) refused", error)
+          val svc = instance ?: return
+          when (action) {
+            ACTION_ANSWER -> svc.answer()
+            ACTION_REJECT -> svc.reject()
+            ACTION_HANGUP -> svc.hangup()
+            ACTION_TOGGLE_AUDIO -> svc.toggleAudio()
+            ACTION_DISCONNECT -> svc.disconnect()
+            ACTION_DIAL -> number?.let { svc.dial(it) }
+          }
+        }
+    }
+
+    fun requestAnswer(context: Context) = requestCallAction(context, ACTION_ANSWER)
+    fun requestReject(context: Context) = requestCallAction(context, ACTION_REJECT)
+    fun requestHangup(context: Context) = requestCallAction(context, ACTION_HANGUP)
+    fun requestToggleAudio(context: Context) = requestCallAction(context, ACTION_TOGGLE_AUDIO)
+    fun requestDisconnect(context: Context) = requestCallAction(context, ACTION_DISCONNECT)
+    fun requestDial(context: Context, number: String) =
+      requestCallAction(context, ACTION_DIAL, number)
+
+    /**
      * Connects to a device whether or not the service is already running.
      * Tapping "בחר מכשיר" previously went through BridgeHub.service?.connectTo,
      * which silently did nothing when the service was dead - no connection,
@@ -124,6 +173,8 @@ class BridgeService : Service() {
   private var reconnecting = false
   private var lastManualDisconnectAt = 0L
   private var wakeLock: PowerManager.WakeLock? = null
+  private var staleCallWatchdog: Job? = null
+  private var ringtone: Ringtone? = null
 
   override fun onCreate() {
     super.onCreate()
@@ -176,10 +227,17 @@ class BridgeService : Service() {
           }
         }
         ACTION_DISCONNECT -> disconnect()
-        ACTION_DIAL -> intent.getStringExtra(EXTRA_NUMBER)?.let { dial(it) }
-        ACTION_ANSWER -> manager.answer()
-        ACTION_REJECT -> manager.reject()
-        ACTION_HANGUP -> manager.hangup()
+        ACTION_DIAL -> intent.getStringExtra(EXTRA_NUMBER)?.let { number ->
+          retryCommand("חיוג ל-$number") { manager.dial(number) }
+        }
+        // These three arrive from a notification button or the call screen,
+        // and the intent may be what STARTED the service - in which case the
+        // link is not up yet and a single attempt is guaranteed to fail. They
+        // are also the taps a user repeats in frustration when nothing
+        // happens, so each one retries briefly and says so in the journal.
+        ACTION_ANSWER -> retryCommand("מענה לשיחה") { manager.answer() }
+        ACTION_REJECT -> retryCommand("דחיית שיחה") { manager.reject() }
+        ACTION_HANGUP -> retryCommand("ניתוק שיחה") { manager.hangup() }
         ACTION_TOGGLE_AUDIO -> manager.toggleAudio()
       }
       ensureForeground()
@@ -219,6 +277,12 @@ class BridgeService : Service() {
 
   override fun onDestroy() {
     runCatching { manager.logConnection("שירות הגשר נסגר", true) }
+    // An ongoing call notification outlives the process that posted it. When
+    // the system killed the service mid-call the ringing notification stayed
+    // on screen forever, with buttons wired to a service that no longer
+    // existed - the "notification that will not go away".
+    runCatching { Notifications.cancelCall(this) }
+    stopRingtone()
     instance = null
     BridgeHub.service = null
     manager.shutdown()
@@ -294,6 +358,34 @@ class BridgeService : Service() {
 
   // ------------------------------------------------------------------ internals
 
+  /**
+   * Runs a bridge command, retrying briefly while it keeps failing.
+   *
+   * A command can legitimately fail for a second or two: the intent may have
+   * just started the service, or the raw socket may be mid-reconnect. Failing
+   * once and silently was the behaviour behind "I press answer and nothing
+   * happens" - so retry for a bounded window and, if it still fails, put the
+   * reason in the journal instead of nowhere.
+   */
+  private fun retryCommand(label: String, action: () -> Boolean) {
+    scope.launch {
+      val deadline = System.currentTimeMillis() + 4_000
+      var attempts = 0
+      while (System.currentTimeMillis() < deadline) {
+        attempts++
+        if (runCatching { action() }.getOrDefault(false)) {
+          if (attempts > 1) manager.logConnection("$label הצליח בניסיון $attempts", false)
+          return@launch
+        }
+        delay(300)
+      }
+      manager.logConnection(
+        "$label נכשל אחרי $attempts ניסיונות - אין קישור פעיל אל הטלפון",
+        true,
+      )
+    }
+  }
+
   private fun adapter(): BluetoothAdapter? =
     (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
@@ -325,11 +417,18 @@ class BridgeService : Service() {
 
   private fun stateText(): String {
     val s = BridgeHub.state.value
-    val conn = when (s.connectionState) {
-      BluetoothProfile.STATE_CONNECTED -> "מחובר ל-${s.deviceName ?: "טלפון כשר"}"
-      BluetoothProfile.STATE_CONNECTING -> "מתחבר..."
-      BluetoothProfile.STATE_DISCONNECTING -> "מתנתק..."
-      else -> if (s.deviceName != null) "מנותק" else "לא מחובר למכשיר"
+    // Same wording as the home screen (ui/MainScreen.connectionText): a
+    // notification that says "מנותק" while the direct channel is carrying a
+    // live link is the same lie, just in a different place.
+    val name = s.deviceName ?: "טלפון כשר"
+    val conn = when {
+      s.connectionState == BluetoothProfile.STATE_CONNECTED -> "מחובר ל-$name"
+      s.rawLinkActive -> "מחובר ל-$name (ערוץ ישיר)"
+      s.connectionState == BluetoothProfile.STATE_CONNECTING -> "מתחבר..."
+      s.connectionState == BluetoothProfile.STATE_DISCONNECTING -> "מתנתק..."
+      s.reconnecting -> "מנסה להתחבר מחדש..."
+      s.deviceName != null -> "מנותק"
+      else -> "לא מחובר למכשיר"
     }
     val audio = when {
       s.audioState == 2 || s.audioOutcome == CallAudioOutcome.ON_PLAYER -> " · שמע בנגן"
@@ -480,7 +579,23 @@ class BridgeService : Service() {
     }
     scope.launch {
       manager.connectionState.collect { s ->
-        BridgeHub.update { it.copy(connectionState = s, adapterOn = manager.adapterOn) }
+        BridgeHub.update {
+          it.copy(
+            connectionState = s,
+            adapterOn = manager.adapterOn,
+            // "Disconnected" and "retrying right now" look identical to a
+            // user staring at the home screen; they are not the same thing.
+            reconnecting = s != BluetoothProfile.STATE_CONNECTED &&
+              (manager.rawOwnsConnectionLoop || reconnecting),
+          )
+        }
+        // With no link there is no way to learn that a call ended, so a call
+        // left over from the dead link would keep its notification and its
+        // full-screen UI alive indefinitely. Drop it with the link.
+        if (s == BluetoothProfile.STATE_DISCONNECTED && !manager.rawLinkActive.value) {
+          manager.clearCall()
+          Notifications.cancelCall(this@BridgeService)
+        }
         updateBridgeNotification()
         maybeReconnect(s)
       }
@@ -569,6 +684,10 @@ class BridgeService : Service() {
 
   private suspend fun onCallChanged(info: CallInfo?) {
     BridgeHub.update { it.copy(call = info) }
+    armStaleCallWatchdog(info)
+    // Anything that is not a ringing call must silence the ringtone -
+    // answered, rejected, ended, or the link dropped underneath it.
+    if (info?.state != CallState.INCOMING && info?.state != CallState.WAITING) stopRingtone()
 
     if (info == null || info.state == CallState.IDLE || info.state == CallState.TERMINATED) {
       Notifications.cancelCall(this)
@@ -638,8 +757,45 @@ class BridgeService : Service() {
     }
   }
 
+  /**
+   * Guards against a call state that never ends.
+   *
+   * A basic gateway can stop reporting a call - no +CIEV, no CLCC row - and
+   * the bridge then holds a ringing call forever: an ongoing notification that
+   * cannot be dismissed, and a full-screen call UI over an ended call. No real
+   * phone rings for two minutes, so a ringing state that old is stale by
+   * definition. An ACTIVE call is left alone: real conversations do run long.
+   */
+  private fun armStaleCallWatchdog(info: CallInfo?) {
+    staleCallWatchdog?.cancel()
+    staleCallWatchdog = null
+    val ringing = info?.state == CallState.INCOMING || info?.state == CallState.WAITING ||
+      info?.state == CallState.DIALING || info?.state == CallState.ALERTING
+    if (!ringing) return
+    staleCallWatchdog = scope.launch {
+      delay(STALE_RINGING_MS)
+      // Only act when nothing changed in the meantime - a state change would
+      // have cancelled this job and armed a new one.
+      if (manager.call.value != info) return@launch
+      manager.logConnection(
+        "מצב השיחה לא התעדכן ${STALE_RINGING_MS / 1000} שניות - מנקה אותה כדי שההתראה לא תיתקע",
+        true,
+      )
+      manager.clearCall()
+      Notifications.cancelCall(this@BridgeService)
+    }
+  }
+
   private fun showIncomingCall(title: String, number: String?) {
     Notifications.showIncomingCall(this, title, number, fullScreenEnabled, vibrateEnabled)
+    // The ringtone belongs to the service, not to the call activity.
+    // Android 10+ blocks background activity starts, so startActivity() below
+    // is frequently dropped without an exception - and when the ringtone lived
+    // in the activity, that meant a completely SILENT incoming call, with only
+    // a notification to notice. Ringing from here always happens; the
+    // full-screen intent on the notification is what actually brings the
+    // screen up when the direct start is refused.
+    startRingtone()
     if (fullScreenEnabled) {
       val intent = IncomingCallActivity.createIntent(this, number, title)
         .addFlags(
@@ -649,6 +805,30 @@ class BridgeService : Service() {
         )
       runCatching { startActivity(intent) }
     }
+  }
+
+  private fun startRingtone() {
+    if (ringtone?.isPlaying == true) return
+    runCatching {
+      val uri = RingtoneManager.getActualDefaultRingtoneUri(this, RingtoneManager.TYPE_RINGTONE)
+        ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        ?: return
+      val r = RingtoneManager.getRingtone(this, uri) ?: return
+      r.audioAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+        .build()
+      // Ringtone.play() is one-shot below API 28, which made a call ring once
+      // and then wait in silence.
+      if (Build.VERSION.SDK_INT >= 28) r.isLooping = true
+      ringtone = r
+      r.play()
+    }.onFailure { Log.w(TAG, "ringtone failed", it) }
+  }
+
+  private fun stopRingtone() {
+    runCatching { ringtone?.stop() }
+    ringtone = null
   }
 
   private suspend fun maybeReconnect(state: Int) {

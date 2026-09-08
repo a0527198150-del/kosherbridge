@@ -2,8 +2,6 @@ package com.example.kosherbridge
 
 import android.content.Context
 import android.content.Intent
-import android.media.Ringtone
-import android.media.RingtoneManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,8 +33,6 @@ class IncomingCallActivity : ComponentActivity() {
         .putExtra(EXTRA_NAME, name)
   }
 
-  private var ringtone: Ringtone? = null
-
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     setContent {
@@ -60,11 +56,14 @@ class IncomingCallActivity : ComponentActivity() {
             resolvedName = contact?.name
           }
 
+          // The ringtone is owned by BridgeService: this activity is often
+          // never started at all (Android blocks background activity starts),
+          // and a ringtone that only plays here meant a silent incoming call.
           LaunchedEffect(call?.state) {
-            when (call?.state) {
-              null, CallState.IDLE, CallState.TERMINATED -> finish()
-              CallState.INCOMING, CallState.WAITING -> playRingtone()
-              else -> stopRingtone()
+            if (call == null || call?.state == CallState.IDLE ||
+              call?.state == CallState.TERMINATED
+            ) {
+              finish()
             }
           }
 
@@ -74,32 +73,17 @@ class IncomingCallActivity : ComponentActivity() {
             photoUri = photoUri,
             state = call,
             audioOutcome = state.audioOutcome,
-            onAnswer = { BridgeHub.service?.answer() },
-            onReject = { BridgeHub.service?.reject() },
-            onHangup = { BridgeHub.service?.hangup() },
-            onToggleAudio = { BridgeHub.service?.toggleAudio() },
+            // Routed through the service intent, not BridgeHub.service:
+            // the latter is null whenever the system has killed the service,
+            // and the button then did nothing at all while the call kept
+            // ringing.
+            onAnswer = { BridgeService.requestAnswer(this@IncomingCallActivity) },
+            onReject = { BridgeService.requestReject(this@IncomingCallActivity) },
+            onHangup = { BridgeService.requestHangup(this@IncomingCallActivity) },
+            onToggleAudio = { BridgeService.requestToggleAudio(this@IncomingCallActivity) },
           )
         }
       }
     }
-  }
-
-  override fun onDestroy() {
-    stopRingtone()
-    super.onDestroy()
-  }
-
-  private fun playRingtone() {
-    if (ringtone != null) return
-    runCatching {
-      val r = RingtoneManager.getRingtone(this, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
-      ringtone = r
-      r?.play()
-    }
-  }
-
-  private fun stopRingtone() {
-    runCatching { ringtone?.stop() }
-    ringtone = null
   }
 }

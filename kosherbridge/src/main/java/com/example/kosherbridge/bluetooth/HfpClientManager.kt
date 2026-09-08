@@ -742,6 +742,16 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
   }
 
+  /**
+   * Forgets the current call. Used when the link to the phone is gone: with no
+   * link there is no way to learn that the call ended, and a call state left
+   * behind keeps a ringing notification and a full-screen call UI alive with
+   * nothing behind them.
+   */
+  fun clearCall() {
+    if (call.value != null) call.value = null
+  }
+
   /** Applies the "שמע אוטומטי" and "הגברת עוצמה בשיחה" settings. */
   fun setAudioPrefs(auto: Boolean, boost: Boolean) {
     autoAudio = auto

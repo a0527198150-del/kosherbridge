@@ -52,7 +52,9 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.platform.LocalContext
 import com.example.kosherbridge.BridgeHub
+import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ContactsRepository
 import com.example.kosherbridge.data.local.ContactWithDetails
@@ -60,6 +62,7 @@ import com.example.kosherbridge.data.local.ContactWithDetails
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
+  val context = LocalContext.current
   val state by BridgeHub.state.collectAsStateWithLifecycle()
   var number by rememberSaveable { mutableStateOf("") }
   val connected = state.connectionState == BluetoothProfile.STATE_CONNECTED
@@ -250,8 +253,11 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
         FilledIconButton(
           onClick = {
             if (number.isBlank()) return@FilledIconButton
-            val ok = BridgeHub.service?.dial(number) == true
-            if (!ok) onSnackbar(BridgeHub.state.value.lastError ?: "החיוג נכשל")
+            // Through the service intent so a dial still works when the
+            // system has killed the service: it is started, then retries the
+            // command while the link comes back up. The outcome shows up as
+            // the call state, and a failure lands in the connection journal.
+            BridgeService.requestDial(context, number)
           },
           enabled = number.isNotEmpty() && connected,
           modifier = Modifier.size(72.dp),
