@@ -94,7 +94,8 @@ fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifie
 @Composable
 private fun ConnectionCard(state: BridgeUiState, onShowDevices: () -> Unit, onGoToDialer: () -> Unit) {
   val context = LocalContext.current
-  val connected = state.connectionState == BluetoothProfile.STATE_CONNECTED
+  // See ui/MainScreen.linkUp: the direct channel's live link is rawLinkActive.
+  val connected = linkUp(state)
   val connecting = state.connectionState == BluetoothProfile.STATE_CONNECTING
   Card(
     shape = RoundedCornerShape(24.dp),

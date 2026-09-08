@@ -129,9 +129,13 @@ class ContactsRepository(
   /** Full contact for a call number, used e.g. to show the photo on the incoming-call screen. */
   suspend fun contactFor(number: String?): ContactEntity? {
     if (number.isNullOrBlank()) return null
-    val normalized = normalizePhone(number)
-    if (normalized.isEmpty()) return null
-    return db.contactDao().byPhone(normalized) ?: db.contactDao().contactByPhoneNormalized(normalized)
+    // Try every form the number could be stored as, so a contact saved under
+    // an older normalisation is still recognised without a data migration.
+    for (candidate in phoneVariants(number)) {
+      db.contactDao().byPhone(candidate)?.let { return it }
+      db.contactDao().contactByPhoneNormalized(candidate)?.let { return it }
+    }
+    return null
   }
 
   suspend fun logCall(
@@ -307,12 +311,36 @@ class ContactsRepository(
   companion object {
     /** Normalizes an Israeli phone number for deduplication. */
     fun normalizePhone(raw: String): String {
-      val digits = raw.filter { it.isDigit() }
+      var digits = raw.filter { it.isDigit() }
+      if (digits.isEmpty()) return ""
+      // "00" is the international access prefix - 00972... is the same number
+      // as +972..., and leaving it in made the two forms different contacts.
+      if (digits.startsWith("00")) digits = digits.drop(2)
       return when {
-        digits.isEmpty() -> ""
-        digits.startsWith("0") && digits.length == 10 -> "972" + digits.drop(1)
+        // Local Israeli form: a leading 0 plus 8 digits (landline, e.g.
+        // 02-123-4567) or 9 digits (mobile, e.g. 050-123-4567). Only the
+        // 10-digit mobile case used to be converted, so a landline saved as
+        // "02-1234567" never matched an incoming caller ID of "+97221234567"
+        // and showed up as an unknown number.
+        digits.startsWith("0") && digits.length in 9..10 -> "972" + digits.drop(1)
         else -> digits
       }
+    }
+
+    /**
+     * Every stored form the same number could have, newest normalisation
+     * first. Rows written by older versions of this app kept the raw digits
+     * for landlines, so a lookup that only tries the current normalisation
+     * would silently stop recognising contacts saved back then.
+     */
+    fun phoneVariants(raw: String): List<String> {
+      val normalized = normalizePhone(raw)
+      if (normalized.isEmpty()) return emptyList()
+      val digits = raw.filter { it.isDigit() }
+      val local = if (normalized.startsWith("972")) "0" + normalized.removePrefix("972") else null
+      return listOfNotNull(normalized, digits.takeIf { it != normalized }, local)
+        .filter { it.isNotEmpty() }
+        .distinct()
     }
   }
 }

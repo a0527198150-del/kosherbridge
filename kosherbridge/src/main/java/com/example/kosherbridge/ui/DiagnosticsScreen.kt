@@ -348,7 +348,7 @@ fun DiagnosticsScreen(
  */
 private fun buildGuidance(state: BridgeUiState): String? = when {
   !state.adapterOn -> "הדלק את הבלוטוס בהגדרות המערכת וחזור לכאן."
-  state.connectionState != BluetoothProfile.STATE_CONNECTED -> {
+  !linkUp(state) -> {
     when {
       !state.hiddenApiAvailable && !state.shizukuAvailable && state.rootAvailable ->
         "המכשיר חוסם את פרופיל הדיבורית, אבל יש בו הרשאת רוט. בחר 'ערוץ חיבור' → 'דרך הרשאת רוט (su)' " +

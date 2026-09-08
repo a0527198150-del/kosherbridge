@@ -27,25 +27,13 @@ class MainActivity : ComponentActivity() {
       // BLUETOOTH_CONNECT is granted, so the permission result drives the start.
       if (pendingServiceStart) {
         pendingServiceStart = false
-        // Check the real state, not the grants map: BLUETOOTH_CONNECT may not
-        // have been part of this request (e.g. only SCAN was missing).
-        val btOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-          checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-        if (btOk) {
-          runCatching { BridgeService.start(this) }
-        } else {
-          BridgeHub.update {
-            it.copy(
-              permissionHint =
-                "אין הרשאת בלוטוס - האפליקציה לא יכולה להתחבר לטלפון הכשר. " +
-                  "אשר אותה בהגדרות המערכת → אפליקציות → גשר כשר → הרשאות.",
-            )
-          }
-        }
+        startBridgeIfAllowed()
       }
     }
 
-  private var serviceStartScheduled = false
+  /** True once the runtime-permission dialog was shown in this session, so a
+   * denial does not turn every return to the app into another prompt. */
+  private var permissionPromptShown = false
   private var pendingServiceStart = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,16 +60,49 @@ class MainActivity : ComponentActivity() {
     // dialog AFTER arming pendingServiceStart (the result may arrive
     // synchronously when the system suppresses the dialog), and let the
     // dialog's result drive the service start.
-    if (!serviceStartScheduled) {
-      serviceStartScheduled = true
-      val needed = neededPermissions()
-      if (needed.isEmpty()) {
-        runCatching { BridgeService.start(this) }
-      } else {
-        pendingServiceStart = true
-        permissionLauncher.launch(needed.toTypedArray())
-      }
+    // Evaluated on EVERY resume, not once per process. The old one-shot latch
+    // meant that a user who denied a permission, granted it later in system
+    // settings and came back found a permanently dead app: the latch was spent,
+    // so the service was never started and nothing on screen ever changed until
+    // the app was force-stopped.
+    val needed = neededPermissions()
+    if (needed.isEmpty()) {
+      // Everything granted - allow a future revoke to prompt again.
+      permissionPromptShown = false
+    } else if (!permissionPromptShown) {
+      permissionPromptShown = true
+      pendingServiceStart = true
+      permissionLauncher.launch(needed.toTypedArray())
+      return // the launcher result starts the bridge
     }
+    startBridgeIfAllowed()
+  }
+
+  /**
+   * Starts the bridge when the one permission it genuinely cannot run without
+   * is granted.
+   *
+   * The distinction matters: [neededPermissions] also asks for notifications
+   * and Bluetooth scanning, which are conveniences. Gating the service on the
+   * full set meant that permanently denying the notification prompt - which
+   * many people do reflexively - left the bridge unable to start at all, with
+   * nothing on screen explaining why.
+   */
+  private fun startBridgeIfAllowed() {
+    val btOk = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+      checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    if (!btOk) {
+      BridgeHub.update {
+        it.copy(
+          permissionHint =
+            "אין הרשאת בלוטוס - האפליקציה לא יכולה להתחבר לטלפון הכשר. " +
+              "אשר אותה בהגדרות המערכת → אפליקציות → גשר כשר → הרשאות.",
+        )
+      }
+      return
+    }
+    BridgeHub.update { if (it.permissionHint == null) it else it.copy(permissionHint = null) }
+    if (BridgeService.instance == null) runCatching { BridgeService.start(this) }
   }
 
   private fun neededPermissions(): List<String> {

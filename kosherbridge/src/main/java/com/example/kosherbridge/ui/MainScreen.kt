@@ -22,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -40,12 +41,18 @@ fun MainScreen() {
   val scope = rememberCoroutineScope()
   var tab by rememberSaveable { mutableIntStateOf(0) }
 
-  // One-time snackbar when a required runtime permission is missing (e.g. the
-  // user denied BLUETOOTH_CONNECT) - the Settings tab shows it persistently too.
+  // Snackbar once per distinct hint. It must NOT clear the hint: the Settings
+  // and Diagnostics tabs are meant to keep showing it, and clearing it here
+  // meant the persistent warning those screens document never appeared at all.
+  // MainActivity clears it for real, once the permission is actually granted.
+  var shownHint by remember { mutableStateOf<String?>(null) }
   LaunchedEffect(state.permissionHint) {
-    state.permissionHint?.let {
-      snackbarHostState.showSnackbar(it)
-      BridgeHub.update { s -> s.copy(permissionHint = null) }
+    val hint = state.permissionHint
+    if (hint == null) {
+      shownHint = null
+    } else if (hint != shownHint) {
+      shownHint = hint
+      snackbarHostState.showSnackbar(hint)
     }
   }
 
@@ -109,6 +116,20 @@ fun MainScreen() {
 }
 
 /**
+ * Whether a usable link to the kosher phone exists right now.
+ *
+ * The single source of truth for every "are we connected?" decision in the UI.
+ * Screens used to each test `connectionState == STATE_CONNECTED` on their own,
+ * which is the PROFILE-shaped state: on the direct RFCOMM channel the live
+ * link is `rawLinkActive`, so a perfectly working bridge left the dial button
+ * disabled, the home card showing "disconnected" and the diagnostics page
+ * offering pairing advice for a phone that was already connected.
+ */
+internal fun linkUp(state: BridgeUiState): Boolean =
+  state.connectionState == android.bluetooth.BluetoothProfile.STATE_CONNECTED ||
+    state.rawLinkActive
+
+/**
  * What the user is told about the connection.
  *
  * Reading only `connectionState` produced the "it is connected but the app
@@ -124,6 +145,7 @@ internal fun connectionText(state: BridgeUiState): String {
     state.connectionState == android.bluetooth.BluetoothProfile.STATE_CONNECTED ->
       "מחובר ל-$name"
     state.rawLinkActive -> "מחובר ל-$name (ערוץ ישיר)"
+    // (both branches above are linkUp(state) - kept apart only for the wording)
     state.connectionState == android.bluetooth.BluetoothProfile.STATE_CONNECTING ->
       "מתחבר..."
     state.connectionState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTING ->

@@ -1,6 +1,5 @@
 package com.example.kosherbridge.ui
 
-import android.bluetooth.BluetoothProfile
 import android.media.AudioManager
 import android.media.ToneGenerator
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -65,7 +64,10 @@ fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
   val context = LocalContext.current
   val state by BridgeHub.state.collectAsStateWithLifecycle()
   var number by rememberSaveable { mutableStateOf("") }
-  val connected = state.connectionState == BluetoothProfile.STATE_CONNECTED
+  // linkUp, not connectionState: the direct RFCOMM channel reports its live
+  // link in rawLinkActive, and gating on connectionState alone left the call
+  // button greyed out on a working bridge.
+  val connected = linkUp(state)
   val contacts by ServiceLocator.contacts.contactsWithDetails().collectAsStateWithLifecycle(emptyList())
   val recentCalls by ServiceLocator.contacts.recentCalls().collectAsStateWithLifecycle(emptyList())
   val keyTone by ServiceLocator.settings.keyTone.collectAsStateWithLifecycle(true)
