@@ -54,7 +54,7 @@ object RootBridgeMain {
       }
     }
     if (pkg.isNullOrBlank() || cls.isNullOrBlank() || token.isNullOrBlank()) {
-      Log.e(TAG, "missing arguments: $args")
+      Log.e(TAG, "missing arguments: ${args.joinToString(" ")}")
       System.exit(1)
     }
     val packageName = pkg ?: return
@@ -110,10 +110,20 @@ object RootBridgeMain {
     mPackageInfo.isAccessible = true
     val loadedApk = mPackageInfo.get(appContext)
 
-    val makeApplication = loadedApk.javaClass.getDeclaredMethod(
-      "makeApplication",
-      Boolean::class.javaPrimitiveType,
-      android.app.Instrumentation::class.java,
+    // Android 14 renamed LoadedApk.makeApplication to makeApplicationInner and
+    // left a same-named wrapper that is NOT always present on every build, so
+    // resolving only the old name broke the root channel outright on 14+
+    // ("failed to create user service"). Try both names, newest first.
+    val makeApplication = listOf("makeApplicationInner", "makeApplication").firstNotNullOfOrNull { name ->
+      runCatching {
+        loadedApk.javaClass.getDeclaredMethod(
+          name,
+          Boolean::class.javaPrimitiveType,
+          android.app.Instrumentation::class.java,
+        )
+      }.getOrNull()
+    } ?: throw NoSuchMethodException(
+      "LoadedApk has neither makeApplicationInner nor makeApplication on this Android build",
     )
     makeApplication.isAccessible = true
     val application = makeApplication.invoke(loadedApk, true, null) as Application

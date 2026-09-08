@@ -38,6 +38,30 @@ The bridge now opens that gate itself via `setAudioRouteAllowed`:
 The gate's state is reported in Diagnostics under "ניתוב שמע השיחה", with a
 "פתח ניתוב שמע לשיחה" action to retry it on demand.
 
+### Asking the player what it can do
+
+Diagnostics runs an on-device capability probe, so a player can be assessed
+without adb and without a second person holding it. It separates the two facts
+that every confusing report has conflated:
+
+- **Is the HFP-client profile running?** `getSupportedProfiles()` reports what
+  the stack actually started. The profile proxy is not evidence: it binds
+  happily to a `HeadsetClientService` that never ran, and every call then
+  returns empty — which is exactly why the bridge used to report a dormant
+  profile as "supported".
+- **Is the profile even in the build?** A package-manager lookup of
+  `com.android.bluetooth/.hfpclient.HeadsetClientService` separates "disabled,
+  possibly fixable" from "removed by the manufacturer, hopeless".
+
+It also reads `bluetooth.profile.hfp.hf.enabled` and the SELinux mode, because
+those two decide whether the flag can be flipped without root. When there is
+something to try, a "הפעל פרופיל דיבורית" action writes the flag through
+Shizuku (wireless adb, no root) and restarts the Bluetooth stack. Stock policy
+reserves that property for `init` and the attempt fails cleanly; the lax
+policies common to cheap players often allow it. The property is not
+persistent, so it must be re-applied after each reboot — the Magisk module is
+the permanent form of the same change.
+
 ### When the voice cannot reach the player
 
 The bridge no longer assumes that asking for the route is the same as getting

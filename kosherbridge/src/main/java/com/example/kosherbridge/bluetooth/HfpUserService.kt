@@ -196,6 +196,101 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     }
   }
 
+  // ------------------------------------------------- device preparation
+  //
+  // Everything below runs under the privileged identity (Shizuku's `shell`, or
+  // uid 0 for the root channel). None of it needs root *specifically*: whether
+  // the property write below succeeds is decided by the player's SELinux
+  // policy, not by which of the two identities is running it. On a stock
+  // Android 13+ build `bluetooth.profile.*` lives in the bluetooth_config_prop
+  // context that only init may write, and the attempt fails cleanly; on the
+  // lax policies common to cheap players it can succeed, which is the whole
+  // reason to try it before telling a user to root the device.
+
+  override fun getSystemProperty(key: String): String = readProperty(key)
+
+  override fun setSystemProperty(key: String, value: String): String? {
+    val viaApi = runCatching {
+      Class.forName("android.os.SystemProperties")
+        .getMethod("set", String::class.java, String::class.java)
+        .invoke(null, key, value)
+    }.isSuccess
+    // SystemProperties.set throws when property_service refuses the write.
+    // `setprop` goes through the same service, but some vendor images ship a
+    // setuid helper that behaves differently, so it is worth a second try.
+    if (!viaApi) runCatching { exec(arrayOf("setprop", key, value)) }
+    val readBack = readProperty(key)
+    return readBack.ifBlank { null }
+  }
+
+  override fun restartBluetooth(): Boolean {
+    val a = adapter ?: return false
+    // The profile flags are read when the Bluetooth process starts, so a
+    // property write is invisible until the stack comes back up.
+    val disabled = runCatching { disableAdapter(a) }.getOrDefault(false)
+    if (!disabled) return false
+    // Give the stack time to tear down before asking it back up; enabling too
+    // early is rejected while the adapter is still TURNING_OFF.
+    for (i in 0 until 40) {
+      if (!a.isEnabled) break
+      runCatching { Thread.sleep(250) }
+    }
+    return runCatching { enableAdapter(a) }.getOrDefault(false)
+  }
+
+  @Suppress("DEPRECATION")
+  private fun disableAdapter(a: BluetoothAdapter): Boolean =
+    if (a.disable()) true else exec(arrayOf("svc", "bluetooth", "disable"))
+
+  @Suppress("DEPRECATION")
+  private fun enableAdapter(a: BluetoothAdapter): Boolean =
+    if (a.enable()) true else exec(arrayOf("svc", "bluetooth", "enable"))
+
+  override fun setHiddenApiPolicy(policy: Int): Boolean = runCatching {
+    android.provider.Settings.Global.putInt(
+      context.contentResolver, "hidden_api_policy", policy,
+    )
+  }.getOrElse {
+    // WRITE_SECURE_SETTINGS is held by `shell`, but a vendor build can still
+    // refuse; the settings binary is the same write by another route.
+    exec(arrayOf("settings", "put", "global", "hidden_api_policy", policy.toString()))
+  }
+
+  override fun selinuxMode(): String =
+    runCatching { execOutput(arrayOf("getenforce")).trim() }.getOrDefault("")
+
+  override fun enabledProfiles(): IntArray {
+    val a = adapter ?: return IntArray(0)
+    // getSupportedProfiles() reports the profiles the stack actually STARTED,
+    // which is what decides whether call audio is possible - unlike the
+    // profile proxy, which binds happily to a service that never ran.
+    val list = runCatching {
+      @Suppress("UNCHECKED_CAST")
+      a.javaClass.getMethod("getSupportedProfiles").invoke(a) as? List<Int>
+    }.getOrNull() ?: return IntArray(0)
+    return list.filterNotNull().toIntArray()
+  }
+
+  private fun readProperty(key: String): String = runCatching {
+    Class.forName("android.os.SystemProperties")
+      .getMethod("get", String::class.java, String::class.java)
+      .invoke(null, key, "") as? String ?: ""
+  }.getOrElse { runCatching { execOutput(arrayOf("getprop", key)).trim() }.getOrDefault("") }
+
+  /** Runs a command, returns true on a zero exit code. */
+  private fun exec(cmd: Array<String>): Boolean = runCatching {
+    val p = Runtime.getRuntime().exec(cmd)
+    p.waitFor()
+    p.exitValue() == 0
+  }.getOrDefault(false)
+
+  private fun execOutput(cmd: Array<String>): String = runCatching {
+    val p = Runtime.getRuntime().exec(cmd)
+    val out = p.inputStream.bufferedReader().use { it.readText() }
+    p.waitFor()
+    out
+  }.getOrDefault("")
+
   override fun currentCallSnapshot(): String {
     val c = client ?: return ""
     val d = connectedDevice() ?: return ""

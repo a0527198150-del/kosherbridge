@@ -159,7 +159,15 @@ class RootBridge(private val context: Context) {
     if (started && System.currentTimeMillis() - startedAt < SPAWN_RETRY_AFTER_MS) return true
     val token = UUID.randomUUID().toString()
     expectedToken = token
-    val apk = context.packageCodePath
+    // packageCodePath is only the BASE apk. An app installed as an app bundle
+    // keeps its Kotlin/AndroidX classes in split apks, and a CLASSPATH missing
+    // them makes the root process die with NoClassDefFoundError before it can
+    // report anything - the channel just silently never binds.
+    val info = context.applicationInfo
+    val apk = buildList {
+      add(info.sourceDir ?: context.packageCodePath)
+      info.splitSourceDirs?.let { addAll(it) }
+    }.filter { it.isNotBlank() }.distinct().joinToString(":")
     val cmd = buildString {
       append("( CLASSPATH='").append(apk).append("' /system/bin/app_process /system/bin --nice-name='")
       append(context.packageName).append(":root' ")
@@ -292,4 +300,35 @@ class RootBridge(private val context: Context) {
   fun audioRouteAllowed(address: String): Boolean? =
     runCatching { remote?.audioRouteAllowed(address) }.getOrNull()
       ?.let { if (it < 0) null else it == 1 }
+
+  // ---------------------------------------------------- device preparation
+
+  /** Reads a system property in the privileged process. */
+  fun systemProperty(key: String): String =
+    runCatching { remote?.getSystemProperty(key) ?: "" }.getOrDefault("")
+
+  /**
+   * Attempts to write a system property, returning the value read back
+   * afterwards (null when the write was refused). Used to try enabling the
+   * HFP-client profile flag without root - it succeeds only where the
+   * player's SELinux policy permits it.
+   */
+  fun writeSystemProperty(key: String, value: String): String? =
+    runCatching { remote?.setSystemProperty(key, value) }.getOrNull()
+
+  /** Restarts the Bluetooth stack so it re-reads the profile flags. */
+  fun restartBluetooth(): Boolean =
+    runCatching { remote?.restartBluetooth() ?: false }.getOrDefault(false)
+
+  /** Sets Android's non-SDK interface policy. DEVICE-GLOBAL. */
+  fun setHiddenApiPolicy(policy: Int): Boolean =
+    runCatching { remote?.setHiddenApiPolicy(policy) ?: false }.getOrDefault(false)
+
+  /** "Enforcing" / "Permissive" / "" when unknown. */
+  fun selinuxMode(): String =
+    runCatching { remote?.selinuxMode() ?: "" }.getOrDefault("")
+
+  /** Profile IDs the stack currently has enabled (HEADSET_CLIENT is 16). */
+  fun enabledProfiles(): List<Int> =
+    runCatching { remote?.enabledProfiles()?.toList() ?: emptyList() }.getOrDefault(emptyList())
 }

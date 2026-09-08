@@ -15,6 +15,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.example.kosherbridge.bluetooth.CallAudioOutcome
 import com.example.kosherbridge.bluetooth.CallDirection
 import com.example.kosherbridge.bluetooth.CallInfo
 import com.example.kosherbridge.bluetooth.CallState
@@ -330,7 +331,12 @@ class BridgeService : Service() {
       BluetoothProfile.STATE_DISCONNECTING -> "מתנתק..."
       else -> if (s.deviceName != null) "מנותק" else "לא מחובר למכשיר"
     }
-    return conn + if (s.audioState == 2) " · שמע פעיל" else ""
+    val audio = when {
+      s.audioState == 2 || s.audioOutcome == CallAudioOutcome.ON_PLAYER -> " · שמע בנגן"
+      s.audioOutcome == CallAudioOutcome.ON_PHONE -> " · שמע בטלפון"
+      else -> ""
+    }
+    return conn + audio
   }
 
   private fun maybeAutoConnect() {
@@ -364,7 +370,12 @@ class BridgeService : Service() {
       // first connection after every fresh install.
       settings.channelState(Build.FINGERPRINT).collect { cs ->
         manager.setChannelMode(cs.effective)
-        if (appliedManual != null && appliedManual != cs.manual) {
+        val manualChanged = appliedManual != null && appliedManual != cs.manual
+        // Record the applied choice BEFORE any early return below. Returning
+        // without it left appliedManual stale, so a player with no remembered
+        // device re-entered this branch on every single emission.
+        appliedManual = cs.manual
+        if (manualChanged) {
           // The user switched the channel in settings - re-apply it to the
           // live connection so the change takes effect immediately.
           val dev = settings.lastDevice.first() ?: return@collect
@@ -388,7 +399,6 @@ class BridgeService : Service() {
             manager.connect(target)
           }
         }
-        appliedManual = cs.manual
       }
     }
   }

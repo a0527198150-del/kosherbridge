@@ -52,6 +52,34 @@ interface IHfpBridge {
     boolean setAudioRouteAllowed(String address, boolean allowed) = 20;
     // Reads the same gate: 1 = allowed, 0 = blocked, -1 = unreadable.
     int audioRouteAllowed(String address) = 21;
+    // ---- device preparation (Shizuku / root), for players whose stack ships
+    // the HFP-client profile but never enables it. All of these need an
+    // identity the app process does not have, and none of them need root
+    // specifically - the Shizuku `shell` identity is enough where the
+    // platform's SELinux policy allows the write.
+    //
+    // Reads a system property. Readable from the app process too; exposed here
+    // so the caller can prove the privileged process sees the same value.
+    String getSystemProperty(String key) = 22;
+    // Writes a system property and returns the value read back afterwards
+    // (null when the write was refused). The Bluetooth profile flags live in
+    // the `bluetooth_config_prop` SELinux context, which stock policy lets
+    // only init write - so this is expected to fail on a stock build and to
+    // succeed on the lax/permissive policies common to cheap players.
+    String setSystemProperty(String key, String value) = 23;
+    // Restarts the Bluetooth stack so it re-reads the profile flags. Without
+    // this a successful property write has no visible effect until reboot.
+    boolean restartBluetooth() = 24;
+    // Android's non-SDK interface policy (0 = enforced, 1 = allow all).
+    // DEVICE-GLOBAL: it relaxes the restriction for every app on the player.
+    boolean setHiddenApiPolicy(int policy) = 25;
+    // "Enforcing" / "Permissive" / "" when unknown. Decides whether a
+    // property write has any chance of succeeding on this player.
+    String selinuxMode() = 26;
+    // Profile IDs the Bluetooth stack currently has ENABLED (not merely
+    // present in the APK). HEADSET_CLIENT is 16; its absence is the single
+    // fact that decides whether call audio can ever reach this player.
+    int[] enabledProfiles() = 27;
     // Reserved "destroy" transaction code defined by the Shizuku server
     // (see the official Shizuku-API demo). Without the explicit code the
     // server cannot signal this service to shut down.

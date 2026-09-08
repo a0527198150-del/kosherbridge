@@ -47,6 +47,15 @@
         android:name="android.permission.BLUETOOTH_PRIVILEGED"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- Package visibility (Android 11+): the capability probe asks the package
+         manager whether the Bluetooth stack even declares HeadsetClientService.
+         Without this the query returns "not found" on every player and the
+         probe cannot tell "the profile is disabled" (fixable) apart from "the
+         manufacturer removed it" (hopeless). -->
+    <queries>
+        <package android:name="com.android.bluetooth" />
+    </queries>
+
     <application
         android:name=".BridgeApp"
         android:allowBackup="true"

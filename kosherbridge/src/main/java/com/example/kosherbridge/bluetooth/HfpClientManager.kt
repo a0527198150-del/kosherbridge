@@ -573,6 +573,120 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
   }
 
+  // ------------------------------------------------- player capability probe
+
+  /** Last capability probe, published for the diagnostics screen. */
+  val capabilities = MutableStateFlow<PlayerCapabilities?>(null)
+
+  /**
+   * Asks the player what it can actually do, preferring a bound privileged
+   * bridge for the two reads the app process may be refused
+   * (`getSupportedProfiles` and `getenforce`).
+   */
+  suspend fun probeCapabilities(): PlayerCapabilities = withContext(Dispatchers.IO) {
+    // Every read below is a binder round trip - the privileged ones can block
+    // for seconds - so none of it may run on the caller's main thread.
+    val profiles = when {
+      useShizuku -> shizuku?.enabledProfiles()
+      useRoot -> root?.enabledProfiles()
+      else -> null
+    }
+    val selinux = when {
+      useShizuku -> shizuku?.selinuxMode()
+      useRoot -> root?.selinuxMode()
+      else -> null
+    }
+    val result = PlayerCapabilities.probe(context, profiles, selinux)
+    capabilities.value = result
+    logConnection("בדיקת יכולות הנגן: ${result.verdict}", result.profileEnabled != true)
+    result
+  }
+
+  /**
+   * Tries to switch the HFP-client profile on WITHOUT root, through whichever
+   * privileged bridge is available (Shizuku first - it is reachable over
+   * wireless adb and needs no root at all).
+   *
+   * The write targets `bluetooth.profile.hfp.hf.enabled`, which the Bluetooth
+   * stack reads when it starts. Stock Android puts that property in an SELinux
+   * context only `init` may write, so on a strict build this fails cleanly and
+   * says so; on the lax policies common to cheap players it can succeed, and
+   * then a Bluetooth restart brings HeadsetClientService up for real. Trying
+   * is the only way to find out - the answer is per-ROM, not per-model.
+   *
+   * Returns a Hebrew description of what happened.
+   */
+  suspend fun tryEnableHeadsetClientProfile(): String = withContext(Dispatchers.IO) {
+    if (!useShizuku && !useRoot) {
+      return@withContext "נדרש ערוץ מורשה: התקן והפעל Shizuku (adb אלחוטי, בלי רוט) " +
+        "או בחר את ערוץ הרוט, ונסה שוב."
+    }
+    val selinux = (if (useShizuku) shizuku?.selinuxMode() else root?.selinuxMode()).orEmpty()
+    val before = if (useShizuku) shizuku?.systemProperty(PlayerCapabilities.HFP_HF_PROPERTY)
+    else root?.systemProperty(PlayerCapabilities.HFP_HF_PROPERTY)
+    if (before == "true") {
+      // Already set but the profile is dormant: the stack has not re-read it.
+      logConnection("מאפיין הפרופיל כבר מוגדר - מפעיל מחדש את הבלוטוס", false)
+      val restarted = restartBluetoothPrivileged()
+      return@withContext if (restarted) {
+        "המאפיין כבר היה דלוק, והבלוטוס הופעל מחדש. הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה."
+      } else {
+        "המאפיין כבר דלוק אבל לא הצלחתי להפעיל מחדש את הבלוטוס. כבה והדלק בלוטוס ידנית ובדוק שוב."
+      }
+    }
+    val after = if (useShizuku) {
+      shizuku?.writeSystemProperty(PlayerCapabilities.HFP_HF_PROPERTY, "true")
+    } else {
+      root?.writeSystemProperty(PlayerCapabilities.HFP_HF_PROPERTY, "true")
+    }
+    if (after != "true") {
+      logConnection("כתיבת מאפיין הפרופיל נדחתה (SELinux=$selinux)", true)
+      return@withContext buildString {
+        append("המערכת דחתה את הכתיבה למאפיין הפרופיל")
+        if (selinux.isNotBlank()) append(" (SELinux: $selinux)")
+        append(". ")
+        append(
+          "זו מדיניות של המחסנית, לא תקלה באפליקציה: את המאפיין הזה מותר בדרך כלל " +
+            "רק ל-init לכתוב. הדרך שנשארה היא מודול ה-Magisk (דורש רוט), שמחיל אותו " +
+            "לפני שתהליך הבלוטוס עולה.",
+        )
+      }
+    }
+    logConnection("מאפיין הפרופיל נכתב בהצלחה - מפעיל מחדש את הבלוטוס", false)
+    val restarted = restartBluetoothPrivileged()
+    // The property is NOT persistent: it lives until the next reboot, so the
+    // app has to re-apply it on every boot. Say so plainly rather than letting
+    // the user discover it the hard way tomorrow morning.
+    buildString {
+      append("המאפיין נכתב בהצלחה! ")
+      append(
+        if (restarted) "הבלוטוס הופעל מחדש - הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה."
+        else "לא הצלחתי להפעיל מחדש את הבלוטוס - כבה והדלק אותו ידנית ובדוק שוב.",
+      )
+      append(" שים לב: המאפיין נמחק בכל אתחול של הנגן, ולכן צריך להריץ את הפעולה הזו שוב אחרי כל הפעלה מחדש.")
+    }
+  }
+
+  private fun restartBluetoothPrivileged(): Boolean =
+    if (useShizuku) shizuku?.restartBluetooth() ?: false
+    else root?.restartBluetooth() ?: false
+
+  /**
+   * Lifts Android's non-SDK interface restriction through the privileged
+   * bridge. DEVICE-GLOBAL: it relaxes the restriction for every app on the
+   * player, so it is never applied automatically - only when the user asks.
+   */
+  suspend fun liftHiddenApiRestriction(): String = withContext(Dispatchers.IO) {
+    val ok = when {
+      useShizuku -> shizuku?.setHiddenApiPolicy(1) ?: false
+      useRoot -> root?.setHiddenApiPolicy(1) ?: false
+      else -> return@withContext "נדרש ערוץ מורשה (Shizuku או רוט) כדי לשנות את ההגדרה הזו."
+    }
+    logConnection(if (ok) "חסימת ה-API הנסתר הוסרה (הגדרה גלובלית)" else "לא ניתן היה לשנות את מדיניות ה-API הנסתר", !ok)
+    if (ok) "בוצע. הפעל מחדש את האפליקציה כדי שהשינוי ייכנס לתוקף."
+    else "המערכת דחתה את השינוי."
+  }
+
   /**
    * Which connection channel to use: "AUTO" (probe everything in order),
    * "DIRECT" (in-process hidden API, no fallbacks), "SHIZUKU" (privileged

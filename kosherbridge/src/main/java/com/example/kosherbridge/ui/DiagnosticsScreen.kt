@@ -30,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -38,6 +39,8 @@ import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.bluetooth.CallAudioOutcome
+import com.example.kosherbridge.bluetooth.PlayerCapabilities
+import kotlinx.coroutines.launch
 
 /**
  * Device/connection diagnostics previously shown under the "אבחון" card on the
@@ -51,7 +54,20 @@ fun DiagnosticsScreen(
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   var micResult by remember { mutableStateOf<String?>(null) }
+  var capabilities by remember { mutableStateOf<PlayerCapabilities?>(null) }
+  var enableResult by remember { mutableStateOf<String?>(null) }
+  var probing by remember { mutableStateOf(false) }
+
+  // The probe is the first thing this screen should be able to answer, so run
+  // it on open rather than making the user find a button. It is a handful of
+  // binder reads, all off the main thread.
+  LaunchedEffect(Unit) {
+    BridgeService.withManager(context) { bridge ->
+      scope.launch { capabilities = bridge.probeCapabilities() }
+    }
+  }
 
   // Re-read the HFP connection-policy row each time this screen opens. The read
   // is a blocking binder round trip, so it runs off the main thread (see
@@ -186,6 +202,96 @@ fun DiagnosticsScreen(
         }
       }
       SettingRow(
+        "בדוק יכולות הנגן",
+        if (probing) "בודק..." else "מה הנגן הזה באמת מסוגל לעשות - פרופיל, מאפיין מערכת ו-SELinux",
+      ) {
+        probing = true
+        BridgeService.withManager(
+          context,
+          onMissing = {
+            probing = false
+            onSnackbar("שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב")
+          },
+        ) { bridge ->
+          scope.launch {
+            capabilities = bridge.probeCapabilities()
+            probing = false
+          }
+        }
+      }
+      capabilities?.let { caps ->
+        DiagRow(
+          "פרופיל דיבורית פעיל במחסנית",
+          when (caps.profileEnabled) {
+            true -> "כן"
+            false -> "לא - כבוי"
+            null -> "לא ניתן לקריאה"
+          },
+          caps.profileEnabled == true,
+        )
+        DiagRow(
+          "קוד הפרופיל קיים בנגן",
+          when (caps.profilePresent) {
+            true -> "כן"
+            false -> "לא - הוצא מהבנייה"
+            null -> "לא ניתן לקריאה"
+          },
+          caps.profilePresent == true,
+        )
+        DiagRow(
+          "מאפיין hfp.hf.enabled",
+          caps.profileFlag.ifBlank { "לא מוגדר" },
+          caps.profileFlag == "true",
+        )
+        DiagRow(
+          "SELinux",
+          caps.selinuxMode.ifBlank { "לא ניתן לקריאה" },
+          caps.selinuxMode.equals("Permissive", ignoreCase = true),
+        )
+        Card(
+          shape = RoundedCornerShape(12.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+          ),
+        ) {
+          Text(
+            caps.verdict,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(12.dp),
+          )
+        }
+        if (caps.worthTryingEnable) {
+          SettingRow(
+            "הפעל פרופיל דיבורית (בלי רוט)",
+            enableResult
+              ?: "מנסה להדליק את הפרופיל דרך Shizuku ולהפעיל מחדש את הבלוטוס. " +
+              "מצליח רק אם מדיניות המערכת בנגן מרשה זאת",
+          ) {
+            BridgeService.withManager(
+              context,
+              onMissing = { onSnackbar("שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב") },
+            ) { bridge ->
+              scope.launch {
+                enableResult = "מנסה..."
+                enableResult = bridge.tryEnableHeadsetClientProfile()
+                capabilities = bridge.probeCapabilities()
+              }
+            }
+          }
+        }
+        SettingRow(
+          "הסר חסימת API נסתר",
+          "דרוש Shizuku/רוט. שים לב: זו הגדרה גלובלית שמשפיעה על כל האפליקציות בנגן",
+        ) {
+          BridgeService.withManager(
+            context,
+            onMissing = { onSnackbar("שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב") },
+          ) { bridge ->
+            scope.launch { onSnackbar(bridge.liftHiddenApiRestriction()) }
+          }
+        }
+      }
+      SettingRow(
         "פתח ניתוב שמע לשיחה",
         "מבקש מהמערכת לאשר קליטת קול השיחה בנגן. הרץ אם השיחה מתחברת אבל אין קול באף צד",
       ) {
@@ -225,7 +331,7 @@ fun DiagnosticsScreen(
         "מעתיק דוח מלא של המכשיר והחיבור - הדבק אותו בתמיכה",
       ) {
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("kosherbridge-diagnostics", buildDiagnosticsReport(state)))
+        cm.setPrimaryClip(ClipData.newPlainText("kosherbridge-diagnostics", buildDiagnosticsReport(state, capabilities)))
         onSnackbar("דוח האבחון הועתק - הדבק אותו בהודעה")
       }
     }
@@ -273,7 +379,10 @@ private fun buildGuidance(state: BridgeUiState): String? = when {
 }
 
 /** Builds the full local capability report copied by "העתק דוח אבחון". */
-private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
+private fun buildDiagnosticsReport(
+  state: BridgeUiState,
+  capabilities: PlayerCapabilities?,
+): String = buildString {
   appendLine("KosherBridge - דוח אבחון")
   appendLine("=======================")
   appendLine("גרסת אפליקציה: ${com.example.kosherbridge.BuildConfig.VERSION_NAME}")
@@ -323,6 +432,11 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
   state.scoSupport?.let { appendLine("שמע (SCO): $it") }
   state.scoTechnique?.let { appendLine("טכניקת שמע אחרונה: $it") }
   state.audioRouteAllowed?.let { appendLine("ניתוב שמע השיחה (HFP Client): $it") }
+  capabilities?.let {
+    appendLine()
+    appendLine("-- יכולות הנגן --")
+    append(it.report())
+  }
   state.rawDropInfo?.let { appendLine("ניתוקי קישור: $it") }
   state.rawConnectionDiagnostics?.let { appendLine("ניסיונות SDP/RFCOMM: $it") }
   state.headsetClientPolicy?.let { appendLine("מדיניות חיבור (פרופיל דיבורית): $it") }

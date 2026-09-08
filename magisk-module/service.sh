@@ -1,4 +1,4 @@
-#!/sbin/sh
+#!/system/bin/sh
 # Runs at boot (late_start service stage). The in-process direct path needs
 # two things, both provided by this module:
 #   1. BLUETOOTH_PRIVILEGED  -> granted because the app is a priv-app and is
@@ -25,3 +25,17 @@ fi
 # KosherBridge. On a dedicated player that trade is reasonable; reconsider on
 # a device used for anything else.
 settings put global hidden_api_policy 1
+
+# Re-assert the profile flag at boot as a belt-and-braces measure. system.prop
+# is the mechanism that actually works (Magisk applies it with resetprop at
+# post-fs-data, before the Bluetooth process starts and reads it); this line
+# only catches the case where a vendor init script overwrote it afterwards,
+# and it is harmless when the value is already correct.
+if [ "$(getprop bluetooth.profile.hfp.hf.enabled)" != "true" ]; then
+  resetprop bluetooth.profile.hfp.hf.enabled true
+  # The stack has already read the old value by now, so it needs a restart to
+  # pick this up. Only done when we actually had to change something.
+  svc bluetooth disable
+  sleep 2
+  svc bluetooth enable
+fi
