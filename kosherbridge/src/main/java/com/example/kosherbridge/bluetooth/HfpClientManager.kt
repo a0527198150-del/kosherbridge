@@ -1754,6 +1754,17 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       audio.keepAudioOnPhone()
       return
     }
+    // The voice is deliberately on the phone for THIS call: either the user
+    // asked for that with "החזר לטלפון", or the bridge measured that this
+    // player has nowhere to put call audio. Every caller of this function is
+    // automatic - the ACTIVE transition, the SCO-dropped and audio-stolen
+    // callbacks, and a watchdog that runs every two seconds - and on the
+    // profile channels the stack-level connectAudio below opens the SCO link
+    // regardless of what this app claims locally. Without this check the
+    // watchdog dragged the conversation back onto the player within seconds
+    // of the user asking for the opposite. An explicit request goes through
+    // toggleAudio()/forceRetry(), which clears the latch first.
+    if (audio.voiceDeliberatelyOnPhone) return
     if (rawActive) {
       // Raw RFCOMM has no profile-level SCO, so also force the stack to open
       // the SCO voice channel directly - harmless if the stack refuses.

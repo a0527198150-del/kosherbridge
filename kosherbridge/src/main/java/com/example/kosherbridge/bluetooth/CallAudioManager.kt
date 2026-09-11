@@ -142,6 +142,19 @@ class CallAudioManager(private val context: Context) {
   val audioGivenUp: Boolean get() = stayOnPhone
 
   /**
+   * True when the conversation IN PROGRESS is deliberately on the phone -
+   * either the user asked for that, or it was measured as the only place it
+   * can go.
+   *
+   * Deliberately narrower than [audioGivenUp]: it also requires a call to be
+   * in progress. A latch that outlived its call would otherwise silence the
+   * NEXT one before the first claim ever ran, and nothing inside that call
+   * would clear it - the claim that resets the latch is exactly the thing the
+   * latch would be suppressing.
+   */
+  val voiceDeliberatelyOnPhone: Boolean get() = inCall && stayOnPhone
+
+  /**
    * Puts the audio HAL back to its idle state, unconditionally.
    *
    * [applyHalHfpParameters] leaves `hfp_enable=true` and `A2dpSuspended=true`
