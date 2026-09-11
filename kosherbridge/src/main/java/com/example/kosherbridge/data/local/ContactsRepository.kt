@@ -201,40 +201,95 @@ class ContactsRepository(
     runCatching { File(path).delete() }
   }
 
+  /** One address-book entry being assembled during [importFromDevice]. */
+  private class DeviceContact(val name: String) {
+    /** label to number, in the order the address book returned them. */
+    val phones = mutableListOf<Pair<String, String>>()
+  }
+
   /**
    * Imports contacts from the device address book.
    * Caller must hold READ_CONTACTS. Returns how many new contacts were added.
+   *
+   * The Phone table has one row per NUMBER, so a contact with a mobile and a
+   * landline arrives as two rows - and importing row by row turned them into
+   * two separate contacts with the same name. Rows are grouped by contact id
+   * instead, into the one contact with two numbers that the contacts screen
+   * has always been able to display and that caller ID matches on either
+   * number.
    */
   suspend fun importFromDevice(): Int = withContext(Dispatchers.IO) {
     val resolver = context.contentResolver
     val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
     val projection = arrayOf(
+      ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
       ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
       ContactsContract.CommonDataKinds.Phone.NUMBER,
+      ContactsContract.CommonDataKinds.Phone.TYPE,
     )
-    var added = 0
+    val byContact = LinkedHashMap<Long, DeviceContact>()
     resolver.query(uri, projection, null, null, null)?.use { cursor ->
+      val idIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
       val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
       val numIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+      val typeIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.TYPE)
+      if (idIdx < 0 || nameIdx < 0 || numIdx < 0) return@use
       while (cursor.moveToNext()) {
-        if (nameIdx < 0 || numIdx < 0) break
-        val name = cursor.getString(nameIdx) ?: continue
-        val number = cursor.getString(numIdx) ?: continue
-        val normalized = normalizePhone(number)
-        if (normalized.isEmpty()) continue
-        val existing = db.contactDao().byPhone(normalized) ?: db.contactDao().phoneByNormalized(normalized)
-        if (existing == null) {
-          val id = db.contactDao().insert(
-            ContactEntity(name = name, phone = number.trim(), normalizedPhone = normalized),
-          )
-          db.contactDao().insertPhone(
-            ContactPhoneEntity(contactId = id, label = "נייד", number = number.trim(), normalizedPhone = normalized),
-          )
-          added++
+        val contactId = cursor.getLong(idIdx)
+        val name = cursor.getString(nameIdx)?.trim().orEmpty()
+        val number = cursor.getString(numIdx)?.trim().orEmpty()
+        if (name.isEmpty() || number.isEmpty()) continue
+        if (normalizePhone(number).isEmpty()) continue
+        val entry = byContact.getOrPut(contactId) { DeviceContact(name) }
+        val label = if (typeIdx >= 0) phoneTypeLabel(cursor.getInt(typeIdx)) else "נייד"
+        // The address book repeats the same number across linked accounts.
+        if (entry.phones.none { normalizePhone(it.second) == normalizePhone(number) }) {
+          entry.phones += label to number
         }
       }
     }
+
+    var added = 0
+    for (entry in byContact.values) {
+      if (entry.phones.isEmpty()) continue
+      // Skip when ANY of this entry's numbers is already known, so re-running
+      // the import does not create a second copy of a contact whose secondary
+      // number was the one already stored.
+      val alreadyExists = entry.phones.any { (_, number) ->
+        val n = normalizePhone(number)
+        n.isNotEmpty() &&
+          (db.contactDao().byPhone(n) != null || db.contactDao().phoneByNormalized(n) != null)
+      }
+      if (alreadyExists) continue
+      val primary = entry.phones.first().second
+      val id = db.contactDao().insert(
+        ContactEntity(
+          name = entry.name,
+          phone = primary,
+          normalizedPhone = normalizePhone(primary),
+        ),
+      )
+      entry.phones.forEach { (label, number) ->
+        db.contactDao().insertPhone(
+          ContactPhoneEntity(
+            contactId = id,
+            label = label,
+            number = number,
+            normalizedPhone = normalizePhone(number),
+          ),
+        )
+      }
+      added++
+    }
     added
+  }
+
+  /** The address book's phone type as the label this app shows. */
+  private fun phoneTypeLabel(type: Int): String = when (type) {
+    ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE -> "נייד"
+    ContactsContract.CommonDataKinds.Phone.TYPE_HOME -> "בית"
+    ContactsContract.CommonDataKinds.Phone.TYPE_WORK -> "עבודה"
+    else -> "אחר"
   }
 
   // --- JSON backup / restore (SAF documents) ---
