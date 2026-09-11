@@ -88,11 +88,17 @@ fun DiagnosticsScreen(
   val micPermission = rememberLauncherForActivityResult(
     ActivityResultContracts.RequestPermission(),
   ) { granted ->
-    micResult = if (granted) {
-      BridgeHub.service?.checkMicrophone { micResult = it }
-      "בודק..."
-    } else {
-      "אין הרשאת מיקרופון"
+    // Same trap as the row below: with the service dead the elvis call does
+    // nothing and the row would sit on "בודק..." for ever - here right after
+    // the user granted the permission, which is the worst moment to go silent.
+    val svc = BridgeHub.service
+    micResult = when {
+      !granted -> "אין הרשאת מיקרופון"
+      svc == null -> "שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב"
+      else -> {
+        svc.checkMicrophone { micResult = it }
+        "בודק..."
+      }
     }
   }
 

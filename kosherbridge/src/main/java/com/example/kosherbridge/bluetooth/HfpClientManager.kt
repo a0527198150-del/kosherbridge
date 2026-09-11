@@ -418,6 +418,15 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
               if (!isBridgeDevice(addr)) return@launch
               restoreSystemProfiles(target)
               ServiceLocator.settings.learnChannel(Build.FINGERPRINT, "")
+              // ...and stop chasing it. The bond is gone, so every reconnect
+              // attempt to that address is now guaranteed to fail - and the
+              // bridge kept making them, for ever, on its retry ladder, while
+              // the home screen showed a phone that was no longer paired.
+              raw?.disconnect()
+              device.value = null
+              connectionState.value = BluetoothProfile.STATE_DISCONNECTED
+              ServiceLocator.settings.forgetDevice()
+              logConnection("הזיווג בוטל - הטלפון הוסר מהבחירה. בחר טלפון מחדש כדי לחדש את הגשר", true)
             }
           }
         }

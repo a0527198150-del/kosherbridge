@@ -668,7 +668,25 @@ class BridgeService : Service() {
     }
     scope.launch {
       manager.device.collect { d ->
-        BridgeHub.update { it.copy(deviceName = d?.name, deviceAddress = d?.address) }
+        // Which phone this bridge is FOR is the remembered choice, not the
+        // live connection. disconnect() clears manager.device, and with it
+        // every screen lost the selected phone: the readiness checklist went
+        // back to "עדיין לא נבחר טלפון", the diagnostics policy row became
+        // unreadable, and the two repair actions in connection settings
+        // refused to run with "בחר את הטלפון הכשר לפני התיקון" - at exactly
+        // the moment a user who just disconnected wants them. Whether the link
+        // is up is connectionState and rawLinkActive; that is untouched.
+        val remembered = if (d == null) {
+          runCatching { ServiceLocator.settings.lastDevice.first() }.getOrNull()
+        } else {
+          null
+        }
+        BridgeHub.update {
+          it.copy(
+            deviceName = d?.name ?: remembered?.name?.takeIf { n -> n.isNotBlank() },
+            deviceAddress = d?.address ?: remembered?.address,
+          )
+        }
         updateBridgeNotification()
       }
     }

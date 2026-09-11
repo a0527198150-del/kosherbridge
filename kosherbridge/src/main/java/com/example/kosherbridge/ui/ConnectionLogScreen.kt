@@ -65,8 +65,16 @@ fun ConnectionLogScreen(
         }
       }
       SettingRow("נקה יומן חיבור", "מחיקת השורות שנשמרו במכשיר") {
-        BridgeHub.service?.clearConnectionLog()
-        onSnackbar("יומן החיבור נוקה")
+        // The confirmation used to appear whether or not anything was cleared:
+        // with the service dead the elvis call was a silent no-op and the log
+        // stayed exactly where it was.
+        val svc = BridgeHub.service
+        if (svc == null) {
+          onSnackbar("שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב")
+        } else {
+          svc.clearConnectionLog()
+          onSnackbar("יומן החיבור נוקה")
+        }
       }
     }
   }
