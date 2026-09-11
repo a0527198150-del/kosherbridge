@@ -100,6 +100,13 @@ class CallAudioManager(private val context: Context) {
    */
   var profileAudioConnected: (() -> Boolean)? = null
 
+  /**
+   * True when the negotiated codec is mSBC (wideband). The audio HAL has to be
+   * told the sampling rate of the SCO stream, and getting it wrong is the
+   * difference between speech and noise.
+   */
+  @Volatile var wideBandSpeech = false
+
   /** Grace period before declaring the voice unreachable. Long enough for a
    * slow stack to negotiate SCO, short enough that the user is not left
    * guessing through the first half of the conversation. */
@@ -246,6 +253,47 @@ class CallAudioManager(private val context: Context) {
     }
 
     requestFocus()
+    applyHalHfpParameters(true)
+  }
+
+  /**
+   * Pushes the HFP audio path parameters straight to the audio HAL.
+   *
+   * These are exactly what AOSP's own HFP-client state machine sends when it
+   * routes call audio (`routeHfpAudio`): `hfp_enable` makes the HAL create the
+   * SCO audio task, `hfp_set_sampling_rate` tells it whether the stream is
+   * narrowband CVSD or wideband mSBC, and the legacy `BT_SCO` / `A2dpSuspended`
+   * keys are what AudioService sets on older HALs.
+   *
+   * Worth doing from here because `AudioManager.setParameters` is a PUBLIC API
+   * needing only MODIFY_AUDIO_SETTINGS, which this app already holds - no root,
+   * no privileged identity. On a player where the stack brings the SCO link up
+   * but nothing routes, this is the step that was missing; on a HAL that does
+   * not know these keys they are ignored, which is why the platform can send
+   * them unconditionally too.
+   *
+   * It does NOT create the SCO link - only the Bluetooth stack does that. So
+   * this helps where a link exists and does not reach the speakers; it cannot
+   * conjure audio on a player that never establishes one.
+   */
+  private fun applyHalHfpParameters(enable: Boolean) {
+    val rate = if (wideBandSpeech) 16000 else 8000
+    val params = if (enable) {
+      listOf(
+        "hfp_set_sampling_rate=$rate",
+        "hfp_enable=true",
+        "A2dpSuspended=true",
+        "BT_SCO=on",
+      )
+    } else {
+      // Order matters on the way out: stop the HFP task before handing the
+      // audio path back, or a HAL can be left with a dangling SCO task.
+      listOf("hfp_enable=false", "BT_SCO=off", "A2dpSuspended=false")
+    }
+    params.forEach { param ->
+      runCatching { am.setParameters(param) }
+        .onFailure { Log.w(tag, "setParameters($param) failed: ${it.message}") }
+    }
   }
 
   /**
@@ -308,6 +356,7 @@ class CallAudioManager(private val context: Context) {
    * the pipeline through [claimVoicePipeline].
    */
   private fun releaseLocalClaim() {
+    applyHalHfpParameters(false)
     stopVirtualSco()
     runCatching { am.stopBluetoothSco() }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

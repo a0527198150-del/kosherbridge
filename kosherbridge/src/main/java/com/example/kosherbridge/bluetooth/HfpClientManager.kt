@@ -1654,6 +1654,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       if (audio.scoDeviceAvailable(device.value) && !audio.audioGivenUp) {
         raw?.requestAudio()
       }
+      // Codec 2 is mSBC (wideband); the HAL needs the right sampling rate or
+      // the stream is decoded as noise.
+      audio.wideBandSpeech = raw?.negotiatedCodec == 2
       audio.ensureCallAudio(device.value, volumeBoost, forceVirtualSco = true)
       return
     }

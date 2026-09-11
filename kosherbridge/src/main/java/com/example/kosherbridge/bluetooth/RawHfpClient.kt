@@ -134,6 +134,13 @@ class RawHfpClient(
   /** True once the SLC left AT+BCC available as an audio request on this link. */
   val audioRequestSupported: Boolean get() = codecNegotiation
 
+  /** Codec the gateway last selected through +BCS: 1 = CVSD (narrowband),
+   * 2 = mSBC (wideband), 0 = none negotiated. The audio HAL has to be told
+   * which sampling rate the SCO stream carries, so this is not cosmetic. */
+  @Volatile
+  var negotiatedCodec = 0
+    private set
+
   @Volatile private var socket: HfpLink? = null
   /** Socket currently inside BluetoothSocket.connect(), before it becomes socket. */
   @Volatile private var connectingSocket: BluetoothSocket? = null
@@ -710,6 +717,7 @@ class RawHfpClient(
       return true
     }
     hspMode = false
+    negotiatedCodec = 0
     agBrsfFeatures = 0
     agFeaturesKnown = false
     cmerAccepted = false
@@ -1107,6 +1115,7 @@ class RawHfpClient(
    */
   private fun handleBcs(line: String) {
     val codec = line.substringAfter("+BCS:").trim().toIntOrNull() ?: return
+    negotiatedCodec = codec
     val name = when (codec) {
       1 -> "CVSD"
       2 -> "mSBC (רחב פס)"
