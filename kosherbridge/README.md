@@ -92,6 +92,32 @@
 מנהלי החשמל של יצרנים זולים הורגים תהליכים ולא מכבדים אותו — והגשר פשוט חדל
 להתקיים בלי שדבר במכשיר יאמר זאת.
 
+### שער השמע — שתי דרכים לפתוח אותו
+
+**מאומת מול קוד המקור של AOSP.** `HeadsetClientStateMachine` מחזיק שדה
+`mAudioRouteAllowed` ("Indicates whether audio can be routed to the device"),
+וכשהוא כבוי והטלפון פותח ערוץ קול, המחסנית עושה בדיוק את זה:
+
+```java
+if (!mAudioRouteAllowed) {
+    info("Audio is not allowed! Disconnect SCO.");
+```
+
+כלומר הטלפון כבר מסר את השיחה ל"דיבורית", והדיבורית זורקת אותה — ולא שומעים
+בשני הצדדים. שתי דרכים לפתוח את השער:
+
+1. **הקריאה הישירה** `setAudioRouteAllowed(true)` — פועלת לכל מכשיר בנפרד.
+   באנדרואיד 8–12 בלי שום הרשאה; ב-13+ דרך Shizuku/רוט.
+2. **המאפיין** `bluetooth.headset_client.initial_audio_route.enabled` — המחסנית
+   קוראת אותו כשהיא בונה את מכונת המצבים:
+   ```java
+   mAudioRouteAllowed = SystemProperties.getBoolean(
+       "bluetooth.headset_client.initial_audio_route.enabled", mAudioRouteAllowed);
+   ```
+   **עדיף כשהוא עובד:** הוא חל על כל חיבור עתידי במקום להידרש מחדש לכל מכשיר.
+   נכנס לתוקף בחיבור הבא, כי השדה נקרא בבנייה. האפליקציה מנסה אותו אוטומטית
+   כשהקריאה הישירה נדחית, ומצבו מוצג באבחון בשורה "מאפיין שער השמע".
+
 ### ניתוב השמע ברמת ה-HAL (בלי רוט, בלי Shizuku)
 
 כשהאפליקציה תופסת את צינור השמע לשיחה היא שולחת ל-HAL של השמע בדיוק את

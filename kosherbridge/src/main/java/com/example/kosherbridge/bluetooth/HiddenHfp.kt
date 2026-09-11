@@ -221,15 +221,24 @@ object HiddenHfp {
   /**
    * **The single most important call in the no-root audio path.**
    *
-   * AOSP's `HeadsetClientStateMachine` keeps a per-device `mAudioRouteAllowed`
-   * flag, initialised from the build's `hfp_client_connection_service_enabled`
-   * resource - which is `false` on every player that is not an automotive
-   * build. While it is false the state machine answers the audio gateway's
-   * incoming SCO (voice) connection with an immediate DISCONNECT_AUDIO: the
-   * phone has already handed the conversation to the "hands-free", and the
+   * VERIFIED against AOSP (HeadsetClientStateMachine): the state machine keeps
+   * a per-device `mAudioRouteAllowed` field - "Indicates whether audio can be
+   * routed to the device" - initialised from the service and then overridden by
+   * the `bluetooth.headset_client.initial_audio_route.enabled` system property.
+   * When the gateway's SCO arrives while that field is false, the state machine
+   * takes this branch:
+   *
+   *     if (!mAudioRouteAllowed) {
+   *         info("Audio is not allowed! Disconnect SCO.");
+   *
+   * The phone has already handed the conversation to the "hands-free", and the
    * hands-free throws it away. That is exactly the symptom this bridge had -
    * the call connects, and the voice is audible neither on the player nor on
    * the kosher phone.
+   *
+   * See also PlayerCapabilities.AUDIO_ROUTE_PROPERTY: setting that property is
+   * the declarative form of this call, and it applies to every state machine
+   * the stack builds afterwards rather than to one device.
    *
    * `setAudioRouteAllowed` flips that flag. On Android 8-12 it is
    * `setAudioRouteAllowed(boolean)` and needs only BLUETOOTH_CONNECT, so it

@@ -38,6 +38,8 @@ data class PlayerCapabilities(
   val profilePresent: Boolean?,
   /** Value of bluetooth.profile.hfp.hf.enabled ("" when unset). */
   val profileFlag: String,
+  /** Value of the HFP-client audio-gate property ("" when unset). */
+  val audioRouteFlag: String,
   /** "Enforcing" / "Permissive" / "" when it could not be read. */
   val selinuxMode: String,
   /** True when the hidden BluetoothHeadsetClient class is reachable. */
@@ -90,6 +92,7 @@ data class PlayerCapabilities(
       },
     )
     appendLine("bluetooth.profile.hfp.hf.enabled: ${profileFlag.ifBlank { "לא מוגדר" }}")
+    appendLine("$AUDIO_ROUTE_PROPERTY: ${audioRouteFlag.ifBlank { "לא מוגדר" }}")
     appendLine("SELinux: ${selinuxMode.ifBlank { "לא ניתן לקריאה" }}")
     appendLine("API נסתר (HFP) נגיש: ${if (hiddenApiReachable) "כן" else "לא"}")
     appendLine("מסקנה: $verdict")
@@ -120,6 +123,28 @@ data class PlayerCapabilities(
       "persist.vendor.bluetooth.hfpclient",
       "persist.bluetooth.enablehfpclient",
     )
+
+    /**
+     * The property that decides the HFP-client audio gate at birth.
+     *
+     * Verified against AOSP: HeadsetClientStateMachine initialises its
+     * `mAudioRouteAllowed` field from the service and then lets this property
+     * override it -
+     *
+     *     mAudioRouteAllowed = SystemProperties.getBoolean(
+     *         "bluetooth.headset_client.initial_audio_route.enabled",
+     *         mAudioRouteAllowed);
+     *
+     * and when that field is false the state machine answers the phone's
+     * incoming SCO with "Audio is not allowed! Disconnect SCO."
+     *
+     * This is a DIFFERENT problem from the profile flags: those decide whether
+     * the profile runs at all, this decides whether a running profile accepts
+     * the voice. Setting it is the declarative equivalent of calling
+     * setAudioRouteAllowed(true), and unlike that call it survives into every
+     * future connection instead of needing to be re-applied per device.
+     */
+    const val AUDIO_ROUTE_PROPERTY = "bluetooth.headset_client.initial_audio_route.enabled"
 
     /**
      * A harmless property used only to find out whether this player lets the
@@ -156,6 +181,7 @@ data class PlayerCapabilities(
         profileEnabled = profiles?.contains(PROFILE_HEADSET_CLIENT),
         profilePresent = headsetClientServicePresent(context),
         profileFlag = systemProperty(HFP_HF_PROPERTY),
+        audioRouteFlag = systemProperty(AUDIO_ROUTE_PROPERTY),
         selinuxMode = privilegedSelinux?.takeIf { it.isNotBlank() } ?: selinuxMode(),
         hiddenApiReachable = HiddenHfp.isAvailable,
       )

@@ -248,6 +248,11 @@ fun DiagnosticsScreen(
           caps.profileFlag == "true",
         )
         DiagRow(
+          "מאפיין שער השמע",
+          caps.audioRouteFlag.ifBlank { "לא מוגדר" },
+          caps.audioRouteFlag == "true",
+        )
+        DiagRow(
           "SELinux",
           caps.selinuxMode.ifBlank { "לא ניתן לקריאה" },
           caps.selinuxMode.equals("Permissive", ignoreCase = true),

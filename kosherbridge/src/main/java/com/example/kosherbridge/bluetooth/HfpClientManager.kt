@@ -562,7 +562,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     val c = client
     if (c == null) {
       audioRouteAllowed.value = if (privileged) {
-        "הערוץ המורשה לא הצליח לפתוח את הניתוב"
+        // No profile object to call through, but the declarative route needs
+        // none: the property is read when the stack builds the state machine.
+        if (writeAudioRouteProperty()) "מאושר דרך מאפיין מערכת (נדרש חיבור מחדש)"
+        else "הערוץ המורשה לא הצליח לפתוח את הניתוב"
       } else {
         // Raw RFCOMM: there is no profile object to open a gate on. The gate
         // is not what blocks that path, so this is not an error.
@@ -581,13 +584,27 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         audioRouteAllowed.value = "מאושר"
       }
       HiddenHfp.AudioRoutePermission.BLOCKED -> {
-        audioRouteAllowed.value =
-          if (HiddenHfp.audioRouteGateNeedsPrivilege) "חסום - נדרש Shizuku או רוט" else "חסום"
-        logConnection(
-          "המערכת חסמה את פתיחת ניתוב השמע - ללא זה הטלפון מוסר את השיחה והקול אובד. " +
-            "נדרש ערוץ Shizuku/רוט, או ערוץ RFCOMM שמשאיר את השמע בטלפון",
-          true,
-        )
+        // The imperative call was refused. AOSP also reads the gate's initial
+        // value from a system property, and that is a second, independent
+        // route to the same result - and a better one when it works, because
+        // it applies to every future connection instead of needing to be
+        // re-asserted per device.
+        if (privileged && writeAudioRouteProperty()) {
+          audioRouteAllowed.value = "מאושר דרך מאפיין מערכת (נדרש חיבור מחדש)"
+          logConnection(
+            "הקריאה הישירה נדחתה, אבל המאפיין ${PlayerCapabilities.AUDIO_ROUTE_PROPERTY} " +
+              "נכתב בהצלחה. התנתק והתחבר מחדש לטלפון כדי שהשער ייפתח",
+            false,
+          )
+        } else {
+          audioRouteAllowed.value =
+            if (HiddenHfp.audioRouteGateNeedsPrivilege) "חסום - נדרש Shizuku או רוט" else "חסום"
+          logConnection(
+            "המערכת חסמה את פתיחת ניתוב השמע - ללא זה הטלפון מוסר את השיחה והקול אובד. " +
+              "נדרש ערוץ Shizuku/רוט, או ערוץ RFCOMM שמשאיר את השמע בטלפון",
+            true,
+          )
+        }
       }
       HiddenHfp.AudioRoutePermission.UNSUPPORTED -> {
         // Nothing to open: this build has no such gate, so an absent voice
@@ -762,6 +779,25 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           "ה-Magisk (דורש רוט), שמחיל אותם לפני שתהליך הבלוטוס עולה.",
       )
     }
+  }
+
+  /**
+   * Opens the audio gate declaratively, by setting the property AOSP reads when
+   * it builds a HFP-client state machine:
+   *
+   *     mAudioRouteAllowed = SystemProperties.getBoolean(
+   *         "bluetooth.headset_client.initial_audio_route.enabled", mAudioRouteAllowed);
+   *
+   * Worth trying when the imperative setAudioRouteAllowed() call is refused,
+   * and better than it when it succeeds: the value is read for every state
+   * machine the stack builds from then on, so the gate stays open for future
+   * connections rather than having to be re-asserted for each device. It takes
+   * effect on the NEXT connection, since the field is read at construction.
+   */
+  private fun writeAudioRouteProperty(): Boolean {
+    val key = PlayerCapabilities.AUDIO_ROUTE_PROPERTY
+    if (privilegedProperty(key) == "true") return true
+    return writePrivilegedProperty(key, "true") == "true"
   }
 
   private fun startProfileServicePrivileged(): String =
