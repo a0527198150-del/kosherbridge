@@ -306,6 +306,23 @@ private fun buildSetupItems(
     },
   )
 
+  // 2b. Vendor auto-start managers. Android has no API to read or set these,
+  // so the honest thing is to say it plainly and open the vendor screen when
+  // one is known. On the Chinese players this targets, an app missing from
+  // that list is killed no matter what Android's own settings say - which is
+  // indistinguishable, from the user's side, from the app being broken.
+  autoStartIntent(context)?.let { intent ->
+    items += SetupItem(
+      title = "הפעלה אוטומטית (הגדרת יצרן)",
+      detail = "לנגן הזה יש מנהל הפעלה־אוטומטית משלו, שאנדרואיד לא מאפשר לאפליקציה " +
+        "לקרוא או לשנות. ודא ש'גשר כשר' מסומן שם, אחרת המערכת תסגור אותו בלי קשר " +
+        "להרשאות שאישרת כאן",
+      level = SetupLevel.OPTIONAL,
+      actionLabel = "פתח את המסך של היצרן",
+      action = { openSettings(intent) },
+    )
+  }
+
   // 3. Notifications - how an incoming call reaches the user when the
   // full-screen activity is refused.
   val notifOk = Build.VERSION.SDK_INT < 33 ||
@@ -427,6 +444,32 @@ private fun buildSetupItems(
   }
 
   return items
+}
+
+/**
+ * The vendor auto-start screen for this player, or null when none is known.
+ *
+ * These are undocumented, vendor-private activities; each entry is resolved
+ * against the package manager before it is offered, so a wrong guess shows
+ * nothing rather than a button that dead-ends.
+ */
+private fun autoStartIntent(context: Context): Intent? {
+  val candidates = listOf(
+    "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
+    "com.letv.android.letvsafe" to "com.letv.android.letvsafe.AutobootManageActivity",
+    "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+    "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+    "com.oppo.safe" to "com.oppo.safe.permission.startup.StartupAppListActivity",
+    "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity",
+    "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+    "com.samsung.android.lool" to "com.samsung.android.sm.ui.battery.BatteryActivity",
+    "com.asus.mobilemanager" to "com.asus.mobilemanager.autostart.AutoStartActivity",
+  )
+  for ((pkg, cls) in candidates) {
+    val intent = Intent().setClassName(pkg, cls)
+    if (intent.resolveActivity(context.packageManager) != null) return intent
+  }
+  return null
 }
 
 private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"

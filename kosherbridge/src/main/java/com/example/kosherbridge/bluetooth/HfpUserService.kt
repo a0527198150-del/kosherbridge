@@ -47,6 +47,11 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     }
   }
 
+  private companion object {
+    /** Settings.Global key some builds use to switch profiles off by bitmask. */
+    const val DISABLED_PROFILES_SETTING = "bluetooth_disabled_profiles"
+  }
+
   private val adapter: BluetoothAdapter? =
     (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
@@ -296,6 +301,36 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
         "--ei", extraState, stateOn.toString(),
       ),
     )
+    return if (err.isBlank()) "OK" else "ERR:" + err.lines().firstOrNull()?.trim().orEmpty()
+  }
+
+  override fun enableProfileComponent(): String {
+    // Enabling a component of ANOTHER package needs CHANGE_COMPONENT_ENABLED_STATE,
+    // which the shell identity holds - so this works without root wherever the
+    // manufacturer disabled the component rather than the build flag.
+    val err = execError(
+      arrayOf("pm", "enable", "com.android.bluetooth/.hfpclient.HeadsetClientService"),
+    )
+    return if (err.isBlank()) "OK" else "ERR:" + err.lines().firstOrNull()?.trim().orEmpty()
+  }
+
+  override fun disabledProfilesSetting(): String = runCatching {
+    android.provider.Settings.Global.getString(
+      context.contentResolver, DISABLED_PROFILES_SETTING,
+    ).orEmpty()
+  }.getOrElse { execOutput(arrayOf("settings", "get", "global", DISABLED_PROFILES_SETTING)).trim() }
+    .let { if (it == "null") "" else it }
+
+  override fun clearDisabledProfilesSetting(): String {
+    // Writing 0 means "no profile is disabled" - unambiguous and reversible;
+    // the caller keeps the old value and can put it back.
+    val ok = runCatching {
+      android.provider.Settings.Global.putString(
+        context.contentResolver, DISABLED_PROFILES_SETTING, "0",
+      )
+    }.getOrDefault(false)
+    if (ok) return "OK"
+    val err = execError(arrayOf("settings", "put", "global", DISABLED_PROFILES_SETTING, "0"))
     return if (err.isBlank()) "OK" else "ERR:" + err.lines().firstOrNull()?.trim().orEmpty()
   }
 

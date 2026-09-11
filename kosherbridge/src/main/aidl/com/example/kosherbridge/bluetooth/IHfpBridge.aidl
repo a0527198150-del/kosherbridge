@@ -93,6 +93,19 @@ interface IHfpBridge {
     // Reversible: restarting Bluetooth restores the stack's own idea of which
     // profiles are running.
     String startHeadsetClientService() = 28;
+    // Re-enables the profile's service COMPONENT at the package-manager level.
+    // A different manufacturer choice from unsetting the property: some ship
+    // the profile present but pm-disabled, and `pm enable` from the shell
+    // identity undoes exactly that - no root involved. Returns "OK" or
+    // "ERR:<reason>".
+    String enableProfileComponent() = 29;
+    // Reads Settings.Global.bluetooth_disabled_profiles, a bitmask some builds
+    // use to switch profiles off independently of the build flags. "" when the
+    // setting is absent, which is the normal case.
+    String disabledProfilesSetting() = 30;
+    // Clears that bitmask (writes 0 = nothing disabled). Reversible: the caller
+    // keeps the previous value. Returns "OK" or "ERR:<reason>".
+    String clearDisabledProfilesSetting() = 31;
     // Reserved "destroy" transaction code defined by the Shizuku server
     // (see the official Shizuku-API demo). Without the explicit code the
     // server cannot signal this service to shut down.

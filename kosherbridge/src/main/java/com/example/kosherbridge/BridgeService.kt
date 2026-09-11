@@ -215,6 +215,10 @@ class BridgeService : Service() {
     observeSettings()
     observeManager()
     publishCapabilityReport()
+    // Safety net for players whose vendor power manager kills the service and
+    // ignores START_STICKY - without it the bridge simply ceases to exist and
+    // nothing on the device says so.
+    BridgeWatchdog.schedule(this)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

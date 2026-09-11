@@ -282,4 +282,18 @@ class ShizukuBridge(private val context: Context) {
   fun startHeadsetClientService(): String =
     runCatching { remote?.startHeadsetClientService() ?: "ERR:אין חיבור לערוץ המורשה" }
       .getOrElse { "ERR:${it.message ?: "שגיאה"}" }
+
+  /** Re-enables the HFP-client service component at the package-manager level. */
+  fun enableProfileComponent(): String =
+    runCatching { remote?.enableProfileComponent() ?: "ERR:אין חיבור לערוץ המורשה" }
+      .getOrElse { "ERR:${it.message ?: "שגיאה"}" }
+
+  /** Current bluetooth_disabled_profiles bitmask ("" when the setting is absent). */
+  fun disabledProfilesSetting(): String =
+    runCatching { remote?.disabledProfilesSetting() ?: "" }.getOrDefault("")
+
+  /** Clears that bitmask. Returns "OK" or "ERR:...". */
+  fun clearDisabledProfilesSetting(): String =
+    runCatching { remote?.clearDisabledProfilesSetting() ?: "ERR:אין חיבור לערוץ המורשה" }
+      .getOrElse { "ERR:${it.message ?: "שגיאה"}" }
 }

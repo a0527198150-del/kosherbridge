@@ -107,6 +107,12 @@
             </intent-filter>
         </receiver>
 
+        <!-- Restarts the bridge when a vendor "power manager" killed it and
+             did not honour START_STICKY. See BridgeWatchdog. -->
+        <receiver
+            android:name=".BridgeWatchdog$WatchdogReceiver"
+            android:exported="false" />
+
         <!-- Shizuku: receives the binder from the Shizuku server (adb/root).
              Required by the dev.rikka.shizuku:provider dependency. -->
         <provider

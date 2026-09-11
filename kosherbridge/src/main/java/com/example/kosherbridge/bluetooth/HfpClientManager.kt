@@ -683,13 +683,43 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
     logConnection("כל שמות המאפיינים נדחו: ${refusals.joinToString(" · ")}", true)
 
-    // Every property route is closed. One avenue is left that does not touch
-    // properties at all: on Android 12/13 a profile is started by sending its
-    // service the STATE_CHANGED intent, so a profile the stack merely never
-    // asked for can be asked for directly. It usually fails - the component is
-    // not exported to the shell identity - but it costs one call, it is
-    // reversible with a Bluetooth restart, and when it works it is the whole
-    // answer. Reported honestly either way.
+    // Properties are not the only way a manufacturer switches a profile off,
+    // and the remaining routes do not touch properties at all.
+
+    // 1. The profile's service COMPONENT can be disabled at the package-manager
+    // level instead. `pm enable` needs CHANGE_COMPONENT_ENABLED_STATE, which
+    // the shell identity holds - so where that is the cause, this fixes it
+    // outright with no root.
+    val componentResult = enableProfileComponentPrivileged()
+    if (componentResult == "OK") {
+      logConnection("רכיב שירות הפרופיל הופעל מחדש (pm enable)", false)
+      restartBluetoothPrivileged()
+      return@withContext "שמות המאפיינים נדחו, אבל רכיב שירות הפרופיל הופעל מחדש והבלוטוס אותחל. " +
+        "הרץ 'בדוק יכולות הנגן' - אם 'פרופיל דיבורית פעיל במחסנית' הפך ל'כן', זה היה הגורם."
+    }
+
+    // 2. Some builds keep a bitmask in Settings.Global that switches profiles
+    // off independently of the build flags. Reading it is free; clearing it is
+    // unambiguous ("nothing disabled") and the previous value is reported so
+    // the change can be undone.
+    val disabledMask = disabledProfilesPrivileged()
+    if (disabledMask.isNotBlank() && disabledMask != "0") {
+      val cleared = clearDisabledProfilesPrivileged()
+      if (cleared == "OK") {
+        logConnection("נוקתה הגדרת bluetooth_disabled_profiles (הערך הקודם: $disabledMask)", false)
+        restartBluetoothPrivileged()
+        return@withContext "נמצאה הגדרת מערכת שמכבה פרופילי בלוטוס (ערך $disabledMask) והיא נוקתה, " +
+          "והבלוטוס אותחל. הרץ 'בדוק יכולות הנגן'. לשחזור: settings put global " +
+          "bluetooth_disabled_profiles $disabledMask"
+      }
+      logConnection("ניקוי bluetooth_disabled_profiles נדחה: ${propertyErrorDetail(cleared) ?: cleared}", true)
+    }
+
+    // 3. Finally: on Android 12/13 a profile is started by sending its service
+    // the STATE_CHANGED intent, so a profile the stack merely never asked for
+    // can be asked for directly. It usually fails - the component is not
+    // exported to the shell identity - but it costs one call, it is reversible
+    // with a Bluetooth restart, and when it works it is the whole answer.
     val started = startProfileServicePrivileged()
     if (started == "OK") {
       logConnection("נשלחה בקשת הפעלה ישירה לשירות פרופיל הדיבורית", false)
@@ -713,6 +743,18 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private fun startProfileServicePrivileged(): String =
     if (useShizuku) shizuku?.startHeadsetClientService() ?: "ERR:אין Shizuku"
     else root?.startHeadsetClientService() ?: "ERR:אין ערוץ רוט"
+
+  private fun enableProfileComponentPrivileged(): String =
+    if (useShizuku) shizuku?.enableProfileComponent() ?: "ERR:אין Shizuku"
+    else root?.enableProfileComponent() ?: "ERR:אין ערוץ רוט"
+
+  private fun disabledProfilesPrivileged(): String =
+    (if (useShizuku) shizuku?.disabledProfilesSetting() else root?.disabledProfilesSetting())
+      .orEmpty()
+
+  private fun clearDisabledProfilesPrivileged(): String =
+    if (useShizuku) shizuku?.clearDisabledProfilesSetting() ?: "ERR:אין Shizuku"
+    else root?.clearDisabledProfilesSetting() ?: "ERR:אין ערוץ רוט"
 
   private fun privilegedSelinux(): String =
     (if (useShizuku) shizuku?.selinuxMode() else root?.selinuxMode()).orEmpty()
