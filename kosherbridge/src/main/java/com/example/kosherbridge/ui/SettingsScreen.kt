@@ -1,5 +1,6 @@
 package com.example.kosherbridge.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.os.Build
@@ -69,6 +70,13 @@ fun SettingsScreen(
       subPage = SettingsSubPage.SETUP
       onSetupOpened()
     }
+  }
+  // Every sub-page has a back arrow; the system back button ignored them all
+  // and closed the app instead. That is a nuisance on a phone and a trap on a
+  // player driven with a remote, where the arrow can be several presses away
+  // and back is the button people actually reach for.
+  BackHandler(enabled = subPage != SettingsSubPage.MAIN) {
+    subPage = SettingsSubPage.MAIN
   }
   var showAudioModeDialog by remember { mutableStateOf(false) }
   val fingerprint = remember { Build.FINGERPRINT }

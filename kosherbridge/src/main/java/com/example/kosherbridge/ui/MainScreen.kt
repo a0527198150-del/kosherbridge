@@ -1,5 +1,6 @@
 package com.example.kosherbridge.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
@@ -46,6 +47,11 @@ fun MainScreen() {
   // the page and the row inside it. Consumed by SettingsScreen so returning to
   // the tab later lands on the settings root as usual.
   var openSetupPage by remember { mutableStateOf(false) }
+  // Back from any tab returns to the home tab before it leaves the app. On a
+  // player driven with a remote, back is the button people reach for, and
+  // dropping straight out of the app from the contacts list is not what they
+  // meant. From home, back falls through and closes the app as usual.
+  BackHandler(enabled = tab != 0) { tab = 0 }
 
   // Snackbar once per distinct hint. It must NOT clear the hint: the Settings
   // and Diagnostics tabs are meant to keep showing it, and clearing it here
