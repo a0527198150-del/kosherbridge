@@ -682,16 +682,37 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
 
     logConnection("כל שמות המאפיינים נדחו: ${refusals.joinToString(" · ")}", true)
+
+    // Every property route is closed. One avenue is left that does not touch
+    // properties at all: on Android 12/13 a profile is started by sending its
+    // service the STATE_CHANGED intent, so a profile the stack merely never
+    // asked for can be asked for directly. It usually fails - the component is
+    // not exported to the shell identity - but it costs one call, it is
+    // reversible with a Bluetooth restart, and when it works it is the whole
+    // answer. Reported honestly either way.
+    val started = startProfileServicePrivileged()
+    if (started == "OK") {
+      logConnection("נשלחה בקשת הפעלה ישירה לשירות פרופיל הדיבורית", false)
+      return@withContext "שמות המאפיינים נדחו, אבל נשלחה בקשת הפעלה ישירה לשירות הפרופיל. " +
+        "הרץ 'בדוק יכולות הנגן' - אם השורה 'פרופיל דיבורית פעיל במחסנית' הפכה ל'כן', זה הצליח. " +
+        "אם לא, המערכת התעלמה מהבקשה, ונשארה רק הדרך של מודול ה-Magisk."
+    }
+    logConnection("הפעלה ישירה של שירות הפרופיל נדחתה: ${propertyErrorDetail(started) ?: started}", true)
+
     buildString {
       append("הנגן מאפשר כתיבת מאפיינים, אבל דחה את כל השמות שמדליקים את פרופיל הדיבורית")
       if (selinux.isNotBlank()) append(" (SELinux: $selinux)")
-      append(". ")
+      append(", וגם הפעלה ישירה של שירות הפרופיל נדחתה. ")
       append(
         "המאפיינים האלה שמורים ל-init במדיניות של הנגן. הדרך שנשארה היא מודול " +
           "ה-Magisk (דורש רוט), שמחיל אותם לפני שתהליך הבלוטוס עולה.",
       )
     }
   }
+
+  private fun startProfileServicePrivileged(): String =
+    if (useShizuku) shizuku?.startHeadsetClientService() ?: "ERR:אין Shizuku"
+    else root?.startHeadsetClientService() ?: "ERR:אין ערוץ רוט"
 
   private fun privilegedSelinux(): String =
     (if (useShizuku) shizuku?.selinuxMode() else root?.selinuxMode()).orEmpty()

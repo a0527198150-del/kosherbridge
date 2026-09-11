@@ -83,6 +83,16 @@ interface IHfpBridge {
     // present in the APK). HEADSET_CLIENT is 16; its absence is the single
     // fact that decides whether call audio can ever reach this player.
     int[] enabledProfiles() = 27;
+    // Last-resort attempt to wake the dormant HFP-client profile: send the
+    // profile service the same start intent AdapterService uses when it brings
+    // a profile up (EXTRA_ACTION = STATE_CHANGED, EXTRA_STATE = STATE_ON).
+    // On Android 12/13 that is literally how profiles are started, so a stack
+    // that merely never asked can be asked by us instead. Returns a
+    // human-readable result - including the refusal, which is the likely
+    // outcome when the component is not exported to the shell identity.
+    // Reversible: restarting Bluetooth restores the stack's own idea of which
+    // profiles are running.
+    String startHeadsetClientService() = 28;
     // Reserved "destroy" transaction code defined by the Shizuku server
     // (see the official Shizuku-API demo). Without the explicit code the
     // server cannot signal this service to shut down.

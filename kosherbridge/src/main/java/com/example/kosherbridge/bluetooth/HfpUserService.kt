@@ -280,6 +280,25 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     return list.filterNotNull().toIntArray()
   }
 
+  override fun startHeadsetClientService(): String {
+    // These constants are AdapterService's own, and they are what its
+    // setProfileServiceState() puts on the intent when it starts a profile.
+    val extraAction = "action"
+    val stateChanged = "com.android.bluetooth.btservice.action.STATE_CHANGED"
+    val extraState = "android.bluetooth.adapter.extra.STATE"
+    val stateOn = 12 // BluetoothAdapter.STATE_ON
+    val component = "com.android.bluetooth/.hfpclient.HeadsetClientService"
+    val err = execError(
+      arrayOf(
+        "am", "start-service",
+        "-n", component,
+        "--es", extraAction, stateChanged,
+        "--ei", extraState, stateOn.toString(),
+      ),
+    )
+    return if (err.isBlank()) "OK" else "ERR:" + err.lines().firstOrNull()?.trim().orEmpty()
+  }
+
   private fun readProperty(key: String): String = runCatching {
     Class.forName("android.os.SystemProperties")
       .getMethod("get", String::class.java, String::class.java)

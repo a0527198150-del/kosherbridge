@@ -62,9 +62,17 @@ import java.util.Locale
 import kotlinx.coroutines.launch
 
 @Composable
-fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifier = Modifier) {
+fun HomeScreen(
+  state: BridgeUiState,
+  onGoToDialer: () -> Unit,
+  onOpenSetup: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
   val context = LocalContext.current
   var showDevices by remember { mutableStateOf(false) }
+  // The one thing most likely to make a working bridge look broken after a few
+  // hours, and the one the user will never think to check on their own.
+  val batteryExempt = remember(state.connectionState) { isBatteryExempt(context) }
 
   Column(
     modifier = modifier
@@ -74,6 +82,7 @@ fun HomeScreen(state: BridgeUiState, onGoToDialer: () -> Unit, modifier: Modifie
     verticalArrangement = Arrangement.spacedBy(16.dp),
   ) {
     ConnectionCard(state, onShowDevices = { showDevices = true }, onGoToDialer = onGoToDialer)
+    if (!batteryExempt) BatteryWarningCard(onOpenSetup)
     state.call?.let { CallCard(it, state.audioState, state.audioOutcome) }
     state.lastError?.let { ErrorCard(it) }
     FollowUpCard()
@@ -279,6 +288,43 @@ private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOut
       }
     }
   }
+}
+
+/**
+ * Surfaced on the main screen because it is invisible otherwise and it is the
+ * most common reason a bridge that worked yesterday is silent today: the system
+ * suspends the service, so the phone rings and nothing happens here.
+ */
+@Composable
+private fun BatteryWarningCard(onOpenSetup: () -> Unit) {
+  Card(
+    shape = RoundedCornerShape(16.dp),
+    colors = CardDefaults.cardColors(
+      containerColor = MaterialTheme.colorScheme.errorContainer,
+    ),
+    modifier = Modifier.fillMaxWidth().clickable { onOpenSetup() },
+  ) {
+    Column(Modifier.padding(16.dp)) {
+      Text(
+        "הגשר עלול להירדם",
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+      )
+      Spacer(Modifier.height(4.dp))
+      Text(
+        "חיסכון הסוללה של המערכת עלול לעצור את הגשר, ואז שיחות נכנסות לא יצלצלו. " +
+          "לחץ כאן כדי לאשר פטור - פעולה של שתי שניות.",
+        style = MaterialTheme.typography.bodySmall,
+      )
+    }
+  }
+}
+
+private fun isBatteryExempt(context: android.content.Context): Boolean {
+  if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M) return true
+  val pm = context.getSystemService(android.content.Context.POWER_SERVICE)
+    as? android.os.PowerManager ?: return true
+  return runCatching { pm.isIgnoringBatteryOptimizations(context.packageName) }.getOrDefault(true)
 }
 
 @Composable

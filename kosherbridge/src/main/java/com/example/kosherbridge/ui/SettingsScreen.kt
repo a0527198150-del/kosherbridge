@@ -32,7 +32,7 @@ import com.example.kosherbridge.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 
 /** Sub-pages reachable from the Settings tab. */
-private enum class SettingsSubPage { MAIN, CONNECTION, DIAGNOSTICS, LOG }
+private enum class SettingsSubPage { MAIN, SETUP, CONNECTION, DIAGNOSTICS, LOG }
 
 @Composable
 fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
@@ -81,6 +81,10 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         verticalArrangement = Arrangement.spacedBy(12.dp),
       ) {
         SettingsCard("חיבור") {
+          SettingRow(
+            "התקנה ומוכנות",
+            "בדיקה אחת שמראה מה חסר כדי שהגשר יעבוד בנגן הזה",
+          ) { subPage = SettingsSubPage.SETUP }
           SettingRow(
             "כל הגדרות החיבור",
             connectionText(state),
@@ -165,6 +169,12 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
         }
       }
     }
+    SettingsSubPage.SETUP -> SetupScreen(
+      state = state,
+      onSnackbar = onSnackbar,
+      onBack = { subPage = SettingsSubPage.MAIN },
+      onOpenConnectionSettings = { subPage = SettingsSubPage.CONNECTION },
+    )
     SettingsSubPage.CONNECTION -> ConnectionSettingsScreen(
       state = state,
       onSnackbar = onSnackbar,

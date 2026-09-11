@@ -104,7 +104,13 @@ fun MainScreen() {
       ) {
         val snack: (String) -> Unit = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
         when (tab) {
-          0 -> HomeScreen(state, onGoToDialer = { tab = 1 })
+          0 -> HomeScreen(
+            state,
+            onGoToDialer = { tab = 1 },
+            // Settings owns the setup page; jumping there is the whole point
+            // of the warning card, so the user is one tap from fixing it.
+            onOpenSetup = { tab = 4 },
+          )
           1 -> DialerScreen(onSnackbar = snack)
           2 -> ContactsScreen(onSnackbar = snack)
           3 -> CallLogScreen(onSnackbar = snack)

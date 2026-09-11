@@ -331,4 +331,10 @@ class RootBridge(private val context: Context) {
   /** Profile IDs the stack currently has enabled (HEADSET_CLIENT is 16). */
   fun enabledProfiles(): List<Int> =
     runCatching { remote?.enabledProfiles()?.toList() ?: emptyList() }.getOrDefault(emptyList())
+
+  /** Last-resort attempt to start the dormant HFP-client profile service.
+   * Returns "OK" or an "ERR:..." reason. */
+  fun startHeadsetClientService(): String =
+    runCatching { remote?.startHeadsetClientService() ?: "ERR:אין חיבור לערוץ המורשה" }
+      .getOrElse { "ERR:${it.message ?: "שגיאה"}" }
 }
