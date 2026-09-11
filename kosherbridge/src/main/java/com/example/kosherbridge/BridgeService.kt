@@ -464,6 +464,26 @@ class BridgeService : Service() {
     }
     scope.launch {
       val settings = ServiceLocator.settings
+      val fp = Build.FINGERPRINT
+      combine(settings.audioMode(fp), settings.audioImpossible(fp)) { mode, impossible ->
+        mode to impossible
+      }.collect { (mode, impossible) -> manager.setAudioMode(mode, impossible) }
+    }
+    // Remember, per player, that call audio proved impossible here. Re-deriving
+    // it on every call costs a six-second window in which the app holds the
+    // player's audio pipeline for a route that will never appear.
+    manager.onAudioProvenImpossible = {
+      scope.launch {
+        ServiceLocator.settings.setAudioImpossible(Build.FINGERPRINT, true)
+        manager.logConnection(
+          "נרשם: הנגן הזה אינו יכול לקלוט קול שיחה. משיחות הבאות השמע יישאר בטלפון " +
+            "מיד, בלי השהיה. ניתן לשנות ב'הגדרות ← מצב שמע בשיחה'",
+          false,
+        )
+      }
+    }
+    scope.launch {
+      val settings = ServiceLocator.settings
       var appliedManual: String? = null
       // React to the user's *manual* choice, not the effective channel. The
       // effective channel also changes when onBackendWorked() learns the

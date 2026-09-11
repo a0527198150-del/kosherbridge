@@ -495,6 +495,30 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   @Volatile private var autoAudio = true
   @Volatile private var volumeBoost = true
+
+  /** "AUTO", "PLAYER" or "PHONE" - see SettingsRepository.audioMode. */
+  @Volatile private var audioMode = "AUTO"
+
+  /** True once this player proved it cannot carry call audio (persisted). */
+  @Volatile private var audioKnownImpossible = false
+
+  /**
+   * Fired the first time this player proves it cannot carry call audio, so the
+   * verdict can be persisted and every later call can skip the attempt.
+   */
+  var onAudioProvenImpossible: (() -> Unit)? = null
+
+  fun setAudioMode(mode: String, knownImpossible: Boolean) {
+    audioMode = mode
+    audioKnownImpossible = knownImpossible
+  }
+
+  /**
+   * True when the bridge should not even try to pull the voice onto the player:
+   * the user asked for phone audio, or this player already proved it cannot.
+   */
+  private val keepVoiceOnPhone: Boolean
+    get() = audioMode == "PHONE" || (audioMode == "AUTO" && audioKnownImpossible)
   private var audioInUse = false
   private var audioRetry = 0
 
@@ -823,6 +847,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // HFP-client's own audio state is the authoritative signal.
     audio.profileAudioConnected = { audioState.value == 2 }
     audio.onAudioStayedOnPhone = { certain ->
+      // Proven, not guessed: only the certain verdict is worth remembering,
+      // and only it should stop future calls from trying.
+      if (certain && !audioKnownImpossible) {
+        audioKnownImpossible = true
+        onAudioProvenImpossible?.invoke()
+      }
       val gate = when {
         rawActive && raw?.audioRequestSupported != true ->
           ", הטלפון אינו תומך בבקשת שמע (AT+BCC)"
@@ -1607,6 +1637,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
 
   fun connectAudio() {
+    if (keepVoiceOnPhone) {
+      // Nothing is claimed, so the phone keeps the call on its own earpiece
+      // from the first second and the player stays a working remote control.
+      audio.keepAudioOnPhone()
+      return
+    }
     if (rawActive) {
       // Raw RFCOMM has no profile-level SCO, so also force the stack to open
       // the SCO voice channel directly - harmless if the stack refuses.
@@ -1637,6 +1673,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * the phone - an explicit request overrides that latch.
    */
   fun toggleAudio(): Boolean {
+    // An explicit request beats the remembered verdict: the user may have
+    // changed something (a different phone, a newly enabled profile) that the
+    // stored answer predates.
+    audioKnownImpossible = false
     if (rawActive) {
       if (audio.scoDeviceAvailable(device.value)) raw?.requestAudio()
       audio.forceRetry(device.value, volumeBoost, forceVirtualSco = true)

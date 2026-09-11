@@ -351,6 +351,29 @@ class CallAudioManager(private val context: Context) {
   }
 
   /**
+   * Deliberately leaves the conversation on the kosher phone.
+   *
+   * Not a failure path - the normal mode for a player whose stack cannot carry
+   * call audio. Nothing is claimed: no communication mode, no audio focus, no
+   * forced route, so the player keeps behaving normally and the phone carries
+   * the call on its own earpiece from the first second. The alternative is the
+   * measured fallback, which spends six seconds holding a route that will not
+   * appear - fine the first time, a defect on every call after that.
+   */
+  fun keepAudioOnPhone() {
+    if (inCall && outcome.value == CallAudioOutcome.ON_PHONE) return
+    // Release anything a previous attempt on this call may still hold.
+    if (inCall) releaseLocalClaim()
+    inCall = true
+    stayOnPhone = true
+    outcome.value = CallAudioOutcome.ON_PHONE
+    routeLabel.value = "השמע בטלפון - הנגן משמש כשלט"
+    // Receivers stay registered so an unexpected SCO link is still noticed and
+    // re-claimed; the user may have switched the mode mid-call.
+    registerReceivers()
+  }
+
+  /**
    * The user explicitly asked to pull the conversation onto the player after
    * the bridge had given up on it. Clears the latch and runs the whole claim
    * again, including a fresh measurement.

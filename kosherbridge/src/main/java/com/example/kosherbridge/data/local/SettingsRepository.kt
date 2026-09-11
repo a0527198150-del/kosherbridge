@@ -25,6 +25,12 @@ data class ChannelState(val effective: String, val manual: String, val learned: 
 private fun channelManualKey(fp: String) = stringPreferencesKey("channel_manual_$fp")
 private fun channelLearnedKey(fp: String) = stringPreferencesKey("channel_learned_$fp")
 
+/** The user's call-audio choice for this player. See [SettingsRepository.audioMode]. */
+private fun audioModeKey(fp: String) = stringPreferencesKey("audio_mode_$fp")
+
+/** Set once this player has PROVEN it cannot carry call audio. */
+private fun audioImpossibleKey(fp: String) = booleanPreferencesKey("audio_impossible_$fp")
+
 class SettingsRepository(private val context: Context) : PolicyStore {
 
   private object Keys {
@@ -135,6 +141,39 @@ class SettingsRepository(private val context: Context) : PolicyStore {
   /** Records that a backend proved itself working on this exact player. */
   suspend fun learnChannel(fp: String, backend: String) =
     context.dataStore.edit { it[channelLearnedKey(fp)] = backend }
+
+  // -------------------------------------------------------------- call audio
+
+  /**
+   * Where call audio should go on this player.
+   *
+   *  - `AUTO`   - try the player, and fall back to the phone when it proves
+   *               impossible. Once proven, stop trying (see [audioImpossible]).
+   *  - `PLAYER` - always try the player, on every call, even after failures.
+   *  - `PHONE`  - never try: the voice stays on the kosher phone and the player
+   *               is a remote control. The honest setting for a player whose
+   *               stack cannot carry call audio at all.
+   */
+  fun audioMode(fp: String): Flow<String> =
+    context.dataStore.data.map { it[audioModeKey(fp)] ?: "AUTO" }
+
+  suspend fun setAudioMode(fp: String, mode: String) =
+    context.dataStore.edit { it[audioModeKey(fp)] = mode }
+
+  /**
+   * True once this player has proven it cannot receive call audio.
+   *
+   * Worth persisting rather than re-deriving per call: proving it costs a
+   * six-second window in which the app holds the player's audio pipeline for a
+   * route that will not appear. Doing that on every single call, forever, on a
+   * device where the answer can never change, is a defect - so the answer is
+   * remembered per player.
+   */
+  fun audioImpossible(fp: String): Flow<Boolean> =
+    context.dataStore.data.map { it[audioImpossibleKey(fp)] ?: false }
+
+  suspend fun setAudioImpossible(fp: String, value: Boolean) =
+    context.dataStore.edit { it[audioImpossibleKey(fp)] = value }
 
   // ------------------------------------------------------------ policy record
 

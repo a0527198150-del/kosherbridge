@@ -2,6 +2,9 @@ package com.example.kosherbridge.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.os.Build
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +16,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,6 +28,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -47,6 +55,10 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
   var showClearCallsConfirm by remember { mutableStateOf(false) }
   var showClearContactsConfirm by remember { mutableStateOf(false) }
   var subPage by rememberSaveable { mutableStateOf(SettingsSubPage.MAIN) }
+  var showAudioModeDialog by remember { mutableStateOf(false) }
+  val fingerprint = remember { Build.FINGERPRINT }
+  val audioMode by settings.audioMode(fingerprint).collectAsStateWithLifecycle("AUTO")
+  val audioImpossible by settings.audioImpossible(fingerprint).collectAsStateWithLifecycle(false)
 
   // Export / import contacts as a JSON backup file (SAF document pickers).
   val exportLauncher = rememberLauncherForActivityResult(
@@ -111,6 +123,18 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
             subtitle = "העבר את הקול (גם המיקרופון) לנגן אוטומטית והשאר אותו חי לאורך השיחה",
             checked = autoAudio,
           ) { v -> scope.launch { settings.setAutoAudio(v) } }
+          SettingRow(
+            "מצב שמע בשיחה",
+            when (audioMode) {
+              "PLAYER" -> "תמיד לנסות להעביר את הקול לנגן"
+              "PHONE" -> "הקול תמיד נשאר בטלפון - הנגן משמש כשלט"
+              else -> if (audioImpossible) {
+                "אוטומטי - הנגן הזה לא יכול לקלוט קול, השמע נשאר בטלפון"
+              } else {
+                "אוטומטי - מנסה להעביר לנגן, ואם לא מצליח משאיר בטלפון"
+              }
+            },
+          ) { showAudioModeDialog = true }
           SettingSwitch(
             title = "הגברת עוצמה בשיחה",
             subtitle = "עוצמת השיחה למקסימום בזמן שיחה פעילה",
@@ -191,6 +215,67 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
       state = state,
       onSnackbar = onSnackbar,
       onBack = { subPage = SettingsSubPage.CONNECTION },
+    )
+  }
+
+  if (showAudioModeDialog) {
+    AlertDialog(
+      onDismissRequest = { showAudioModeDialog = false },
+      title = { Text("מצב שמע בשיחה") },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Text(
+            "לא כל נגן מסוגל לקלוט את קול השיחה. כשהוא לא מסוגל, הקול נשאר בטלפון " +
+              "הכשר - והנגן ממשיך לתפקד במלואו כשלט: מענה, דחייה, ניתוק, חיוג " +
+              "ואנשי קשר.",
+            style = MaterialTheme.typography.bodySmall,
+          )
+          listOf(
+            "AUTO" to ("אוטומטי (מומלץ)" to
+              "מנסה להעביר את הקול לנגן. אם הנגן מוכיח שהוא לא מסוגל, האפליקציה " +
+              "זוכרת זאת ומשיחות הבאות משאירה את הקול בטלפון מיד - בלי השהיה בתחילת השיחה."),
+            "PLAYER" to ("תמיד לנסות בנגן" to
+              "מנסה בכל שיחה מחדש, גם אחרי כישלונות. שימושי אם שינית משהו בנגן."),
+            "PHONE" to ("תמיד בטלפון (שלט בלבד)" to
+              "לא מנסה בכלל. הקול בטלפון מהשנייה הראשונה, והנגן הוא שלט מלא."),
+          ).forEach { (mode, labels) ->
+            val (title, detail) = labels
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .clickable {
+                  scope.launch {
+                    settings.setAudioMode(fingerprint, mode)
+                    // Choosing a mode by hand clears the remembered verdict:
+                    // the user is telling us the situation changed.
+                    settings.setAudioImpossible(fingerprint, false)
+                  }
+                  showAudioModeDialog = false
+                }
+                .padding(vertical = 8.dp, horizontal = 4.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                  detail,
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+              if (audioMode == mode) {
+                Icon(
+                  Icons.Filled.Check,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.primary,
+                )
+              }
+            }
+          }
+        }
+      },
+      confirmButton = { TextButton(onClick = { showAudioModeDialog = false }) { Text("סגור") } },
     )
   }
 
