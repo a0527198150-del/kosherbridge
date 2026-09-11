@@ -174,6 +174,59 @@ class RawHfpClientSlcTest {
   }
 
   @Test
+  fun caller_id_survives_the_call_being_answered() = runBlocking {
+    // Regression: the ACTIVE snapshot used to be emitted with number = null,
+    // because HFP's call/callsetup indicators carry no number of their own.
+    // BridgeService matches call-log sessions BY NUMBER, so an answered call
+    // looked like a brand-new call: it opened a second log row and the ringing
+    // row was closed as a missed call that never happened.
+    val ag = standardAg()
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    client.handleLineForTest(
+      "+CIND: (\"service\",(0,1)),(\"call\",(0,1)),(\"callsetup\",(0,3)),(\"callheld\",(0,2))",
+    )
+    client.handleLineForTest("+CIND: 1,0,0,0")
+    client.handleLineForTest("+CLIP: \"+972501234567\",145")
+    client.handleLineForTest("+CIEV: 3,1") // callsetup = incoming
+    assertEquals(CallState.INCOMING, client.call.value?.state)
+    assertEquals("+972501234567", client.call.value?.number)
+
+    // Answered: call = 1, callsetup = 0. The number must still be there.
+    client.handleLineForTest("+CIEV: 2,1")
+    client.handleLineForTest("+CIEV: 3,0")
+    assertEquals(CallState.ACTIVE, client.call.value?.state)
+    assertEquals("+972501234567", client.call.value?.number)
+
+    // Ended: no call, and no number left over for the next one.
+    client.handleLineForTest("+CIEV: 2,0")
+    assertEquals(CallState.IDLE, client.call.value?.state)
+    assertEquals(null, client.call.value?.number)
+    client.disconnect()
+    ag.close()
+  }
+
+  @Test
+  fun an_outgoing_call_carries_the_number_that_was_dialled() = runBlocking {
+    // Regression: an AG never tells the hands-free which number IT is dialling
+    // - there is no +CLIP for an outgoing call and `callsetup` is a bare
+    // number - so outgoing calls were logged, shown and notified with no
+    // number at all. We sent it, so we know it.
+    val ag = standardAg()
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    val job = handshakeAsync(client, ag.link())
+    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    client.dial("+972501234567")
+    failFast(ag) { ag.awaitSent { it == "ATD+972501234567;" } }
+    client.handleLineForTest("+CIEV: 3,2") // callsetup = outgoing, dialling
+    assertEquals(CallState.DIALING, client.call.value?.state)
+    assertEquals(CallDirection.OUTGOING, client.call.value?.direction)
+    assertEquals("+972501234567", client.call.value?.number)
+    client.disconnect()
+    job.cancel()
+    ag.close()
+  }
+
+  @Test
   fun clcc_polling_is_event_driven() = runBlocking {
     // caf9174 regression: call state is published from indicator events, and
     // an empty CLCC batch clears the call only through finishClccBatch - the

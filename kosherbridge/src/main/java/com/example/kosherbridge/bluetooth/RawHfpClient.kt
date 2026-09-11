@@ -1406,6 +1406,12 @@ class RawHfpClient(
     tryReleaseConnectionWakeLock()
     isConnected.value = false
     call.value = null
+    // The link that described this call is gone, and so is everything it told
+    // us about it. Leaving the last caller ID behind meant that after a drop
+    // and reconnect, an incoming call whose own +CLIP had not arrived yet was
+    // announced under the PREVIOUS call's number.
+    clipNumber = null
+    lastDirection = CallDirection.INCOMING
   }
 
   private fun acquireConnectionWakeLock() {

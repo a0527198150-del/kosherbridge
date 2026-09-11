@@ -47,13 +47,56 @@
         android:name="android.permission.BLUETOOTH_PRIVILEGED"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Package visibility (Android 11+): the capability probe asks the package
-         manager whether the Bluetooth stack even declares HeadsetClientService.
-         Without this the query returns "not found" on every player and the
-         probe cannot tell "the profile is disabled" (fixable) apart from "the
-         manufacturer removed it" (hopeless). -->
+    <!-- Package visibility (Android 11+). Anything not listed here is invisible
+         to this app: getLaunchIntentForPackage returns null, resolveActivity
+         returns null, and getServiceInfo throws NameNotFoundException - all of
+         which look exactly like "not installed". Every package and action the
+         app interrogates has to be declared, or the feature silently vanishes
+         on every modern player. -->
     <queries>
+        <!-- The capability probe asks whether the Bluetooth stack even declares
+             HeadsetClientService. Without this the query returns "not found" on
+             every player and the probe cannot tell "the profile is disabled"
+             (fixable) apart from "the manufacturer removed it" (hopeless). -->
         <package android:name="com.android.bluetooth" />
+
+        <!-- Shizuku. The readiness screen offers "פתח את Shizuku" when it is
+             installed and the store/website only when it is not; undeclared,
+             getLaunchIntentForPackage always returned null and the button sent
+             users to install something they already had. -->
+        <package android:name="moe.shizuku.privileged.api" />
+
+        <!-- Vendor auto-start managers. On these players an app missing from
+             that list is killed no matter what Android's own settings say, so
+             the readiness screen offers the vendor screen when it exists. Each
+             is resolved before being offered - and undeclared, every one of
+             them resolved to null, so the row never appeared on precisely the
+             devices it was written for. -->
+        <package android:name="com.miui.securitycenter" />
+        <package android:name="com.letv.android.letvsafe" />
+        <package android:name="com.huawei.systemmanager" />
+        <package android:name="com.coloros.safecenter" />
+        <package android:name="com.oppo.safe" />
+        <package android:name="com.iqoo.secure" />
+        <package android:name="com.vivo.permissionmanager" />
+        <package android:name="com.samsung.android.lool" />
+        <package android:name="com.asus.mobilemanager" />
+
+        <!-- The battery-optimisation exemption dialog: the app prefers the
+             targeted one and falls back to the full system list, and that
+             choice is made with resolveActivity. -->
+        <intent>
+            <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+        </intent>
+        <!-- Store page / project site, for installing Shizuku. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="market" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
     </queries>
 
     <application

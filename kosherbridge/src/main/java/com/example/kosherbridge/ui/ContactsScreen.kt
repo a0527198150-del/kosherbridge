@@ -174,7 +174,13 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
       onSave = { name, phones, emails, notes, photo ->
         scope.launch {
           val ok = repo.addContact(name, phones, photo, emails, notes)
-          if (!ok) onSnackbar("איש קשר עם מספר זה כבר קיים")
+          if (!ok) {
+            onSnackbar("איש קשר עם מספר זה כבר קיים")
+            // The dialog closes either way, so a rejected contact's photo -
+            // already copied into private storage when it was picked - would
+            // otherwise stay there with nothing referencing it.
+            repo.deleteContactPhoto(photo)
+          }
         }
         showAdd = false
       },
@@ -193,7 +199,8 @@ fun ContactsScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) 
             emails,
           )
           if (ok) {
-            if (photo != c.contact.photoUri) repo.deleteContactPhoto(c.contact.photoUri)
+            // updateContact() now retires the replaced photo itself, for every
+            // caller, so there is nothing left to clean up here.
             editFor = null
           } else {
             onSnackbar("איש קשר עם מספר זה כבר קיים")
@@ -558,17 +565,37 @@ private fun ContactEditorDialog(
   }
   var notes by remember(initial) { mutableStateOf(initial?.contact?.notes ?: "") }
   var photo by remember(initial) { mutableStateOf(initial?.contact?.photoUri) }
+  /** The photo the contact is actually stored with - never ours to delete. */
+  val storedPhoto = remember(initial) { initial?.contact?.photoUri }
   val scope = rememberCoroutineScope()
   val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
     if (uri != null) {
       scope.launch {
-        ServiceLocator.contacts.saveContactPhoto(uri)?.let { photo = it }
+        ServiceLocator.contacts.saveContactPhoto(uri)?.let { picked ->
+          // Picking copies the image into private storage immediately. Picking
+          // three photos before saving therefore left two orphaned JPEGs behind
+          // for ever, on a player that has very little storage to spare. Drop
+          // the copy this editor made and then replaced - never the one the
+          // contact is actually stored with.
+          val replaced = photo
+          photo = picked
+          if (replaced != null && replaced != storedPhoto) {
+            ServiceLocator.contacts.deleteContactPhoto(replaced)
+          }
+        }
       }
     }
   }
+  // Closing without saving discards the copy too, for the same reason.
+  val dismiss = {
+    if (photo != null && photo != storedPhoto) {
+      ServiceLocator.contacts.deleteContactPhoto(photo)
+    }
+    onDismiss()
+  }
   val hasValidPhone = phones.any { it.number.isNotBlank() }
 
-  Dialog(onDismissRequest = onDismiss) {
+  Dialog(onDismissRequest = dismiss) {
     Column(
       modifier = Modifier
         .fillMaxWidth()
@@ -585,7 +612,7 @@ private fun ContactEditorDialog(
     ) {
       Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-        IconButton(onClick = onDismiss) {
+        IconButton(onClick = dismiss) {
           Icon(Icons.Filled.Close, contentDescription = "סגירה")
         }
       }
@@ -687,7 +714,7 @@ private fun ContactEditorDialog(
       // (never pushed off-screen on short landscape screens).
       Spacer(Modifier.height(12.dp))
       Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        TextButton(onClick = onDismiss) { Text("ביטול") }
+        TextButton(onClick = dismiss) { Text("ביטול") }
         Spacer(Modifier.width(8.dp))
         TextButton(
           onClick = {
