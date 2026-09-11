@@ -61,11 +61,14 @@ interface IHfpBridge {
     // Reads a system property. Readable from the app process too; exposed here
     // so the caller can prove the privileged process sees the same value.
     String getSystemProperty(String key) = 22;
-    // Writes a system property and returns the value read back afterwards
-    // (null when the write was refused). The Bluetooth profile flags live in
-    // the `bluetooth_config_prop` SELinux context, which stock policy lets
-    // only init write - so this is expected to fail on a stock build and to
-    // succeed on the lax/permissive policies common to cheap players.
+    // Writes a system property. Returns the value read back on success, or a
+    // string prefixed "ERR:" carrying the reason the write was refused. The
+    // Bluetooth profile flags live in the `bluetooth_config_prop` SELinux
+    // context, which stock policy lets only init write - so this is expected
+    // to fail on a stock build and to succeed on the lax/permissive policies
+    // common to cheap players. The reason matters: an SELinux denial rules out
+    // every property in that context, while "property not defined" only rules
+    // out that one name.
     String setSystemProperty(String key, String value) = 23;
     // Restarts the Bluetooth stack so it re-reads the profile flags. Without
     // this a successful property write has no visible effect until reboot.

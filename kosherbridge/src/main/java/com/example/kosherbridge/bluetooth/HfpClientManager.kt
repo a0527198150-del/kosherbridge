@@ -621,51 +621,93 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       return@withContext "נדרש ערוץ מורשה: התקן והפעל Shizuku (adb אלחוטי, בלי רוט) " +
         "או בחר את ערוץ הרוט, ונסה שוב."
     }
-    val selinux = (if (useShizuku) shizuku?.selinuxMode() else root?.selinuxMode()).orEmpty()
-    val before = if (useShizuku) shizuku?.systemProperty(PlayerCapabilities.HFP_HF_PROPERTY)
-    else root?.systemProperty(PlayerCapabilities.HFP_HF_PROPERTY)
-    if (before == "true") {
-      // Already set but the profile is dormant: the stack has not re-read it.
+    val selinux = privilegedSelinux()
+
+    // Already on but dormant: the stack simply has not re-read the flag.
+    if (privilegedProperty(PlayerCapabilities.HFP_HF_PROPERTY) == "true") {
       logConnection("מאפיין הפרופיל כבר מוגדר - מפעיל מחדש את הבלוטוס", false)
-      val restarted = restartBluetoothPrivileged()
-      return@withContext if (restarted) {
+      return@withContext if (restartBluetoothPrivileged()) {
         "המאפיין כבר היה דלוק, והבלוטוס הופעל מחדש. הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה."
       } else {
         "המאפיין כבר דלוק אבל לא הצלחתי להפעיל מחדש את הבלוטוס. כבה והדלק בלוטוס ידנית ובדוק שוב."
       }
     }
-    val after = if (useShizuku) {
-      shizuku?.writeSystemProperty(PlayerCapabilities.HFP_HF_PROPERTY, "true")
-    } else {
-      root?.writeSystemProperty(PlayerCapabilities.HFP_HF_PROPERTY, "true")
-    }
-    if (after != "true") {
-      logConnection("כתיבת מאפיין הפרופיל נדחתה (SELinux=$selinux)", true)
+
+    // Can this player be written to AT ALL? debug.* is the most permissive
+    // SELinux context there is; a refusal there means the property route is
+    // closed entirely, and trying five Bluetooth names would only waste the
+    // user's time before the same conclusion.
+    val probe = writePrivilegedProperty(PlayerCapabilities.WRITE_PROBE_PROPERTY, "1")
+    val canWriteAnything = probe == "1"
+    if (!canWriteAnything) {
+      logConnection("בדיקת כתיבת מאפיינים נכשלה: ${probe ?: "ללא תשובה"} (SELinux=$selinux)", true)
       return@withContext buildString {
-        append("המערכת דחתה את הכתיבה למאפיין הפרופיל")
+        append("הנגן הזה לא מאפשר לערוץ המורשה לכתוב שום מאפיין מערכת")
         if (selinux.isNotBlank()) append(" (SELinux: $selinux)")
         append(". ")
         append(
-          "זו מדיניות של המחסנית, לא תקלה באפליקציה: את המאפיין הזה מותר בדרך כלל " +
-            "רק ל-init לכתוב. הדרך שנשארה היא מודול ה-Magisk (דורש רוט), שמחיל אותו " +
-            "לפני שתהליך הבלוטוס עולה.",
+          "זו מדיניות נעולה של המחסנית, לא תקלה באפליקציה - ולכן גם שמות מאפיינים " +
+            "אחרים לא יעזרו. הדרך היחידה שנשארה היא מודול ה-Magisk (דורש רוט), " +
+            "שמחיל את המאפיין לפני שתהליך הבלוטוס עולה.",
         )
+        propertyErrorDetail(probe)?.let { append(" פירוט: ").append(it) }
       }
     }
-    logConnection("מאפיין הפרופיל נכתב בהצלחה - מפעיל מחדש את הבלוטוס", false)
-    val restarted = restartBluetoothPrivileged()
-    // The property is NOT persistent: it lives until the next reboot, so the
-    // app has to re-apply it on every boot. Say so plainly rather than letting
-    // the user discover it the hard way tomorrow morning.
+
+    // Properties ARE writable here. Walk every name known to switch the
+    // profile on - they live in different SELinux contexts, so the official
+    // one being refused says nothing about the rest.
+    val refusals = mutableListOf<String>()
+    for (key in PlayerCapabilities.HFP_HF_PROPERTY_CANDIDATES) {
+      val result = writePrivilegedProperty(key, "true")
+      if (result == "true") {
+        logConnection("מאפיין הפרופיל נכתב בהצלחה: $key", false)
+        val restarted = restartBluetoothPrivileged()
+        return@withContext buildString {
+          append("המאפיין $key נכתב בהצלחה! ")
+          append(
+            if (restarted) "הבלוטוס הופעל מחדש - הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה."
+            else "לא הצלחתי להפעיל מחדש את הבלוטוס - כבה והדלק אותו ידנית ובדוק שוב.",
+          )
+          append(
+            " שים לב: אם השורה 'פרופיל דיבורית פעיל במחסנית' עדיין מראה 'לא', " +
+              "המחסנית של הנגן פשוט לא קוראת את השם הזה.",
+          )
+          if (!key.startsWith("persist.")) {
+            append(" בנוסף, המאפיין נמחק בכל אתחול - הרץ את הפעולה שוב אחרי כל הפעלה מחדש.")
+          }
+        }
+      }
+      refusals += "$key: ${propertyErrorDetail(result) ?: "נדחה"}"
+    }
+
+    logConnection("כל שמות המאפיינים נדחו: ${refusals.joinToString(" · ")}", true)
     buildString {
-      append("המאפיין נכתב בהצלחה! ")
+      append("הנגן מאפשר כתיבת מאפיינים, אבל דחה את כל השמות שמדליקים את פרופיל הדיבורית")
+      if (selinux.isNotBlank()) append(" (SELinux: $selinux)")
+      append(". ")
       append(
-        if (restarted) "הבלוטוס הופעל מחדש - הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה."
-        else "לא הצלחתי להפעיל מחדש את הבלוטוס - כבה והדלק אותו ידנית ובדוק שוב.",
+        "המאפיינים האלה שמורים ל-init במדיניות של הנגן. הדרך שנשארה היא מודול " +
+          "ה-Magisk (דורש רוט), שמחיל אותם לפני שתהליך הבלוטוס עולה.",
       )
-      append(" שים לב: המאפיין נמחק בכל אתחול של הנגן, ולכן צריך להריץ את הפעולה הזו שוב אחרי כל הפעלה מחדש.")
     }
   }
+
+  private fun privilegedSelinux(): String =
+    (if (useShizuku) shizuku?.selinuxMode() else root?.selinuxMode()).orEmpty()
+
+  private fun privilegedProperty(key: String): String =
+    (if (useShizuku) shizuku?.systemProperty(key) else root?.systemProperty(key)).orEmpty()
+
+  /** Writes through the privileged bridge. Returns the value read back, or an
+   * "ERR:..." string carrying why the write was refused. */
+  private fun writePrivilegedProperty(key: String, value: String): String? =
+    if (useShizuku) shizuku?.writeSystemProperty(key, value)
+    else root?.writeSystemProperty(key, value)
+
+  /** The reason text out of an "ERR:..." result, or null when it was a value. */
+  private fun propertyErrorDetail(result: String?): String? =
+    result?.removePrefix("ERR:")?.takeIf { it != result && it.isNotBlank() }
 
   private fun restartBluetoothPrivileged(): Boolean =
     if (useShizuku) shizuku?.restartBluetooth() ?: false

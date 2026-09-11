@@ -62,7 +62,8 @@ data class PlayerCapabilities(
       profileEnabled == false ->
         "הפרופיל קיים בנגן אבל כבוי (bluetooth.profile.hfp.hf.enabled לא מוגדר). " +
           "SELinux במצב Enforcing, ולכן סביר שרק רוט/מודול Magisk יוכלו להדליק אותו - " +
-          "אבל שווה לנסות 'הפעל פרופיל דיבורית' דרך Shizuku לפני שמוותרים."
+          "אבל שווה לנסות 'הפעל פרופיל דיבורית' דרך Shizuku לפני שמוותרים: הפעולה " +
+          "מנסה כמה שמות מאפיינים, וחלקם יושבים בהקשר אבטחה מתירני יותר."
       else ->
         "לא ניתן לקבוע את מצב הפרופיל בנגן הזה. הרץ 'בדוק יכולות הנגן' שוב אחרי " +
           "שהבלוטוס דלוק."
@@ -99,6 +100,35 @@ data class PlayerCapabilities(
     private const val PROFILE_HEADSET_CLIENT = 16
 
     const val HFP_HF_PROPERTY = "bluetooth.profile.hfp.hf.enabled"
+
+    /**
+     * Every property name known to switch the HFP-client profile on, tried in
+     * order. There is no single answer: Android 13+ reads the first one, while
+     * older and vendor-forked stacks read one of the `persist.*` names that
+     * circulate in build.prop recipes for these players.
+     *
+     * Trying all of them is not guesswork for its own sake - the `persist.*`
+     * names sit in a DIFFERENT SELinux context from `bluetooth_config_prop`,
+     * and that context is frequently writable by the shell identity Shizuku
+     * provides. A build that refuses the official name can still accept one of
+     * these, which is the difference between needing root and not.
+     */
+    val HFP_HF_PROPERTY_CANDIDATES = listOf(
+      HFP_HF_PROPERTY,
+      "persist.bluetooth.hfpclient",
+      "persist.service.bt.hfp.client",
+      "persist.vendor.bluetooth.hfpclient",
+      "persist.bluetooth.enablehfpclient",
+    )
+
+    /**
+     * A harmless property used only to find out whether this player lets the
+     * privileged identity write ANY property at all. `debug.*` is the most
+     * permissive context there is, so a refusal here means SELinux is shut
+     * tight and no property route can work - which turns "try the next name"
+     * into "stop, this needs Magisk" without the user testing five times.
+     */
+    const val WRITE_PROBE_PROPERTY = "debug.kosherbridge.writeprobe"
 
     private const val BLUETOOTH_PACKAGE = "com.android.bluetooth"
     private const val HEADSET_CLIENT_SERVICE =

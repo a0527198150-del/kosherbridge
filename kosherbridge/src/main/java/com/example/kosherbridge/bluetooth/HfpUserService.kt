@@ -210,17 +210,26 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
   override fun getSystemProperty(key: String): String = readProperty(key)
 
   override fun setSystemProperty(key: String, value: String): String? {
-    val viaApi = runCatching {
+    val apiError = runCatching {
       Class.forName("android.os.SystemProperties")
         .getMethod("set", String::class.java, String::class.java)
         .invoke(null, key, value)
-    }.isSuccess
+      null
+    }.getOrElse { error -> (error.cause ?: error).message ?: error::class.java.simpleName }
     // SystemProperties.set throws when property_service refuses the write.
     // `setprop` goes through the same service, but some vendor images ship a
-    // setuid helper that behaves differently, so it is worth a second try.
-    if (!viaApi) runCatching { exec(arrayOf("setprop", key, value)) }
+    // helper that behaves differently, so it is worth a second attempt - and
+    // its stderr names the actual reason, which the API call does not.
+    val shellError = if (apiError == null) null else execError(arrayOf("setprop", key, value))
     val readBack = readProperty(key)
-    return readBack.ifBlank { null }
+    if (readBack == value) return readBack
+    // Report WHY rather than just "it did not work": an SELinux denial means
+    // no property in this context is writable and only Magisk can help, while
+    // "property not defined" means this ROM simply uses a different name.
+    val detail = listOfNotNull(shellError?.takeIf { it.isNotBlank() }, apiError)
+      .firstOrNull()
+      ?.lines()?.firstOrNull()?.trim()
+    return "ERR:" + (detail ?: "הכתיבה נדחתה ללא הסבר")
   }
 
   override fun restartBluetooth(): Boolean {
@@ -283,6 +292,14 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
     p.waitFor()
     p.exitValue() == 0
   }.getOrDefault(false)
+
+  /** Runs a command and returns its stderr (empty when it succeeded). */
+  private fun execError(cmd: Array<String>): String = runCatching {
+    val p = Runtime.getRuntime().exec(cmd)
+    val err = p.errorStream.bufferedReader().use { it.readText() }
+    p.waitFor()
+    if (p.exitValue() == 0 && err.isBlank()) "" else err.ifBlank { "exit ${p.exitValue()}" }
+  }.getOrElse { it.message ?: "" }
 
   private fun execOutput(cmd: Array<String>): String = runCatching {
     val p = Runtime.getRuntime().exec(cmd)
