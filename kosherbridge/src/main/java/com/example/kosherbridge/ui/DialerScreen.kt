@@ -60,7 +60,7 @@ import com.example.kosherbridge.data.local.ContactWithDetails
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun DialerScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
+fun DialerScreen(modifier: Modifier = Modifier) {
   val context = LocalContext.current
   val state by BridgeHub.state.collectAsStateWithLifecycle()
   var number by rememberSaveable { mutableStateOf("") }

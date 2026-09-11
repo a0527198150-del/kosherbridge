@@ -84,6 +84,12 @@ class ContactsRepository(
         return false
       }
     }
+    // The photo the row USED to point at, before the edit replaced it. Photos
+    // are copied into private storage by saveContactPhoto, and only
+    // deleteContact ever cleaned one up - so every time a contact's picture was
+    // changed, the old JPEG stayed on disk for the life of the install,
+    // unreferenced and invisible.
+    val previousPhoto = db.contactDao().byId(contact.id)?.photoUri
     db.contactDao().update(
       contact.copy(
         phone = primary,
@@ -91,6 +97,7 @@ class ContactsRepository(
         email = emails.firstOrNull()?.second?.trim()?.takeIf { it.isNotEmpty() } ?: contact.email,
       ),
     )
+    if (previousPhoto != null && previousPhoto != contact.photoUri) deleteContactPhoto(previousPhoto)
     syncPhonesAndEmails(contact.id, cleanPhones, emails)
     return true
   }
@@ -119,7 +126,18 @@ class ContactsRepository(
     db.contactDao().delete(contact) // phones/emails cascade
   }
 
-  suspend fun clearAllContacts() = db.contactDao().clear()
+  /**
+   * Deletes every contact - and the photo files that belonged to them.
+   *
+   * Only the rows used to go. The JPEGs copied into private storage stayed
+   * behind for ever: invisible, unreferenced, and counted against the app's
+   * storage on a player that has very little of it.
+   */
+  suspend fun clearAllContacts() {
+    val photos = db.contactDao().allWithDetails().first().mapNotNull { it.contact.photoUri }
+    db.contactDao().clear()
+    withContext(Dispatchers.IO) { photos.forEach { deleteContactPhoto(it) } }
+  }
 
   suspend fun toggleFavorite(contact: ContactEntity) =
     db.contactDao().update(contact.copy(favorite = !contact.favorite))

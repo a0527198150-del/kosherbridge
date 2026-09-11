@@ -1,12 +1,16 @@
 package com.example.kosherbridge.data.local
 
 import android.content.Context
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import java.io.IOException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
@@ -33,6 +37,24 @@ private fun audioImpossibleKey(fp: String) = booleanPreferencesKey("audio_imposs
 
 class SettingsRepository(private val context: Context) : PolicyStore {
 
+  /**
+   * Every read goes through here rather than straight to `dataStore.data`.
+   *
+   * DataStore surfaces a corrupt or unreadable preferences file as an
+   * IOException *inside the flow*, which cancels the collector. The collectors
+   * here are not screens that can be reopened - they are the service's own
+   * settings observers, started once in BridgeService.onCreate. One bad read
+   * ended them permanently: the channel choice, the audio mode and the
+   * auto-connect preference simply stopped being applied for the rest of the
+   * process's life, with nothing on screen to say so. Losing preferences to
+   * defaults is a bad day; losing the observers is a broken bridge, so an
+   * unreadable file falls back to defaults and the flow keeps running. This is
+   * the handling DataStore's own documentation prescribes.
+   */
+  private val prefs: Flow<Preferences> = context.dataStore.data.catch { error ->
+    if (error is IOException) emit(emptyPreferences()) else throw error
+  }
+
   private object Keys {
     val AUTO_CONNECT = booleanPreferencesKey("auto_connect")
     val FULL_SCREEN = booleanPreferencesKey("full_screen_incoming")
@@ -47,36 +69,36 @@ class SettingsRepository(private val context: Context) : PolicyStore {
   }
 
   val autoConnect: Flow<Boolean> =
-    context.dataStore.data.map { it[Keys.AUTO_CONNECT] ?: true }
+    prefs.map { it[Keys.AUTO_CONNECT] ?: true }
 
   val fullScreen: Flow<Boolean> =
-    context.dataStore.data.map { it[Keys.FULL_SCREEN] ?: true }
+    prefs.map { it[Keys.FULL_SCREEN] ?: true }
 
   val vibrate: Flow<Boolean> =
-    context.dataStore.data.map { it[Keys.VIBRATE] ?: true }
+    prefs.map { it[Keys.VIBRATE] ?: true }
 
   /** Play DTMF tones when pressing the dialer keys. */
   val keyTone: Flow<Boolean> =
-    context.dataStore.data.map { it[Keys.KEY_TONE] ?: true }
+    prefs.map { it[Keys.KEY_TONE] ?: true }
 
   /** Actively route and keep the call audio (SCO) alive during calls. */
   val autoAudio: Flow<Boolean> =
-    context.dataStore.data.map { it[Keys.AUTO_AUDIO] ?: true }
+    prefs.map { it[Keys.AUTO_AUDIO] ?: true }
 
   /** Push the call stream volume to maximum while a call is active. */
   val volumeBoost: Flow<Boolean> =
-    context.dataStore.data.map { it[Keys.VOLUME_BOOST] ?: true }
+    prefs.map { it[Keys.VOLUME_BOOST] ?: true }
 
   /** Disable the system HEADSET/A2DP profiles before a raw RFCOMM connect. */
   val profileGuard: Flow<Boolean> =
-    context.dataStore.data.map { it[Keys.PROFILE_GUARD] ?: true }
+    prefs.map { it[Keys.PROFILE_GUARD] ?: true }
 
   /** "SYSTEM", "LIGHT" or "DARK" - app-wide appearance. */
   val themeMode: Flow<String> =
-    context.dataStore.data.map { it[Keys.THEME_MODE] ?: "SYSTEM" }
+    prefs.map { it[Keys.THEME_MODE] ?: "SYSTEM" }
 
   val lastDevice: Flow<LastDevice?> =
-    context.dataStore.data.map { prefs ->
+    prefs.map { prefs ->
       val address = prefs[Keys.LAST_DEVICE_ADDRESS]
       if (address.isNullOrEmpty()) null
       else LastDevice(prefs[Keys.LAST_DEVICE_NAME] ?: "", address)
@@ -116,7 +138,7 @@ class SettingsRepository(private val context: Context) : PolicyStore {
    * connection on this exact player; otherwise AUTO (full probing).
    */
   fun effectiveChannel(fp: String): Flow<String> =
-    context.dataStore.data.map { prefs ->
+    prefs.map { prefs ->
       val manual = prefs[channelManualKey(fp)] ?: "AUTO"
       if (manual != "AUTO") manual
       else prefs[channelLearnedKey(fp)]?.takeIf { it.isNotBlank() } ?: "AUTO"
@@ -124,7 +146,7 @@ class SettingsRepository(private val context: Context) : PolicyStore {
 
   /** Full channel state (effective + manual + learned) for the settings UI. */
   fun channelState(fp: String): Flow<ChannelState> =
-    context.dataStore.data.map { prefs ->
+    prefs.map { prefs ->
       val manual = prefs[channelManualKey(fp)] ?: "AUTO"
       val learned = prefs[channelLearnedKey(fp)] ?: ""
       ChannelState(
@@ -155,7 +177,7 @@ class SettingsRepository(private val context: Context) : PolicyStore {
    *               stack cannot carry call audio at all.
    */
   fun audioMode(fp: String): Flow<String> =
-    context.dataStore.data.map { it[audioModeKey(fp)] ?: "AUTO" }
+    prefs.map { it[audioModeKey(fp)] ?: "AUTO" }
 
   suspend fun setAudioMode(fp: String, mode: String) =
     context.dataStore.edit { it[audioModeKey(fp)] = mode }
@@ -170,7 +192,7 @@ class SettingsRepository(private val context: Context) : PolicyStore {
    * remembered per player.
    */
   fun audioImpossible(fp: String): Flow<Boolean> =
-    context.dataStore.data.map { it[audioImpossibleKey(fp)] ?: false }
+    prefs.map { it[audioImpossibleKey(fp)] ?: false }
 
   suspend fun setAudioImpossible(fp: String, value: Boolean) =
     context.dataStore.edit { it[audioImpossibleKey(fp)] = value }
@@ -202,7 +224,7 @@ class SettingsRepository(private val context: Context) : PolicyStore {
 
   /** Loads every persisted original, keyed `"address:profileId"` -> original Int. */
   override suspend fun loadAll(): Map<String, Int> =
-    context.dataStore.data.first().asMap().mapNotNull { (key, value) ->
+    prefs.first().asMap().mapNotNull { (key, value) ->
       val name = key.name
       val prefix = "policy_"
       if (!name.startsWith(prefix)) return@mapNotNull null

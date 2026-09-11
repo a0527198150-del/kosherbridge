@@ -307,6 +307,25 @@ class BridgeService : Service() {
     // existed - the "notification that will not go away".
     runCatching { Notifications.cancelCall(this) }
     stopRingtone()
+    // BridgeHub is a process-wide object: it outlives this service, and every
+    // screen reads it. Leaving the last values behind meant that a service
+    // stopped while the UI was still alive left the home screen showing a live
+    // link, a ringing call and an audio route for a bridge that no longer
+    // exists - the same "the screen says one thing and the device does
+    // another" the connection card was fixed for. Only the live facts are
+    // cleared; the chosen device and the capability report are still true.
+    BridgeHub.update {
+      it.copy(
+        connectionState = BluetoothProfile.STATE_DISCONNECTED,
+        rawLinkActive = false,
+        reconnecting = false,
+        profileReady = false,
+        call = null,
+        audioState = 0,
+        audioRoute = null,
+        audioOutcome = CallAudioOutcome.IDLE,
+      )
+    }
     instance = null
     BridgeHub.service = null
     manager.shutdown()

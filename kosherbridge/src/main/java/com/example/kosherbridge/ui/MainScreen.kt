@@ -120,7 +120,9 @@ fun MainScreen() {
               tab = 4
             },
           )
-          1 -> DialerScreen(onSnackbar = snack)
+          // The dialer reports the connection state on screen, not through
+          // the snackbar - it never had anything to say through one.
+          1 -> DialerScreen()
           2 -> ContactsScreen(onSnackbar = snack)
           3 -> CallLogScreen(onSnackbar = snack)
           4 -> SettingsScreen(

@@ -214,7 +214,14 @@ fun CallLogScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
       contact = photoByNumber[ContactsRepository.normalizePhone(c.number)],
       onDismiss = { detailFor = null },
       onCall = {
-        BridgeService.requestDial(context, c.number)
+        // Rows written before outgoing calls carried their number (and any row
+        // from a withheld caller ID) have no number to dial. Saying so beats a
+        // tap that closes the dialog and does nothing at all.
+        if (c.number.isBlank()) {
+          onSnackbar("אין מספר לשיחה הזו - לא ניתן לחייג ממנה")
+        } else {
+          BridgeService.requestDial(context, c.number)
+        }
         detailFor = null
       },
       onToggleFollowUp = {
@@ -231,9 +238,20 @@ fun CallLogScreen(onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
 
 private fun buildLogItems(calls: List<CallLogEntity>): List<LogItem> {
   val items = mutableListOf<LogItem>()
-  val now = Calendar.getInstance()
-  val todayStart = now.apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
-  val yesterdayStart = todayStart - 24 * 60 * 60 * 1000
+  val midnight = Calendar.getInstance().apply {
+    set(Calendar.HOUR_OF_DAY, 0)
+    set(Calendar.MINUTE, 0)
+    set(Calendar.SECOND, 0)
+    set(Calendar.MILLISECOND, 0)
+  }
+  val todayStart = midnight.timeInMillis
+  // Calendar arithmetic, not "minus 24 hours": on the two days a year the
+  // clocks change - and Israel changes them - a day is 23 or 25 hours long, so
+  // subtracting a fixed 24 puts the "אתמול" boundary an hour off and files
+  // calls near midnight under the wrong heading.
+  val yesterdayStart = (midnight.clone() as Calendar)
+    .apply { add(Calendar.DAY_OF_MONTH, -1) }
+    .timeInMillis
   val dayFormat = SimpleDateFormat("d MMM yyyy", Locale.getDefault())
   var currentHeader: String? = null
   calls.forEach { c ->

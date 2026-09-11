@@ -258,14 +258,20 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
   private fun enableAdapter(a: BluetoothAdapter): Boolean =
     if (a.enable()) true else exec(arrayOf("svc", "bluetooth", "enable"))
 
-  override fun setHiddenApiPolicy(policy: Int): Boolean = runCatching {
-    android.provider.Settings.Global.putInt(
-      context.contentResolver, "hidden_api_policy", policy,
-    )
-  }.getOrElse {
+  override fun setHiddenApiPolicy(policy: Int): Boolean {
+    // putInt REPORTS failure by returning false, and only throws for some
+    // refusals. getOrElse fires on the throw alone, so a plain `false` was
+    // returned to the caller as the final answer and the shell fallback - the
+    // route that actually works on several vendor builds - was never tried.
+    val viaApi = runCatching {
+      android.provider.Settings.Global.putInt(
+        context.contentResolver, "hidden_api_policy", policy,
+      )
+    }.getOrDefault(false)
+    if (viaApi) return true
     // WRITE_SECURE_SETTINGS is held by `shell`, but a vendor build can still
     // refuse; the settings binary is the same write by another route.
-    exec(arrayOf("settings", "put", "global", "hidden_api_policy", policy.toString()))
+    return exec(arrayOf("settings", "put", "global", "hidden_api_policy", policy.toString()))
   }
 
   override fun selinuxMode(): String =
