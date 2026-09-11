@@ -67,14 +67,14 @@
 `kosherbridge-magisk-module`). לבנייה מקומית:
 
 ```sh
-./gradlew :kosherbridge:assembleDebug
-sh magisk-module/build.sh          # נוצר kosherbridge-magisk-v1.zip
+./gradlew :kosherbridge:assembleRelease
+sh magisk-module/build.sh          # נוצר kosherbridge-magisk-<גרסה>.zip
 ```
 
 ## איך מתקינים
 
 1. **מרוטים את הנגן** (Magisk מותקן).
-2. מעתיקים את קובץ המודול (`kosherbridge-magisk-v1.zip`) לנגן.
+2. מעתיקים את קובץ המודול (`kosherbridge-magisk-<גרסה>.zip`) לנגן.
 3. פותחים את אפליקציית **Magisk** → Modules → **Install from storage** → בוחרים
    את הקובץ.
 4. **מאתחלים את הנגן.**

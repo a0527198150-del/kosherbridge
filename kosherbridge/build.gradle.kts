@@ -68,6 +68,19 @@ android {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
   }
+
+  // Lint REPORTS, it does not gate the build - which is what CI always intended
+  // ("Lint reports but does not block"). Expressing that here rather than with
+  // the workflow's continue-on-error matters: continue-on-error still marks the
+  // step failed, so every green run carried a red step and an "exit code 1" in
+  // the log, and a reader could not tell that apart from a real break.
+  // The HTML report is still produced and uploaded on every run.
+  lint {
+    abortOnError = false
+    // The release build is assembled from the same sources as debug; linting it
+    // a second time doubles the step for no new findings.
+    checkReleaseBuilds = false
+  }
   // JVM unit tests touch Android framework stubs (android.util.Log etc.).
   // Without isReturnDefaultValues every stub method throws "not mocked" on
   // ANY thread - the static Log mock in the test only covers the JUnit thread,

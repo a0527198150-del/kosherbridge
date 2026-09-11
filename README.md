@@ -172,9 +172,31 @@ The budget app reads its Gemini key from a `.env` file at the repository root
 ## Building KosherBridge
 
 ```bash
-gradle :kosherbridge:assembleDebug
+gradle :kosherbridge:assembleRelease   # what CI ships
+gradle :kosherbridge:assembleDebug     # for development
 ```
 
-CI builds the debug APK and the Magisk module on every push; see
-[`.github/workflows/main.yml`](.github/workflows/main.yml) and
+Both build types are signed with the same stable key (restored in CI from the
+`DEBUG_KEYSTORE_BASE64` secret), so any build installs over any earlier one
+without uninstalling. Release deliberately keeps `isMinifyEnabled = false`:
+this app loads classes by name from a shell command (`RootBridgeMain`,
+`HfpUserService`) and reaches the HFP profile entirely through reflection, so
+shrinking would break the root and Shizuku channels in ways no test here would
+catch.
+
+### CI artifacts
+
+Each run produces three downloads — plus a fourth, `kosherbridge-test-report`,
+only when the tests fail:
+
+| Artifact | Contents | Audience |
+|---|---|---|
+| `KosherBridge-<version>-apk` | the signed release APK | **this is the one to install** |
+| `KosherBridge-<version>-magisk-module` | the same APK packaged as a Magisk module | rooted players only; needs a reboot |
+| `kosherbridge-lint` | static-analysis HTML report | developers; never gates the build |
+
+Version is `1.0.<commit count>`, the same string the app reports in
+Diagnostics, so a downloaded file says which build it is.
+
+See [`.github/workflows/main.yml`](.github/workflows/main.yml) and
 [`magisk-module/README.md`](magisk-module/README.md).

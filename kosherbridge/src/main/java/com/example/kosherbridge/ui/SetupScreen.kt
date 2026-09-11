@@ -1,6 +1,7 @@
 package com.example.kosherbridge.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -300,7 +301,12 @@ private fun buildSetupItems(
     } else {
       {
         // The targeted dialog when it is available, otherwise the system list.
-        @Suppress("BatteryLife")
+        // @SuppressLint, not @Suppress: BatteryLife is an Android LINT check
+        // (severity error), and Kotlin's @Suppress does not reach it - which is
+        // why the lint step was failing. The exemption is legitimate here: this
+        // is a foreground bridge that must survive Doze to receive calls at
+        // all, and it is requested by an explicit user tap, never silently.
+        @SuppressLint("BatteryLife")
         val direct = Intent(
           Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
           Uri.parse("package:${context.packageName}"),

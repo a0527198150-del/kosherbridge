@@ -12,13 +12,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Full history: versionCode is derived from the git commit count.
           fetch-depth: 0
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -43,11 +43,11 @@ jobs:
           keytool -list -keystore debug.keystore -storepass android > /dev/null \
             || { echo "::error::restored debug.keystore is not a valid keystore" && exit 1; }
 
-      # setup-gradle@v4 auto-detects ./gradlew and installs the exact version
+      # setup-gradle auto-detects ./gradlew and installs the exact version
       # pinned in gradle/wrapper/gradle-wrapper.properties — so local builds
       # and CI always run the same Gradle 9.3.1.
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       # Unit tests are plain JVM tests (no emulator needed) — see
       # kosherbridge/src/test. A regression in the SLC/AT protocol logic now
@@ -59,20 +59,22 @@ jobs:
       # prints a local file:// link), so upload the report on failure.
       - name: Upload test report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kosherbridge-test-report
           path: kosherbridge/build/reports/tests/
 
-      # Lint reports but does not block; the HTML report is uploaded so the
-      # findings stay inspectable.
+      # Lint reports but does not block. That is configured in the module's
+      # build.gradle.kts (lint { abortOnError = false }), NOT with
+      # continue-on-error: the latter still marks the step failed, so every
+      # green run carried a red step and an "exit code 1" that was
+      # indistinguishable from a real break.
       - name: Lint kosherbridge
         run: ./gradlew :kosherbridge:lintDebug --no-daemon --continue -Pkotlin.compiler.execution.strategy=daemon
-        continue-on-error: true
 
       - name: Upload lint report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kosherbridge-lint
           path: kosherbridge/build/reports/lint-results-debug.html
@@ -83,25 +85,47 @@ jobs:
       # handling and Firebase setup that CI does not provide. This omission is
       # a decision, not an oversight.
 
+      # RELEASE, not debug: this APK is what people install. A debug build
+      # carries the debuggable flag and is not what should be handed out. Both
+      # build types are signed with the same stable key (see build.gradle.kts),
+      # so a release APK still installs over an earlier debug one.
+      # Minification stays OFF by design - see the note in build.gradle.kts.
       # Override kotlin.compiler.execution.strategy (gradle.properties uses
       # 'in-process', which breaks KSP2 on CI runners).
-      - name: Build kosherbridge (debug APK)
-        run: ./gradlew :kosherbridge:assembleDebug --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
+      - name: Build kosherbridge (release APK)
+        run: ./gradlew :kosherbridge:assembleRelease --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
+
+      # Name every downloadable by its version. Without this each run produced
+      # "kosherbridge-apk" and "kosherbridge-magisk-v1.zip", so once downloaded
+      # no file said which build it was - and two of them in a folder were
+      # indistinguishable.
+      - name: Resolve version
+        id: ver
+        run: echo "version=1.0.$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Stage the APK under its version
+        run: |
+          mkdir -p dist
+          cp kosherbridge/build/outputs/apk/release/kosherbridge-release.apk \
+             "dist/KosherBridge-${{ steps.ver.outputs.version }}.apk"
 
       - name: Upload kosherbridge APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: kosherbridge-apk
-          path: kosherbridge/build/outputs/apk/debug/*.apk
+          name: KosherBridge-${{ steps.ver.outputs.version }}-apk
+          path: dist/KosherBridge-*.apk
 
       # Package the built APK into the Magisk module (final solution for rooted
       # players: installs the app as a system priv-app with BLUETOOTH_PRIVILEGED
       # and disables hidden-API enforcement at boot).
       - name: Package Magisk module
-        run: sh magisk-module/build.sh kosherbridge/build/outputs/apk/debug/kosherbridge-debug.apk
+        run: |
+          sh magisk-module/build.sh \
+            kosherbridge/build/outputs/apk/release/kosherbridge-release.apk \
+            "${{ steps.ver.outputs.version }}"
 
       - name: Upload Magisk module
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: kosherbridge-magisk-module
-          path: kosherbridge-magisk-v1.zip
+          name: KosherBridge-${{ steps.ver.outputs.version }}-magisk-module
+          path: kosherbridge-magisk-${{ steps.ver.outputs.version }}.zip
