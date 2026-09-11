@@ -36,6 +36,9 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
   constructor() : this(resolveFallbackContext())
 
   companion object {
+    /** Settings.Global key some builds use to switch profiles off by bitmask. */
+    private const val DISABLED_PROFILES_SETTING = "bluetooth_disabled_profiles"
+
     private fun resolveFallbackContext(): Context {
       val fromActivityThread = runCatching {
         Class.forName("android.app.ActivityThread")
@@ -45,11 +48,6 @@ class HfpUserService(private val context: Context) : IHfpBridge.Stub() {
       if (fromActivityThread != null) return fromActivityThread
       return BridgeApp.instance
     }
-  }
-
-  private companion object {
-    /** Settings.Global key some builds use to switch profiles off by bitmask. */
-    const val DISABLED_PROFILES_SETTING = "bluetooth_disabled_profiles"
   }
 
   private val adapter: BluetoothAdapter? =
