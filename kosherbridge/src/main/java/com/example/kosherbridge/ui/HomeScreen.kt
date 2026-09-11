@@ -36,6 +36,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -197,6 +198,12 @@ private fun ConnectionCard(state: BridgeUiState, onShowDevices: () -> Unit, onGo
 @Composable
 private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOutcome) {
   val context = LocalContext.current
+  // The full-screen call screen and the notification both name the caller;
+  // this card was the last place still showing a known contact as bare digits.
+  var callerName by remember(call.number) { mutableStateOf<String?>(null) }
+  LaunchedEffect(call.number) {
+    callerName = ServiceLocator.contacts.nameFor(call.number)
+  }
   val ringing = call.state == CallState.INCOMING || call.state == CallState.WAITING
   val active = call.state == CallState.ACTIVE
   val outgoing = call.state == CallState.DIALING || call.state == CallState.ALERTING
@@ -222,7 +229,7 @@ private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOut
         Column {
           Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
           Text(
-            call.number ?: "לא ידוע",
+            callerName ?: call.number ?: "לא ידוע",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
