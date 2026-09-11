@@ -6,6 +6,7 @@ import android.provider.ContactsContract
 import com.example.kosherbridge.bluetooth.CallDirection
 import com.example.kosherbridge.bluetooth.CallState
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -256,56 +257,72 @@ class ContactsRepository(
     val array = JSONArray(text)
     var added = 0
     for (i in 0 until array.length()) {
-      val obj = array.getJSONObject(i)
-      val name = obj.optString("name", "").trim()
-      if (name.isEmpty()) continue
-      val phones = mutableListOf<Pair<String, String>>()
-      val phonesArr = obj.optJSONArray("phones") ?: JSONArray()
-      for (j in 0 until phonesArr.length()) {
-        val p = phonesArr.getJSONObject(j)
-        val number = p.optString("number", "").trim()
-        if (number.isNotEmpty()) phones.add(p.optString("label", "נייד") to number)
-      }
-      if (phones.isEmpty()) continue
-      val emails = mutableListOf<Pair<String, String>>()
-      val emailsArr = obj.optJSONArray("emails") ?: JSONArray()
-      for (j in 0 until emailsArr.length()) {
-        val e = emailsArr.getJSONObject(j)
-        val email = e.optString("email", "").trim()
-        if (email.isNotEmpty()) emails.add(e.optString("label", "אימייל") to email)
-      }
-      // Skip if ANY of this entry's numbers already exists - either as a
-      // contact's primary number (contacts.normalizedPhone) or as any
-      // secondary number (contact_phones.normalizedPhone).
-      val alreadyExists = phones.asSequence()
-        .map { normalizePhone(it.second) }
-        .filter { it.isNotEmpty() }
-        .any { n -> db.contactDao().byPhone(n) != null || db.contactDao().phoneByNormalized(n) != null }
-      if (!alreadyExists) {
-        val id = db.contactDao().insert(
-          ContactEntity(
-            name = name,
-            phone = phones.first().second,
-            normalizedPhone = normalizePhone(phones.first().second),
-            favorite = obj.optBoolean("favorite", false),
-            notes = obj.optString("notes", "").takeIf { it.isNotEmpty() },
-            email = emails.firstOrNull()?.second,
-          ),
-        )
-        db.contactDao().deletePhonesFor(id)
-        phones.forEach { (label, number) ->
-          db.contactDao().insertPhone(
-            ContactPhoneEntity(contactId = id, label = label, number = number, normalizedPhone = normalizePhone(number)),
-          )
-        }
-        db.contactDao().deleteEmailsFor(id)
-        emails.forEach { (label, email) ->
-          db.contactDao().insertEmail(ContactEmailEntity(contactId = id, label = label, email = email))
-        }
-        added++
+      // One malformed entry must not cost the user the other four hundred.
+      // Every getJSONObject below throws on a backup whose shape is slightly
+      // off - an entry that is a bare string, a "phones" array of strings
+      // instead of objects - and the exception propagated out of the loop, so
+      // the whole import failed with a raw JSONException and nothing imported.
+      added += try {
+        importEntry(array.getJSONObject(i))
+      } catch (cancelled: CancellationException) {
+        throw cancelled // never swallow cancellation: the user closed the screen
+      } catch (_: Throwable) {
+        0
       }
     }
     added
+  }
+
+  /** Imports one backup entry. Returns 1 when a new contact was added. */
+  private suspend fun importEntry(obj: JSONObject): Int {
+    val name = obj.optString("name", "").trim()
+    if (name.isEmpty()) return 0
+    val phones = mutableListOf<Pair<String, String>>()
+    val phonesArr = obj.optJSONArray("phones") ?: JSONArray()
+    for (j in 0 until phonesArr.length()) {
+      val p = phonesArr.getJSONObject(j)
+      val number = p.optString("number", "").trim()
+      if (number.isNotEmpty()) phones.add(p.optString("label", "נייד") to number)
+    }
+    if (phones.isEmpty()) return 0
+    val emails = mutableListOf<Pair<String, String>>()
+    val emailsArr = obj.optJSONArray("emails") ?: JSONArray()
+    for (j in 0 until emailsArr.length()) {
+      val e = emailsArr.getJSONObject(j)
+      val email = e.optString("email", "").trim()
+      if (email.isNotEmpty()) emails.add(e.optString("label", "אימייל") to email)
+    }
+    // Skip if ANY of this entry's numbers already exists - either as a
+    // contact's primary number (contacts.normalizedPhone) or as any
+    // secondary number (contact_phones.normalizedPhone).
+    val alreadyExists = phones.asSequence()
+      .map { normalizePhone(it.second) }
+      .filter { it.isNotEmpty() }
+      .any { n -> db.contactDao().byPhone(n) != null || db.contactDao().phoneByNormalized(n) != null }
+    if (!alreadyExists) {
+      val id = db.contactDao().insert(
+        ContactEntity(
+          name = name,
+          phone = phones.first().second,
+          normalizedPhone = normalizePhone(phones.first().second),
+          favorite = obj.optBoolean("favorite", false),
+          notes = obj.optString("notes", "").takeIf { it.isNotEmpty() },
+          email = emails.firstOrNull()?.second,
+        ),
+      )
+      db.contactDao().deletePhonesFor(id)
+      phones.forEach { (label, number) ->
+        db.contactDao().insertPhone(
+          ContactPhoneEntity(contactId = id, label = label, number = number, normalizedPhone = normalizePhone(number)),
+        )
+      }
+      db.contactDao().deleteEmailsFor(id)
+      emails.forEach { (label, email) ->
+        db.contactDao().insertEmail(ContactEmailEntity(contactId = id, label = label, email = email))
+      }
+      return 1
+    }
+    return 0
   }
 
   companion object {

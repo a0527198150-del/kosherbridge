@@ -40,6 +40,12 @@ fun MainScreen() {
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
   var tab by rememberSaveable { mutableIntStateOf(0) }
+  // Set when something outside Settings asks for the readiness page. The
+  // battery card promises "לחץ כאן כדי לאשר פטור - פעולה של שתי שניות" and
+  // then only switched to the Settings tab root, leaving the user to hunt for
+  // the page and the row inside it. Consumed by SettingsScreen so returning to
+  // the tab later lands on the settings root as usual.
+  var openSetupPage by remember { mutableStateOf(false) }
 
   // Snackbar once per distinct hint. It must NOT clear the hint: the Settings
   // and Diagnostics tabs are meant to keep showing it, and clearing it here
@@ -109,12 +115,20 @@ fun MainScreen() {
             onGoToDialer = { tab = 1 },
             // Settings owns the setup page; jumping there is the whole point
             // of the warning card, so the user is one tap from fixing it.
-            onOpenSetup = { tab = 4 },
+            onOpenSetup = {
+              openSetupPage = true
+              tab = 4
+            },
           )
           1 -> DialerScreen(onSnackbar = snack)
           2 -> ContactsScreen(onSnackbar = snack)
           3 -> CallLogScreen(onSnackbar = snack)
-          4 -> SettingsScreen(state, onSnackbar = snack)
+          4 -> SettingsScreen(
+            state,
+            onSnackbar = snack,
+            openSetup = openSetupPage,
+            onSetupOpened = { openSetupPage = false },
+          )
         }
       }
     }

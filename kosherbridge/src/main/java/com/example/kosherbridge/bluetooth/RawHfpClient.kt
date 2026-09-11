@@ -245,7 +245,7 @@ class RawHfpClient(
     reconnectEnabled && generation == connectionGeneration
 
   private suspend fun runConnection(generation: Long) {
-    val target = targetDevice ?: return
+    if (targetDevice == null) return
     // On MediaTek firmware (Jelly2, many Chinese Android boxes) the Bluetooth
     // controller is suspended when the device enters deep sleep - even with a
     // persistent PARTIAL_WAKE_LOCK in BridgeService. Acquire a fresh wake lock
@@ -952,14 +952,27 @@ class RawHfpClient(
     if (number.isBlank()) return false
     val ownedSocket = socket
     val sent = sendCommand("ATD$number;", ownedSocket)
-    if (sent) lastDirection = CallDirection.OUTGOING
+    if (sent) {
+      lastDirection = CallDirection.OUTGOING
+      // The AG never tells the hands-free which number IT is dialling: there
+      // is no +CLIP for an outgoing call, and the `callsetup` indicator is a
+      // bare number. We know it - we just sent it - so record it as this
+      // call's number. Without this every outgoing call was logged, shown and
+      // notified with no number at all.
+      clipNumber = number
+    }
     return sent
   }
 
   fun redial(): Boolean {
     val ownedSocket = socket
     val sent = sendCommand("AT+BLDN", ownedSocket)
-    if (sent) lastDirection = CallDirection.OUTGOING
+    if (sent) {
+      lastDirection = CallDirection.OUTGOING
+      // Redial is the one case where the number really is unknown to us. Clear
+      // it rather than letting the previous call's number stand in for it.
+      clipNumber = null
+    }
     return sent
   }
 
@@ -1166,10 +1179,16 @@ class RawHfpClient(
     } else if (state == CallState.DIALING || state == CallState.ALERTING) {
       lastDirection = CallDirection.OUTGOING
     }
-    val number = when (state) {
-      CallState.INCOMING, CallState.WAITING -> clipNumber
-      else -> null
-    }
+    // The number stays with the call for its whole life, not just while it
+    // rings. HFP's `call`/`callsetup` indicators carry no number of their own,
+    // and dropping it the moment the call was answered meant the ACTIVE
+    // snapshot arrived with number = null - a *different* call as far as
+    // anything downstream could tell. BridgeService matches call-log sessions
+    // by number, so every answered call opened a SECOND log row, and the
+    // original ringing row was closed as a missed call. One answered call,
+    // two entries in the log, one of them a missed call that never happened.
+    // [clipNumber] is cleared on IDLE below, on hang-up, and at dial time.
+    val number = if (state == CallState.IDLE) null else clipNumber
     val info = CallInfo(state, number, lastDirection)
     if (call.value != info) call.value = info
     if (state == CallState.IDLE) clipNumber = null

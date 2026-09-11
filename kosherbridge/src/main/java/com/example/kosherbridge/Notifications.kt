@@ -85,11 +85,12 @@ object Notifications {
       .build()
   }
 
-  fun showIncomingCall(context: Context, title: String, number: String?, fullScreen: Boolean, vibrate: Boolean) {
+  /** [caller] is the contact name when one is known, otherwise the number. */
+  fun showIncomingCall(context: Context, caller: String, fullScreen: Boolean, vibrate: Boolean) {
     val full = PendingIntent.getActivity(
       context,
       2,
-      IncomingCallActivity.createIntent(context, number, null),
+      IncomingCallActivity.createIntent(context),
       PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
     val answer = PendingIntent.getService(
@@ -107,7 +108,7 @@ object Notifications {
     val builder = NotificationCompat.Builder(context, CH_CALLS)
       .setSmallIcon(R.drawable.ic_notification)
       .setContentTitle("שיחה נכנסת")
-      .setContentText(title)
+      .setContentText(caller)
       .setCategory(NotificationCompat.CATEGORY_CALL)
       .setPriority(NotificationCompat.PRIORITY_MAX)
       .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -125,11 +126,12 @@ object Notifications {
     notifySafe(context, NOTIF_CALL, builder.build())
   }
 
-  fun showInCall(context: Context, call: CallInfo) {
+  /** [caller] is the contact name when one is known, otherwise the number. */
+  fun showInCall(context: Context, call: CallInfo, caller: String) {
     val open = PendingIntent.getActivity(
       context,
       5,
-      IncomingCallActivity.createIntent(context, call.number, null),
+      IncomingCallActivity.createIntent(context),
       PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
     val hangup = PendingIntent.getService(
@@ -145,7 +147,7 @@ object Notifications {
       NotificationCompat.Builder(context, CH_CALLS)
         .setSmallIcon(R.drawable.ic_notification)
         .setContentTitle(title)
-        .setContentText(call.number ?: "שיחה")
+        .setContentText(caller)
         .setCategory(NotificationCompat.CATEGORY_CALL)
         .setPriority(NotificationCompat.PRIORITY_HIGH)
         .setOngoing(true)

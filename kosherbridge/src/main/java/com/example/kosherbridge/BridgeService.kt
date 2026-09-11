@@ -222,9 +222,27 @@ class BridgeService : Service() {
     // Undo any audio-HAL state a previous run left behind when it was killed
     // mid-call; otherwise Bluetooth media stays suspended on the device.
     manager.audio.resetHalAudioState()
+    // Same reasoning, for the thing the user actually sees. A call notification
+    // is posted `ongoing`, so it cannot be swiped away, and it outlives the
+    // process that posted it. onDestroy() cancels it - but a vendor power
+    // manager killing the process never calls onDestroy, and BridgeWatchdog
+    // then restarts a service that has no call and no reason to cancel
+    // anything. The result is the notification that will not go away, with
+    // buttons for a call that ended hours ago. At this exact moment there is
+    // provably no call in progress, so any call notification on screen is a
+    // leftover.
+    Notifications.cancelCall(this)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // FIRST, before anything that could throw. Every caller reaches this
+    // service through startForegroundService(), and the system then gives the
+    // process about five seconds to call startForeground() or it kills it with
+    // ForegroundServiceDidNotStartInTimeException - a crash no catch block can
+    // absorb, because it is raised by the system, not by this code. Running the
+    // command handling first meant one unexpected throw in an action handler
+    // was logged politely here and then killed the whole app a moment later.
+    ensureForeground()
     try {
       when (intent?.action) {
         ACTION_CONNECT -> {
@@ -247,7 +265,6 @@ class BridgeService : Service() {
         ACTION_HANGUP -> retryCommand("ניתוק שיחה") { manager.hangup() }
         ACTION_TOGGLE_AUDIO -> manager.toggleAudio()
       }
-      ensureForeground()
       if (intent?.action == ACTION_START || intent?.action == null) {
       scope.launch {
         // Apply the channel for THIS player first (the user's manual choice,
@@ -738,16 +755,24 @@ class BridgeService : Service() {
     }
 
     val normalizedNumber = ContactsRepository.normalizePhone(info.number.orEmpty())
-    val existingSession = activeCallLogs.firstOrNull { candidate ->
-      if (candidate.direction != info.direction) return@firstOrNull false
+    val sameDirection = activeCallLogs.filter { it.direction == info.direction }
+    val existingSession = sameDirection.firstOrNull { candidate ->
       val candidateNumber = ContactsRepository.normalizePhone(candidate.number.orEmpty())
-      if (normalizedNumber.isNotEmpty() && candidateNumber.isNotEmpty()) {
-        normalizedNumber == candidateNumber
-      } else {
+      when {
+        // Both sides know the number: it decides, and only it.
+        normalizedNumber.isNotEmpty() && candidateNumber.isNotEmpty() ->
+          normalizedNumber == candidateNumber
         // A caller ID can arrive shortly after the first CIEV/RING event.
         // Reuse the direction's number-less session instead of creating a
         // duplicate row when the number becomes known.
-        candidateNumber.isEmpty()
+        candidateNumber.isEmpty() -> true
+        // This update has no number but the open session does. A gateway that
+        // stops repeating the number mid-call is describing the call already
+        // in progress, not a new one - so long as there is exactly one to be
+        // describing. With two open calls in this direction (call waiting)
+        // there is no way to tell which, and guessing would merge two calls
+        // into one log entry, so a new session is the safer answer.
+        else -> sameDirection.size == 1
       }
     }
     val isNewSession = existingSession == null
@@ -771,8 +796,7 @@ class BridgeService : Service() {
         // A new WAITING event alongside an existing ACTIVE/HELD session is a
         // second call, so it gets its own log row and its own missed flag.
         if (isNewSession) {
-          val name = ServiceLocator.contacts.nameFor(info.number)
-          showIncomingCall(name ?: info.number ?: "שיחה נכנסת", info.number)
+          showIncomingCall(ServiceLocator.contacts.nameFor(info.number), info.number)
         }
       }
       CallState.ACTIVE -> {
@@ -781,7 +805,14 @@ class BridgeService : Service() {
         // HELD -> ACTIVE transition mid-call doesn't shrink its duration.
         if (session.startedAt == 0L) session.startedAt = System.currentTimeMillis()
         manager.connectAudio()
-        Notifications.showInCall(this, info)
+        // The caller's name, not the bare number: the notification is the one
+        // place a running call is visible once the full-screen UI is dismissed,
+        // and it was the only screen in the app still showing digits.
+        Notifications.showInCall(
+          this,
+          info,
+          ServiceLocator.contacts.nameFor(info.number) ?: info.number ?: "שיחה",
+        )
       }
       else -> Unit
     }
@@ -816,8 +847,13 @@ class BridgeService : Service() {
     }
   }
 
-  private fun showIncomingCall(title: String, number: String?) {
-    Notifications.showIncomingCall(this, title, number, fullScreenEnabled, vibrateEnabled)
+  private fun showIncomingCall(name: String?, number: String?) {
+    Notifications.showIncomingCall(
+      this,
+      name ?: number ?: "מספר חסום",
+      fullScreenEnabled,
+      vibrateEnabled,
+    )
     // The ringtone belongs to the service, not to the call activity.
     // Android 10+ blocks background activity starts, so startActivity() below
     // is frequently dropped without an exception - and when the ringtone lived
@@ -827,7 +863,7 @@ class BridgeService : Service() {
     // screen up when the direct start is refused.
     startRingtone()
     if (fullScreenEnabled) {
-      val intent = IncomingCallActivity.createIntent(this, number, title)
+      val intent = IncomingCallActivity.createIntent(this)
         .addFlags(
           Intent.FLAG_ACTIVITY_NEW_TASK or
             Intent.FLAG_ACTIVITY_CLEAR_TOP or

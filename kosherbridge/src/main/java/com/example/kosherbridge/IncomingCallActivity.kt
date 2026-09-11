@@ -24,13 +24,24 @@ import com.example.kosherbridge.ui.theme.ThemeMode
 class IncomingCallActivity : ComponentActivity() {
 
   companion object {
-    private const val EXTRA_NUMBER = "number"
-    private const val EXTRA_NAME = "name"
-
-    fun createIntent(context: Context, number: String?, name: String?): Intent =
+    /**
+     * The screen takes NO call details as extras, on purpose.
+     *
+     * It used to carry the caller's name, and the activity is declared
+     * `singleInstance`: a second call is delivered to the existing instance
+     * through onNewIntent, so `getIntent()` kept returning the extras of the
+     * FIRST call this instance ever handled. Every later caller was announced
+     * under the previous caller's name. The one caller with no name at all
+     * was worse: the placeholder "שיחה נכנסת" was passed as the name and won
+     * over the real contact name the moment caller ID arrived, so a known
+     * contact stayed anonymous for the whole ring.
+     *
+     * Everything this screen shows now comes from the live call state in
+     * [BridgeHub] plus a lookup in the contacts database, which is where the
+     * truth was all along - and which updates when caller ID arrives late.
+     */
+    fun createIntent(context: Context): Intent =
       Intent(context, IncomingCallActivity::class.java)
-        .putExtra(EXTRA_NUMBER, number)
-        .putExtra(EXTRA_NAME, name)
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,7 +80,7 @@ class IncomingCallActivity : ComponentActivity() {
 
           IncomingCallScreen(
             number = call?.number,
-            name = intent.getStringExtra(EXTRA_NAME) ?: resolvedName,
+            name = resolvedName,
             photoUri = photoUri,
             state = call,
             audioOutcome = state.audioOutcome,

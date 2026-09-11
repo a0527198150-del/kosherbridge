@@ -61,6 +61,10 @@ class CallAudioManager(private val context: Context) {
   @Volatile private var focusGranted = false
   @Volatile private var receiversRegistered = false
   @Volatile private var micWasMuted = false // mic muted at OS level when the call started
+  /** Call volume as the user had it before the boost; null when not boosted. */
+  @Volatile private var volumeBeforeBoost: Int? = null
+  /** The level the boost actually set, so a user change during the call wins. */
+  @Volatile private var boostedTo = -1
   @Volatile private var fallbackScheduled = false // legacy-SCO retry already queued
   @Volatile private var outcomeCheckScheduled = false // outcome measurement already queued
   /** Latched once a call is proven unroutable to the player: further automatic
@@ -385,6 +389,7 @@ class CallAudioManager(private val context: Context) {
       runCatching { am.isMicrophoneMute = true }
       micWasMuted = false
     }
+    restoreVolume()
     abandonFocus()
     runCatching { am.mode = AudioManager.MODE_NORMAL }
   }
@@ -524,12 +529,44 @@ class CallAudioManager(private val context: Context) {
     focusGranted = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
   }
 
+  /**
+   * Raises the call volume to maximum for the duration of the call - and only
+   * for the duration of the call.
+   *
+   * This used to be one-way. The very first call on a fresh install pinned
+   * STREAM_VOICE_CALL to maximum permanently, and nothing ever put it back:
+   * the user's own call volume was gone, on every player, including the ones
+   * where no audio ever arrived to be boosted. The microphone-mute state next
+   * to it was saved and restored with care; the volume was not.
+   */
   private fun boostVolume() {
-    // STREAM_VOICE_CALL maps to the SCO/communication path once the
-    // communication device is set and the mode is MODE_IN_COMMUNICATION.
     runCatching {
       val max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+      val current = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+      if (current >= max) return@runCatching
+      // Only the ORIGINAL value: a second boost during the same call must not
+      // overwrite it with the maximum this class just set.
+      if (volumeBeforeBoost == null) volumeBeforeBoost = current
       am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, max, 0)
+      boostedTo = max
+    }
+  }
+
+  /**
+   * Puts the call volume back where the user had it.
+   *
+   * Skipped when the level is no longer the one this class set: that means the
+   * user turned the volume down (or up) during the call, and their choice wins
+   * over a value from before it.
+   */
+  private fun restoreVolume() {
+    val original = volumeBeforeBoost ?: return
+    volumeBeforeBoost = null
+    val applied = boostedTo
+    boostedTo = -1
+    runCatching {
+      if (applied >= 0 && am.getStreamVolume(AudioManager.STREAM_VOICE_CALL) != applied) return@runCatching
+      am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, original, 0)
     }
   }
 

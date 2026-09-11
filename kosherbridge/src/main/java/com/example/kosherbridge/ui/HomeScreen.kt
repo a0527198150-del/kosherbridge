@@ -266,9 +266,13 @@ private fun CallCard(call: CallInfo, audioState: Int, audioOutcome: CallAudioOut
             OutlinedButton(onClick = { BridgeService.requestToggleAudio(context) }) {
               Text(
                 when {
-                  audioState == 2 -> "כבה שמע"
-                  audioOutcome == CallAudioOutcome.ON_PHONE -> "העבר שמע לנגן"
-                  else -> "הפעל שמע"
+                  // Either signal means the voice is on the player: audioState
+                  // is the system HFP profile's, which stays 0 for the whole
+                  // call on the raw RFCOMM path - so the button there offered
+                  // "הפעל שמע" while the audio was already playing.
+                  audioState == 2 || audioOutcome == CallAudioOutcome.ON_PLAYER ->
+                    "החזר שמע לטלפון"
+                  else -> "העבר שמע לנגן"
                 },
               )
             }

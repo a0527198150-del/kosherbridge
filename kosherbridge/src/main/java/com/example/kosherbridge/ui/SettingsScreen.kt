@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,7 +44,15 @@ import kotlinx.coroutines.launch
 private enum class SettingsSubPage { MAIN, SETUP, CONNECTION, DIAGNOSTICS, LOG }
 
 @Composable
-fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier: Modifier = Modifier) {
+fun SettingsScreen(
+  state: BridgeUiState,
+  onSnackbar: (String) -> Unit,
+  /** True when the caller wants the readiness page rather than the settings root. */
+  openSetup: Boolean = false,
+  /** Called once the request above has been honoured, so it fires only once. */
+  onSetupOpened: () -> Unit = {},
+  modifier: Modifier = Modifier,
+) {
   val scope = rememberCoroutineScope()
   val settings = ServiceLocator.settings
   val fullScreen by settings.fullScreen.collectAsStateWithLifecycle(true)
@@ -55,6 +64,12 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
   var showClearCallsConfirm by remember { mutableStateOf(false) }
   var showClearContactsConfirm by remember { mutableStateOf(false) }
   var subPage by rememberSaveable { mutableStateOf(SettingsSubPage.MAIN) }
+  LaunchedEffect(openSetup) {
+    if (openSetup) {
+      subPage = SettingsSubPage.SETUP
+      onSetupOpened()
+    }
+  }
   var showAudioModeDialog by remember { mutableStateOf(false) }
   val fingerprint = remember { Build.FINGERPRINT }
   // remember the FLOWS, not just the fingerprint: audioMode(fp) builds a new

@@ -59,12 +59,20 @@ fun DiagnosticsScreen(
   var capabilities by remember { mutableStateOf<PlayerCapabilities?>(null) }
   var enableResult by remember { mutableStateOf<String?>(null) }
   var probing by remember { mutableStateOf(false) }
+  var probeFailed by remember { mutableStateOf(false) }
 
   // The probe is the first thing this screen should be able to answer, so run
   // it on open rather than making the user find a button. It is a handful of
   // binder reads, all off the main thread.
   LaunchedEffect(Unit) {
-    BridgeService.withManager(context) { bridge ->
+    BridgeService.withManager(
+      context,
+      // SetupScreen learned this lesson already: with the service down the
+      // capability rows simply never appeared, on the one screen whose entire
+      // job is explaining what this player can do.
+      onMissing = { probeFailed = true },
+    ) { bridge ->
+      probeFailed = false
       scope.launch { capabilities = bridge.probeCapabilities() }
     }
   }
@@ -207,13 +215,20 @@ fun DiagnosticsScreen(
       }
       SettingRow(
         "בדוק יכולות הנגן",
-        if (probing) "בודק..." else "מה הנגן הזה באמת מסוגל לעשות - פרופיל, מאפיין מערכת ו-SELinux",
+        when {
+          probing -> "בודק..."
+          probeFailed ->
+            "שירות הגשר לא פעיל, ולכן אי אפשר לבדוק את הנגן. פתח את המסך הראשי ולחץ כאן"
+          else -> "מה הנגן הזה באמת מסוגל לעשות - פרופיל, מאפיין מערכת ו-SELinux"
+        },
       ) {
         probing = true
+        probeFailed = false
         BridgeService.withManager(
           context,
           onMissing = {
             probing = false
+            probeFailed = true
             onSnackbar("שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב")
           },
         ) { bridge ->
@@ -304,17 +319,30 @@ fun DiagnosticsScreen(
         "פתח ניתוב שמע לשיחה",
         "מבקש מהמערכת לאשר קליטת קול השיחה בנגן. הרץ אם השיחה מתחברת אבל אין קול באף צד",
       ) {
-        BridgeService.withManager(context) { bridge ->
+        // The confirmation used to be printed whether or not anything ran:
+        // with the service dead withManager's default onMissing is a no-op, so
+        // the user was told the request had been sent when nothing had.
+        BridgeService.withManager(
+          context,
+          onMissing = { onSnackbar("שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב") },
+        ) { bridge ->
           bridge.allowAudioRoute(null, forceRetry = true)
+          onSnackbar("הבקשה נשלחה - התוצאה מופיעה בשורה 'ניתוב שמע השיחה'")
         }
-        onSnackbar("הבקשה נשלחה - התוצאה מופיעה בשורה 'ניתוב שמע השיחה'")
       }
       SettingRow("בדיקת מיקרופון", micResult ?: "מוודא שהמיקרופון קולט קול לשיחה") {
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
           PackageManager.PERMISSION_GRANTED
         ) {
-          micResult = "בודק..."
-          BridgeHub.service?.checkMicrophone { micResult = it }
+          val svc = BridgeHub.service
+          if (svc == null) {
+            // Without this the row sat on "בודק..." for ever: the elvis call
+            // below was a silent no-op and nothing ever replaced the text.
+            micResult = "שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב"
+          } else {
+            micResult = "בודק..."
+            svc.checkMicrophone { micResult = it }
+          }
         } else {
           micPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
@@ -380,7 +408,8 @@ private fun buildGuidance(state: BridgeUiState): String? = when {
       "או ל-RFCOMM ישיר - שם השמע נשאר בטלפון והנגן משמש כשלט."
   state.audioOutcome == CallAudioOutcome.ON_PHONE ->
     "השיחה מחוברת אבל הקול נשאר בטלפון הכשר - דבר ושמע בטלפון. " +
-      "לחיצה על 'העבר שמע' במסך השיחה מנסה למשוך את הקול לנגן."
+      "לחיצה על 'העבר שמע' במסך השיחה מנסה למשוך את הקול לנגן, ולחיצה נוספת " +
+        "('החזר לטלפון') מחזירה אותו לטלפון בלי לנתק את השיחה."
   state.audioState != 2 ->
     "מחובר. אם אין קול: רוץ 'פתח ניתוב שמע לשיחה' ואז 'בדיקת מיקרופון', " +
       "ואם הקול עדיין לא עובר - נסה לשנות את 'ערוץ חיבור' ל-RFCOMM ישיר."

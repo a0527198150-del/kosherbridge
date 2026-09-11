@@ -157,10 +157,13 @@ fun ConnectionSettingsScreen(
           if (d == null) {
             onSnackbar("לא ניתן לפתור את המכשיר הנבחר")
           } else {
-            BridgeService.withManager(context) { bridge ->
+            // Confirm only what actually ran: with the bridge service down
+            // withManager's default onMissing does nothing at all, and the
+            // user was still told the repair had started.
+            BridgeService.withManager(context, onMissing = { onSnackbar("שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב") },) { bridge ->
               bridge.repairConnectionPolicies(d)
+              onSnackbar("תיקון מדיניות החיבור הופעל - פרטים ביומן החיבור")
             }
-            onSnackbar("תיקון מדיניות החיבור הופעל - פרטים ביומן החיבור")
           }
         }
       }
@@ -177,10 +180,10 @@ fun ConnectionSettingsScreen(
           if (d == null) {
             onSnackbar("לא ניתן לפתור את המכשיר הנבחר")
           } else {
-            BridgeService.withManager(context) { bridge ->
+            BridgeService.withManager(context, onMissing = { onSnackbar("שירות הגשר לא פעיל - פתח את המסך הראשי ונסה שוב") },) { bridge ->
               bridge.restoreSystemProfiles(d)
+              onSnackbar("השחזור הופעל - פרטים ביומן החיבור")
             }
-            onSnackbar("השחזור הופעל - פרטים ביומן החיבור")
           }
         }
       }

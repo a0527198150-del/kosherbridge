@@ -396,18 +396,27 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         else
           @Suppress("DEPRECATION")
           intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-        val addr = dev?.address ?: return
+        val target = dev ?: return
+        val addr = target.address ?: return
+        // ONLY the phone this bridge works with. Acting on every bonded device
+        // was a quiet act of sabotage on the rest of the player: pairing any
+        // accessory - headphones, a speaker, a car kit - forced its A2DP and
+        // HFP connection policies to FORBIDDEN. That policy is per-device and
+        // persistent: it survives a reboot, and uninstalling this app does not
+        // undo it, so the accessory simply stopped connecting for good with
+        // nothing anywhere to explain why.
         when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)) {
           BluetoothDevice.BOND_BONDED -> {
             // Pairing can trigger the system profiles immediately, so run the
             // same cleanup now before the raw connection attempt begins.
-            if (dev != null) scope.launch { disableSystemProfiles(dev) }
+            scope.launch { if (isBridgeDevice(addr)) disableSystemProfiles(target) }
           }
           BluetoothDevice.BOND_NONE -> {
             // Un-paired: restore the connection policies this app changed and
             // clear the learned channel so a future re-pair starts fresh.
             scope.launch {
-              if (dev != null) restoreSystemProfiles(dev)
+              if (!isBridgeDevice(addr)) return@launch
+              restoreSystemProfiles(target)
               ServiceLocator.settings.learnChannel(Build.FINGERPRINT, "")
             }
           }
@@ -423,6 +432,23 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         context.registerReceiver(receiver, filter)
       }
     }
+  }
+
+  /**
+   * True when this address is the phone the bridge works with: the live
+   * selection, or - before one is made in this process - the remembered one.
+   *
+   * Returning false for an unknown device is deliberate. The bond-time guard
+   * is only an optimisation (it gets ahead of the stack's own auto-connect);
+   * [connectRaw] re-runs the very same guard before every socket attempt, so
+   * a phone paired before it was ever selected is still protected. Guessing
+   * the other way - treating an unknown device as ours - is what poisoned
+   * unrelated accessories.
+   */
+  private suspend fun isBridgeDevice(address: String): Boolean {
+    device.value?.address?.let { return it.equals(address, ignoreCase = true) }
+    val remembered = runCatching { ServiceLocator.settings.lastDevice.first() }.getOrNull()
+    return remembered?.address?.equals(address, ignoreCase = true) == true
   }
 
   /**
@@ -1609,8 +1635,44 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     return device.value ?: (HiddenHfp.connectedDevices(c).firstOrNull() as? BluetoothDevice)
   }
 
-  fun dial(number: String): Boolean {
-    if (number.isBlank()) return false
+  /**
+   * The characters an AT dial string may legally contain (GSM 07.07 / HFP
+   * `ATD`): digits, a leading international `+`, the DTMF keys, the GSM
+   * supplementary-service and pause/wait modifiers.
+   */
+  private val dialAllowed = "0123456789+*#ABCDabcd,;pPwWtT!@".toSet()
+
+  /**
+   * Makes a number from the contact list safe to put on the wire.
+   *
+   * Numbers are stored the way a human typed them: "050-123-4567",
+   * "(02) 123 4567", "+972 50 123 4567". Those separators are not part of an
+   * AT dial string, and a gateway that parses strictly answers ERROR - the
+   * call simply never happens, with "חיוג נכשל" as the only clue. Worse on
+   * this app's own audience: an Android contacts database in a right-to-left
+   * locale routinely stores numbers wrapped in invisible bidi marks (U+200E,
+   * U+200F, U+202A-U+202E), so a number that looks perfectly ordinary on
+   * screen carries control characters the gateway cannot parse.
+   *
+   * A leading `+` is preserved - it is the international prefix - but a `+`
+   * anywhere else is a separator, not a prefix, and is dropped.
+   */
+  private fun sanitizeDialNumber(raw: String): String {
+    val trimmed = raw.trim()
+    val international = trimmed.startsWith("+")
+    val body = trimmed.filter { it in dialAllowed && it != '+' }
+    return if (international) "+$body" else body
+  }
+
+  fun dial(rawNumber: String): Boolean {
+    val number = sanitizeDialNumber(rawNumber)
+    if (number.isEmpty()) {
+      logConnection("החיוג בוטל: המספר '$rawNumber' אינו מכיל ספרות לחיוג", true)
+      return false
+    }
+    if (number != rawNumber.trim()) {
+      logConnection("המספר נוקה לפני החיוג: '${rawNumber.trim()}' ← '$number'", false)
+    }
     if (connectionState.value != BluetoothProfile.STATE_CONNECTED) {
       lastError.value = "לא מחובר לטלפון הכשר"
       return false
@@ -1711,11 +1773,41 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   /**
-   * The user asked for the voice on the player. Unlike the automatic path this
-   * always retries, even after the bridge measured that the audio stayed on
-   * the phone - an explicit request overrides that latch.
+   * Moves the conversation between the player and the phone, in whichever
+   * direction the current state calls for.
+   *
+   * Towards the player it always retries, even after the bridge measured that
+   * the audio stayed on the phone - an explicit request overrides that latch.
+   * Towards the phone it drops this app's claim on the voice pipeline, which
+   * is what lets the phone take the call back on its own earpiece while the
+   * player keeps the controls.
    */
   fun toggleAudio(): Boolean {
+    // Which way is this tap going? The button is a TOGGLE, and on the raw
+    // RFCOMM path it only ever went one way: once the voice was on the player
+    // there was no way to hand the conversation back to the phone without
+    // ending the call. Deciding the direction first also keeps the "this
+    // player cannot carry call audio" verdict from being cleared by a tap
+    // that is asking for the opposite.
+    val onPlayer = if (rawActive) {
+      audio.outcome.value == CallAudioOutcome.ON_PLAYER || audio.scoConnected.value
+    } else {
+      audioState.value == 2
+    }
+
+    if (onPlayer) {
+      // Hand it back to the phone. Dropping this app's claim (communication
+      // mode, focus, forced SCO route, HAL parameters) is what makes the stack
+      // tear the voice link down, and the phone then carries the call on its
+      // own earpiece.
+      audio.keepAudioOnPhone()
+      logConnection("השמע הוחזר לטלפון לבקשת המשתמש - הנגן ממשיך לשלוט בשיחה", false)
+      if (rawActive) return true
+      return if (useShizuku) shizuku?.disconnectAudio() ?: false
+      else if (useRoot) root?.disconnectAudio() ?: false
+      else HiddenHfp.disconnectAudio(client, device.value)
+    }
+
     // An explicit request beats the remembered verdict: the user may have
     // changed something (a different phone, a newly enabled profile) that the
     // stored answer predates. Cleared in memory AND on disk - otherwise the
@@ -1728,19 +1820,13 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       audio.forceRetry(device.value, volumeBoost, forceVirtualSco = true)
       return true
     }
-    val connected = audioState.value == 2
-    if (!connected) allowAudioRoute(device.value, forceRetry = true)
-    val ok = if (useShizuku) {
-      if (connected) shizuku?.disconnectAudio() ?: false
-      else shizuku?.connectAudio() ?: false
-    } else if (useRoot) {
-      if (connected) root?.disconnectAudio() ?: false
-      else root?.connectAudio() ?: false
-    } else {
-      if (connected) HiddenHfp.disconnectAudio(client, device.value)
-      else HiddenHfp.connectAudio(client, device.value)
-    }
-    if (!connected) audio.forceRetry(device.value, volumeBoost)
+    // Only the "pull it onto the player" direction reaches here - the other
+    // one returned above.
+    allowAudioRoute(device.value, forceRetry = true)
+    val ok = if (useShizuku) shizuku?.connectAudio() ?: false
+    else if (useRoot) root?.connectAudio() ?: false
+    else HiddenHfp.connectAudio(client, device.value)
+    audio.forceRetry(device.value, volumeBoost)
     return ok
   }
 

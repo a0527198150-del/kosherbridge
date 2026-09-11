@@ -119,7 +119,10 @@ fun IncomingCallScreen(
           active -> {
             CallActionButton("נתק", Icons.Filled.CallEnd, Color(0xFFD32F2F), onHangup)
             CallActionButton(
-              if (audioOutcome == CallAudioOutcome.ON_PHONE) "העבר שמע" else "שמע",
+              // The button moves the voice in whichever direction it is not
+              // currently in, so it has to say which one that is. "שמע" said
+              // nothing at all, on a control whose whole point is direction.
+              if (audioOutcome == CallAudioOutcome.ON_PLAYER) "החזר לטלפון" else "העבר שמע",
               Icons.Filled.VolumeUp,
               Color(0xFF1E88E5),
               onToggleAudio,
