@@ -24,6 +24,11 @@ import android.util.Log
  * when the service is already alive. [INTERVAL_MS] is deliberately loose - this
  * is a safety net for a process that should not have died, not a poll.
  *
+ * There is deliberately no way to switch this off: the bridge has no "stop"
+ * action, so an armed watchdog never fights a decision the user made. A real
+ * force-stop puts the app in the stopped state and cancels its alarms, so this
+ * cannot resurrect an app the user genuinely shut down either.
+ *
  * `setAndAllowWhileIdle` is used rather than an exact alarm: it fires through
  * Doze, and unlike `setExactAndAllowWhileIdle` it needs no SCHEDULE_EXACT_ALARM
  * permission, which Android 13+ would otherwise make the user grant by hand for
@@ -49,12 +54,6 @@ object BridgeWatchdog {
     runCatching {
       am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pending)
     }.onFailure { Log.w(TAG, "could not schedule the watchdog", it) }
-  }
-
-  /** Stops the watchdog. Used when the user disconnects on purpose. */
-  fun cancel(context: Context) {
-    val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
-    runCatching { am.cancel(tickIntent(context)) }
   }
 
   private fun tickIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(

@@ -92,6 +92,7 @@ fun SetupScreen(
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
   var capabilities by remember { mutableStateOf<PlayerCapabilities?>(null) }
+  var probeFailed by remember { mutableStateOf(false) }
   var enableResult by remember { mutableStateOf<String?>(null) }
 
   // Bumped whenever the user returns from a system settings screen, so every
@@ -106,7 +107,13 @@ fun SetupScreen(
   ) { refresh++ }
 
   LaunchedEffect(refresh) {
-    BridgeService.withManager(context) { bridge ->
+    BridgeService.withManager(
+      context,
+      // Without this the call-audio row sat on "checking..." forever whenever
+      // the service was not running - on the one screen a new user opens first.
+      onMissing = { probeFailed = true },
+    ) { bridge ->
+      probeFailed = false
       scope.launch { capabilities = bridge.probeCapabilities() }
     }
   }
@@ -115,6 +122,7 @@ fun SetupScreen(
     context = context,
     state = state,
     capabilities = capabilities,
+    probeFailed = probeFailed,
     refreshKey = refresh,
     requestPermissions = { perms -> permissionLauncher.launch(perms.toTypedArray()) },
     openSettings = { intent -> runCatching { settingsLauncher.launch(intent) } },
@@ -242,6 +250,7 @@ private fun buildSetupItems(
   context: Context,
   state: BridgeUiState,
   capabilities: PlayerCapabilities?,
+  probeFailed: Boolean,
   @Suppress("UNUSED_PARAMETER") refreshKey: Int,
   requestPermissions: (List<String>) -> Unit,
   openSettings: (Intent) -> Unit,
@@ -381,6 +390,11 @@ private fun buildSetupItems(
   // the user most needs a straight answer about before buying into the app.
   val caps = capabilities
   items += when {
+    caps == null && probeFailed -> SetupItem(
+      title = "קול בנגן",
+      detail = "לא ניתן לבדוק - שירות הגשר אינו פעיל. פתח את המסך הראשי וחזור לכאן",
+      level = SetupLevel.ACTION,
+    )
     caps == null -> SetupItem(
       title = "קול בנגן",
       detail = "בודק את יכולות הנגן...",

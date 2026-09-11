@@ -57,8 +57,14 @@ fun SettingsScreen(state: BridgeUiState, onSnackbar: (String) -> Unit, modifier:
   var subPage by rememberSaveable { mutableStateOf(SettingsSubPage.MAIN) }
   var showAudioModeDialog by remember { mutableStateOf(false) }
   val fingerprint = remember { Build.FINGERPRINT }
-  val audioMode by settings.audioMode(fingerprint).collectAsStateWithLifecycle("AUTO")
-  val audioImpossible by settings.audioImpossible(fingerprint).collectAsStateWithLifecycle(false)
+  // remember the FLOWS, not just the fingerprint: audioMode(fp) builds a new
+  // Flow on every call, and collectAsStateWithLifecycle keys on the instance -
+  // so without this the DataStore collection was torn down and restarted on
+  // every single recomposition.
+  val audioModeFlow = remember(fingerprint) { settings.audioMode(fingerprint) }
+  val audioImpossibleFlow = remember(fingerprint) { settings.audioImpossible(fingerprint) }
+  val audioMode by audioModeFlow.collectAsStateWithLifecycle("AUTO")
+  val audioImpossible by audioImpossibleFlow.collectAsStateWithLifecycle(false)
 
   // Export / import contacts as a JSON backup file (SAF document pickers).
   val exportLauncher = rememberLauncherForActivityResult(

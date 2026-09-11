@@ -69,7 +69,11 @@ fun ConnectionSettingsScreen(
 
   // Connection channel for THIS player + in-app Bluetooth pairing.
   val fp = remember { Build.FINGERPRINT }
-  val channelState by settings.channelState(fp).collectAsStateWithLifecycle(ChannelState("AUTO", "AUTO", ""))
+  // Remembered for the same reason as in SettingsScreen: channelState(fp)
+  // returns a fresh Flow each call, which restarted the collection on every
+  // recomposition.
+  val channelStateFlow = remember(fp) { settings.channelState(fp) }
+  val channelState by channelStateFlow.collectAsStateWithLifecycle(ChannelState("AUTO", "AUTO", ""))
   var showDevices by remember { mutableStateOf(false) }
   var showChannelDialog by remember { mutableStateOf(false) }
   var showPairDialog by remember { mutableStateOf(false) }

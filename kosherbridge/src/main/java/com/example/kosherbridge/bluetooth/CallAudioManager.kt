@@ -137,6 +137,24 @@ class CallAudioManager(private val context: Context) {
    * stop re-requesting audio the phone cannot deliver here. */
   val audioGivenUp: Boolean get() = stayOnPhone
 
+  /**
+   * Puts the audio HAL back to its idle state, unconditionally.
+   *
+   * [applyHalHfpParameters] leaves `hfp_enable=true` and `A2dpSuspended=true`
+   * set for the duration of a call, and releasing them depends on this process
+   * living long enough to do it. On the players this targets, a vendor power
+   * manager killing the service mid-call is exactly what happens - and the
+   * device would then be left with Bluetooth media suspended and a HAL SCO
+   * task running, with nothing on screen to explain why music stopped working.
+   *
+   * So the state is reset once at startup as well: cheap, idempotent, and it
+   * cleans up after a previous run that did not get to finish.
+   */
+  fun resetHalAudioState() {
+    if (inCall) return
+    applyHalHfpParameters(false)
+  }
+
   /** Invoked by HfpClientManager when the SCO link dropped mid-call. */
   var onScoDropped: (() -> Unit)? = null
 

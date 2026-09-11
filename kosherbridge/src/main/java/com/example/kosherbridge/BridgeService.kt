@@ -219,6 +219,9 @@ class BridgeService : Service() {
     // ignores START_STICKY - without it the bridge simply ceases to exist and
     // nothing on the device says so.
     BridgeWatchdog.schedule(this)
+    // Undo any audio-HAL state a previous run left behind when it was killed
+    // mid-call; otherwise Bluetooth media stays suspended on the device.
+    manager.audio.resetHalAudioState()
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -472,6 +475,9 @@ class BridgeService : Service() {
     // Remember, per player, that call audio proved impossible here. Re-deriving
     // it on every call costs a six-second window in which the app holds the
     // player's audio pipeline for a route that will never appear.
+    manager.onAudioRetryRequested = {
+      scope.launch { ServiceLocator.settings.setAudioImpossible(Build.FINGERPRINT, false) }
+    }
     manager.onAudioProvenImpossible = {
       scope.launch {
         ServiceLocator.settings.setAudioImpossible(Build.FINGERPRINT, true)

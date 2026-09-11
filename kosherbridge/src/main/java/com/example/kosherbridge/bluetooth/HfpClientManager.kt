@@ -508,6 +508,14 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    */
   var onAudioProvenImpossible: (() -> Unit)? = null
 
+  /**
+   * Fired when the user explicitly asks for the voice on the player after the
+   * bridge had given up, so the stored verdict can be cleared too. Clearing it
+   * only in memory left the persisted value to come back on the next settings
+   * emission or service restart, silently undoing the override.
+   */
+  var onAudioRetryRequested: (() -> Unit)? = null
+
   fun setAudioMode(mode: String, knownImpossible: Boolean) {
     audioMode = mode
     audioKnownImpossible = knownImpossible
@@ -616,9 +624,6 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   // ------------------------------------------------- player capability probe
 
-  /** Last capability probe, published for the diagnostics screen. */
-  val capabilities = MutableStateFlow<PlayerCapabilities?>(null)
-
   /**
    * Asks the player what it can actually do, preferring a bound privileged
    * bridge for the two reads the app process may be refused
@@ -638,7 +643,6 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       else -> null
     }
     val result = PlayerCapabilities.probe(context, profiles, selinux)
-    capabilities.value = result
     logConnection("בדיקת יכולות הנגן: ${result.verdict}", result.profileEnabled != true)
     result
   }
@@ -1714,8 +1718,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun toggleAudio(): Boolean {
     // An explicit request beats the remembered verdict: the user may have
     // changed something (a different phone, a newly enabled profile) that the
-    // stored answer predates.
+    // stored answer predates. Cleared in memory AND on disk - otherwise the
+    // persisted value returns at the next settings emission and the override
+    // quietly expires.
     audioKnownImpossible = false
+    onAudioRetryRequested?.invoke()
     if (rawActive) {
       if (audio.scoDeviceAvailable(device.value)) raw?.requestAudio()
       audio.forceRetry(device.value, volumeBoost, forceVirtualSco = true)
