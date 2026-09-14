@@ -14,14 +14,14 @@ import java.util.concurrent.TimeUnit
  * process with a privileged identity and instantiate this class there:
  *  - Shizuku (see HfpClientManager.bindShizuku): the Shizuku server spawns
  *    the process under the `shell` UID.
- *  - Root (see HfpClientManager.bindRoot / RootBridgeMain): the app spawns
+ *  - Root (see HfpClientManager.bindSpawned / SpawnedBridgeMain): the app spawns
  *    the process itself via `su` under uid 0 - no Shizuku app needed.
  * It reuses HiddenHfp directly - it's the same reflection code, just executed
  * under an identity that isn't blocked by the two barriers: hidden-API
  * enforcement and the BLUETOOTH_PRIVILEGED permission check.
  *
  * Never instantiate this directly from normal app code - only the privileged
- * spawn paths (Shizuku bindUserService / RootBridgeMain) should create it,
+ * spawn paths (Shizuku bindUserService / SpawnedBridgeMain) should create it,
  * in the remote process.
  */
 class HfpUserService(private val context: Context) : IHfpBridge.Stub() {

@@ -179,7 +179,7 @@ gradle :kosherbridge:assembleDebug     # for development
 Both build types are signed with the same stable key (restored in CI from the
 `DEBUG_KEYSTORE_BASE64` secret), so any build installs over any earlier one
 without uninstalling. Release deliberately keeps `isMinifyEnabled = false`:
-this app loads classes by name from a shell command (`RootBridgeMain`,
+this app loads classes by name from a shell command (`SpawnedBridgeMain`,
 `HfpUserService`) and reaches the HFP profile entirely through reflection, so
 shrinking would break the root and Shizuku channels in ways no test here would
 catch.

@@ -73,7 +73,47 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var pollJob: Job? = null
   private var stateReceiver: BroadcastReceiver? = null
   private var shizuku: ShizukuBridge? = null
-  private var root: RootBridge? = null
+  private var spawned: SpawnedBridge? = null
+
+  /**
+   * The `su` launcher, kept as a field rather than built per call: its
+   * [SuLauncher.hasBinary] probe is used by diagnostics on every capability
+   * report, and constructing a whole SpawnedBridge just to ask whether a
+   * binary exists was the wrong shape for the question.
+   */
+  private val suLauncher = SuLauncher()
+
+  /**
+   * The in-app ADB shell, when this build has one.
+   *
+   * Null in the standard flavour, where [AdbShellFactory] deliberately returns
+   * nothing rather than a throwing stub - the channel is absent, not broken.
+   * Exposed so the settings screen can drive pairing and show its state.
+   */
+  val adbShell: AdbShell? by lazy { AdbShellFactory.create(context) }
+
+  /**
+   * Channels whose link runs THROUGH the system HFP profile, just from a more
+   * privileged process.
+   *
+   * For these, disabling the system profile is self-defeating: it forces a
+   * disconnect on the very profile carrying the link, which dies a moment
+   * after it was made - with no visible cause. Only the raw RFCOMM path, which
+   * bypasses the profile entirely, may sacrifice it.
+   *
+   * ADB belongs here for exactly the same reason ROOT does. It was the first
+   * thing to get wrong when adding the channel, because the symptom - connects,
+   * then drops after a few seconds - looks like a flaky player rather than the
+   * app shooting itself.
+   */
+  private val PROFILE_DRIVEN_CHANNELS = listOf("SHIZUKU", "ROOT", "ADB", "DIRECT")
+
+  /** The launcher a spawned channel should use, or null when unavailable here. */
+  private fun launcherFor(mode: String): PrivilegedLauncher? = when (mode) {
+    "ROOT" -> suLauncher
+    "ADB" -> adbShell?.let { AdbLauncher(it) }
+    else -> null
+  }
   private var raw: RawHfpClient? = null
   private var shizukuFallbackLaunched = false
   /** The sticky binder-received listener was registered exactly once, so a
@@ -169,7 +209,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // reports with a concrete instruction.
     return when {
       useShizuku -> shizuku?.setProfilePolicy(address, profileId, policy) ?: false
-      useRoot -> root?.setProfilePolicy(address, profileId, policy) ?: false
+      useSpawned -> spawned?.setProfilePolicy(address, profileId, policy) ?: false
       else -> HiddenHfp.setProfilePriority(context, device, profileId, policy)
     }
   }
@@ -201,7 +241,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * never touched.
    */
   fun restoreSystemProfiles(device: BluetoothDevice) {
-    if (channelMode in listOf("SHIZUKU", "ROOT", "DIRECT")) return
+    if (channelMode in PROFILE_DRIVEN_CHANNELS) return
     val address = device.address
     if (!policyGuard.hasRecorded(address)) {
       logConnection("שחזור מדיניות חיבור: אין מה לשחזר עבור ${device.name ?: address}", false)
@@ -256,7 +296,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       for (r in results) {
         if (r.applied) {
           logConnection("פרופיל ${r.profileId}: מדיניות הוחזרה למאושר", false)
-        } else if (useShizuku || useRoot) {
+        } else if (useShizuku || useSpawned) {
           // A privileged write that fails is unusual - it means the remote
           // process or the Bluetooth stack refused it for another reason.
           logConnection("פרופיל ${r.profileId}: הכתיבה נדחתה גם דרך הערוץ המיוחס", true)
@@ -290,7 +330,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     val d = device ?: return HiddenHfp.POLICY_UNREADABLE
     return when {
       useShizuku -> shizuku?.connectionPolicy(d.address) ?: HiddenHfp.POLICY_UNREADABLE
-      useRoot -> root?.connectionPolicy(d.address) ?: HiddenHfp.POLICY_UNREADABLE
+      useSpawned -> spawned?.connectionPolicy(d.address) ?: HiddenHfp.POLICY_UNREADABLE
       else -> HiddenHfp.profilePolicy(context, d, 16)
     }
   }
@@ -302,7 +342,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // SHIZUKU/ROOT/DIRECT branches; the bond-time path in startBondWatch()
     // does not, so a re-pair silently broke those channels - and it now
     // disables HEADSET_CLIENT (16), the exact profile they rely on.
-    if (channelMode == "SHIZUKU" || channelMode == "ROOT" || channelMode == "DIRECT") {
+    if (channelMode in PROFILE_DRIVEN_CHANNELS) {
       logConnection("ערוץ $channelMode משתמש בפרופיל המערכת - מדלג על ניטרול", false)
       return
     }
@@ -596,9 +636,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     if (!forceRetry && audioRouteOpenedFor == d.address) return
     // Privileged bridges first: they can make the call on every Android
     // version, the app process only on 8-12.
-    if (useShizuku || useRoot) {
+    if (useShizuku || useSpawned) {
       val ok = if (useShizuku) shizuku?.setAudioRouteAllowed(d.address, true) ?: false
-      else root?.setAudioRouteAllowed(d.address, true) ?: false
+      else spawned?.setAudioRouteAllowed(d.address, true) ?: false
       if (ok) {
         audioRouteOpenedFor = d.address
         audioRouteAllowed.value = "מאושר (ערוץ מורשה)"
@@ -606,7 +646,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         return
       }
     }
-    val privileged = useShizuku || useRoot
+    val privileged = useShizuku || useSpawned
     val c = client
     if (c == null) {
       audioRouteAllowed.value = if (privileged) {
@@ -674,12 +714,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // for seconds - so none of it may run on the caller's main thread.
     val profiles = when {
       useShizuku -> shizuku?.enabledProfiles()
-      useRoot -> root?.enabledProfiles()
+      useSpawned -> spawned?.enabledProfiles()
       else -> null
     }
     val selinux = when {
       useShizuku -> shizuku?.selinuxMode()
-      useRoot -> root?.selinuxMode()
+      useSpawned -> spawned?.selinuxMode()
       else -> null
     }
     val result = PlayerCapabilities.probe(context, profiles, selinux)
@@ -702,7 +742,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * Returns a Hebrew description of what happened.
    */
   suspend fun tryEnableHeadsetClientProfile(): String = withContext(Dispatchers.IO) {
-    if (!useShizuku && !useRoot) {
+    if (!useShizuku && !useSpawned) {
       return@withContext "נדרש ערוץ מורשה: התקן והפעל Shizuku (adb אלחוטי, בלי רוט) " +
         "או בחר את ערוץ הרוט, ונסה שוב."
     }
@@ -846,31 +886,31 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   private fun startProfileServicePrivileged(): String =
     if (useShizuku) shizuku?.startHeadsetClientService() ?: "ERR:אין Shizuku"
-    else root?.startHeadsetClientService() ?: "ERR:אין ערוץ רוט"
+    else spawned?.startHeadsetClientService() ?: "ERR:אין ערוץ רוט"
 
   private fun enableProfileComponentPrivileged(): String =
     if (useShizuku) shizuku?.enableProfileComponent() ?: "ERR:אין Shizuku"
-    else root?.enableProfileComponent() ?: "ERR:אין ערוץ רוט"
+    else spawned?.enableProfileComponent() ?: "ERR:אין ערוץ רוט"
 
   private fun disabledProfilesPrivileged(): String =
-    (if (useShizuku) shizuku?.disabledProfilesSetting() else root?.disabledProfilesSetting())
+    (if (useShizuku) shizuku?.disabledProfilesSetting() else spawned?.disabledProfilesSetting())
       .orEmpty()
 
   private fun clearDisabledProfilesPrivileged(): String =
     if (useShizuku) shizuku?.clearDisabledProfilesSetting() ?: "ERR:אין Shizuku"
-    else root?.clearDisabledProfilesSetting() ?: "ERR:אין ערוץ רוט"
+    else spawned?.clearDisabledProfilesSetting() ?: "ERR:אין ערוץ רוט"
 
   private fun privilegedSelinux(): String =
-    (if (useShizuku) shizuku?.selinuxMode() else root?.selinuxMode()).orEmpty()
+    (if (useShizuku) shizuku?.selinuxMode() else spawned?.selinuxMode()).orEmpty()
 
   private fun privilegedProperty(key: String): String =
-    (if (useShizuku) shizuku?.systemProperty(key) else root?.systemProperty(key)).orEmpty()
+    (if (useShizuku) shizuku?.systemProperty(key) else spawned?.systemProperty(key)).orEmpty()
 
   /** Writes through the privileged bridge. Returns the value read back, or an
    * "ERR:..." string carrying why the write was refused. */
   private fun writePrivilegedProperty(key: String, value: String): String? =
     if (useShizuku) shizuku?.writeSystemProperty(key, value)
-    else root?.writeSystemProperty(key, value)
+    else spawned?.writeSystemProperty(key, value)
 
   /** The reason text out of an "ERR:..." result, or null when it was a value. */
   private fun propertyErrorDetail(result: String?): String? =
@@ -878,7 +918,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   private fun restartBluetoothPrivileged(): Boolean =
     if (useShizuku) shizuku?.restartBluetooth() ?: false
-    else root?.restartBluetooth() ?: false
+    else spawned?.restartBluetooth() ?: false
 
   /**
    * Lifts Android's non-SDK interface restriction through the privileged
@@ -888,7 +928,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   suspend fun liftHiddenApiRestriction(): String = withContext(Dispatchers.IO) {
     val ok = when {
       useShizuku -> shizuku?.setHiddenApiPolicy(1) ?: false
-      useRoot -> root?.setHiddenApiPolicy(1) ?: false
+      useSpawned -> spawned?.setHiddenApiPolicy(1) ?: false
       else -> return@withContext "נדרש ערוץ מורשה (Shizuku או רוט) כדי לשנות את ההגדרה הזו."
     }
     logConnection(if (ok) "חסימת ה-API הנסתר הוסרה (הגדרה גלובלית)" else "לא ניתן היה לשנות את מדיניות ה-API הנסתר", !ok)
@@ -980,7 +1020,16 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private val useShizuku: Boolean get() = shizuku?.isBound == true
 
   /** When the privileged root bridge is bound, every operation goes through it. */
-  private val useRoot: Boolean get() = root?.isBound == true
+  /**
+   * True when a bridge running in a process this app spawned is live - through
+   * `su` (uid 0) or through the player's own ADB daemon (uid 2000, shell).
+   *
+   * One predicate for both on purpose: the two differ only in how the process
+   * was started, and every call below goes through the identical AIDL surface.
+   * Two predicates would have meant duplicating twenty branches for no
+   * behavioural difference at all.
+   */
+  private val useSpawned: Boolean get() = spawned?.isBound == true
 
   /** Raw RFCOMM mode, opted-in from Settings ("חיבור ישיר"). */
   private val rawActive: Boolean get() = raw?.isConnected?.value == true
@@ -1025,16 +1074,13 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * Whether this device exposes a `su` binary (root available), for the
    * diagnostics report. Does NOT trigger the root grant prompt.
    */
-  suspend fun rootState(): Boolean = withContext(Dispatchers.IO) {
-    val b = root ?: RootBridge(context).also { root = it }
-    b.hasRootBinary()
-  }
+  suspend fun rootState(): Boolean = suLauncher.hasBinary()
 
   val adapterOn: Boolean get() = adapter?.isEnabled == true
 
   fun bondedDevices(): List<PairedDeviceInfo> =
     if (useShizuku) shizuku?.bondedDevices() ?: emptyList()
-    else if (useRoot) root?.bondedDevices() ?: emptyList()
+    else if (useSpawned) spawned?.bondedDevices() ?: emptyList()
     else {
       val a = adapter ?: return@bondedDevices emptyList()
       try {
@@ -1299,37 +1345,39 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   /**
-   * Binds the privileged HFP bridge through root (su). The app spawns its own
-   * app_process child under uid 0 - exempt from hidden-API enforcement and
-   * granted BLUETOOTH_PRIVILEGED - which runs HfpUserService and hands the
-   * binder back through RootBridgeProvider. No extra app is needed, only a
-   * rooted device that grants this app `su`.
+   * Binds the privileged HFP bridge through a process this app spawns itself.
+   *
+   * The app starts its own app_process child which runs HfpUserService and
+   * hands the binder back through SpawnedBridgeProvider. [launcher] decides
+   * what identity that child has - uid 0 through `su`, or uid 2000 through the
+   * player's own ADB daemon - and nothing after the spawn differs between
+   * them. No extra app is needed either way: this is the whole point of the
+   * channel, as opposed to Shizuku.
    */
-  suspend fun bindRoot(): Boolean {
-    logConnection("מתחיל חיבור דרך הרשאת רוט")
-    val b = root ?: RootBridge(context).also { root = it }
+  suspend fun bindSpawned(launcher: PrivilegedLauncher): Boolean {
+    logConnection("מתחיל חיבור דרך ${launcher.label}")
+    val b = spawned ?: SpawnedBridge(context, launcher).also { spawned = it }
     b.onRemoteDied {
       profileReady.value = false
       backendLabel.value = null
-      lastError.value = "תהליך הרוט נפל - נסה לחבר שוב"
+      lastError.value = "התהליך המיוחס (${launcher.label}) נפל - נסה לחבר שוב"
     }
     if (b.isBound && b.isProfileReady()) {
       profileReady.value = true
       startPolling()
       return true
     }
-    if (!withContext(Dispatchers.IO) { b.isRootAvailable() }) {
-      lastError.value =
-        "לא הוענקה הרשאת רוט לאפליקציה - אשרו את בקשת ההרשאה (Magisk) ובחרו שוב 'דרך הרשאת רוט'"
-      logConnection("הרשאת רוט לא זמינה", true)
+    if (!launcher.available()) {
+      lastError.value = launcher.unavailableMessage()
+      logConnection("${launcher.label}: הערוץ אינו זמין", true)
       return false
     }
-    if (!withContext(Dispatchers.IO) { b.start() }) {
-      lastError.value = "הפעלת תהליך הרוט נכשלה"
-      logConnection("הפעלת תהליך הרוט נכשלה", true)
+    if (!b.start()) {
+      lastError.value = "הפעלת התהליך המיוחס דרך ${launcher.label} נכשלה"
+      logConnection("הפעלת התהליך המיוחס דרך ${launcher.label} נכשלה", true)
       return false
     }
-    logConnection("תהליך הרוט הופעל - ממתין לחיבור", false)
+    logConnection("התהליך המיוחס (${launcher.label}) הופעל - ממתין לחיבור", false)
     // Booting the app in the root process (ActivityThread + Application) can
     // take several seconds on slow players - wait like Shizuku does instead
     // of giving up early.
@@ -1339,9 +1387,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       waited += 200
     }
     if (!b.isBound) {
-      logConnection("תהליך הרוט עדיין לא החזיר חיבור", true)
+      logConnection("התהליך המיוחס (${launcher.label}) עדיין לא החזיר חיבור", true)
       lastError.value =
-        "תהליך הרוט עדיין עולה (יכול לקחת כמה שניות בנגן איטי) - אם זה נמשך, ודא שהרשאת הרוט הוענקה ונסה שוב"
+        "התהליך המיוחס עדיין עולה (יכול לקחת כמה שניות בנגן איטי) - אם זה נמשך, ודא " +
+          "שהערוץ ${launcher.label} זמין ונסה שוב"
       // Keep watching in the background: when the binder finally arrives,
       // finish the wiring instead of staying broken.
       scope.launch {
@@ -1350,11 +1399,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
           delay(500)
           waited += 500
         }
-        if (b.isBound) finishRootBind(b)
+        if (b.isBound) finishSpawnedBind(b, launcher)
       }
       return false
     }
-    return finishRootBind(b)
+    return finishSpawnedBind(b, launcher)
   }
 
   /**
@@ -1362,21 +1411,21 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * profile there, re-connects a previously selected device, clears the error
    * and starts polling call state.
    */
-  private suspend fun finishRootBind(b: RootBridge): Boolean {
+  private suspend fun finishSpawnedBind(b: SpawnedBridge, launcher: PrivilegedLauncher): Boolean {
     if (!b.registerProfile()) {
-      lastError.value = "פרופיל הדיבורית לא זמין דרך הרוט במכשיר זה"
-      logConnection("הרוט מחובר אך רישום פרופיל הדיבורית נכשל", true)
+      lastError.value = "פרופיל הדיבורית לא זמין דרך ${launcher.label} במכשיר זה"
+      logConnection("${launcher.label} מחובר אך רישום פרופיל הדיבורית נכשל", true)
       return false
     }
-    logConnection("הרוט רשם את פרופיל הדיבורית", false)
+    logConnection("${launcher.label} רשם את פרופיל הדיבורית", false)
     // If a device was already selected, make sure the remote profile connects to it.
     device.value?.address?.let { addr ->
-      if (root?.connectionState(addr) != BluetoothProfile.STATE_CONNECTED) {
-        root?.connect(addr)
+      if (b.connectionState(addr) != BluetoothProfile.STATE_CONNECTED) {
+        b.connect(addr)
       }
     }
     lastError.value = null
-    backendLabel.value = "Root"
+    backendLabel.value = launcher.label
     profileReady.value = true
     startPolling()
     // Deliberately NOT learned as the "channel that worked" on this player:
@@ -1527,38 +1576,47 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         }
         return
       }
-      // User forced the root path - the app spawns its own privileged
-      // process (su, uid 0) and connects through it.
-      "ROOT" -> {
-        // Same rule as SHIZUKU: the root connection itself goes through the
-        // system HFP profile (just in the privileged process), so do NOT call
+      // The app spawns its own privileged process and connects through it -
+      // as uid 0 through `su` for ROOT, or as uid 2000 through the player's
+      // own ADB daemon for ADB. Nothing below distinguishes them: only the
+      // launcher differs, and it is chosen once, here.
+      "ROOT", "ADB" -> {
+        val launcher = launcherFor(channelMode)
+        if (launcher == null) {
+          lastError.value =
+            "ערוץ ADB אינו זמין בגרסה הזו של האפליקציה - הורד את גרסת 'פלוס'"
+          logConnection("נבחר ערוץ ADB אך הגרסה הרגילה אינה כוללת אותו", true)
+          return
+        }
+        // Same rule as SHIZUKU: the connection itself goes through the system
+        // HFP profile (just in the privileged process), so do NOT call
         // disableSystemProfiles here - it would force a disconnect on that
-        // same profile and kill the root link a moment after it was made.
-        if (useRoot) {
+        // same profile and kill the link a moment after it was made.
+        if (useSpawned) {
           if (profileReady.value) {
             // Same rule as SHIZUKU: restore ALLOWED in the privileged process
             // before connect, undoing any FORBIDDEN policy a raw/AUTO session
             // persisted for this device.
-            val allowed = root!!.setConnectionAllowed(target.address)
+            val allowed = spawned!!.setConnectionAllowed(target.address)
             if (allowed) {
               logConnection("מדיניות החיבור לפרופיל הדיבורית הוחזרה לפעילה", false)
             } else {
               logConnection("לא ניתן להחזיר את מדיניות החיבור - החיבור עלול ליפול", true)
             }
-            if (!root!!.connect(target.address)) {
-              lastError.value = "חיבור הדיבורית נכשל דרך הרוט"
+            if (!spawned!!.connect(target.address)) {
+              lastError.value = "חיבור הדיבורית נכשל דרך ${launcher.label}"
             }
           } else {
-            lastError.value = "פרופיל הדיבורית לא זמין דרך הרוט בנגן זה"
+            lastError.value = "פרופיל הדיבורית לא זמין דרך ${launcher.label} בנגן זה"
           }
         } else {
-          lastError.value = "מתחבר דרך הרשאת רוט..."
+          lastError.value = "מתחבר דרך ${launcher.label}..."
           scope.launch {
-            if (bindRoot()) {
+            if (bindSpawned(launcher)) {
               connect(target)
             } else {
-              // bindRoot() already set a specific error + log entry - keep it.
-              logConnection("החיבור בערוץ הרוט נכשל", true)
+              // bindSpawned() already set a specific error + log entry - keep it.
+              logConnection("החיבור בערוץ ${launcher.label} נכשל", true)
             }
           }
         }
@@ -1628,8 +1686,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
     if (useShizuku) {
       device.value?.address?.let { shizuku?.disconnect(it) }
-    } else if (useRoot) {
-      device.value?.address?.let { root?.disconnect(it) }
+    } else if (useSpawned) {
+      device.value?.address?.let { spawned?.disconnect(it) }
     } else {
       val c = client
       val d = device.value
@@ -1693,7 +1751,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
     if (rawActive) return raw?.dial(number) ?: false
     if (useShizuku) return shizuku?.dial(number) ?: false
-    if (useRoot) return root?.dial(number) ?: false
+    if (useSpawned) return spawned?.dial(number) ?: false
     val c = client ?: return false
     val d = directDevice() ?: return false
     val ok = HiddenHfp.dial(c, d, number)
@@ -1706,7 +1764,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun redial(): Boolean =
     if (rawActive) raw?.redial() ?: false
     else if (useShizuku) shizuku?.redial() ?: false
-    else if (useRoot) root?.redial() ?: false
+    else if (useSpawned) spawned?.redial() ?: false
     else {
       val c = client
       val d = if (c != null) directDevice() else null
@@ -1716,7 +1774,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun answer(): Boolean {
     val ok = if (rawActive) raw?.answer() ?: false
     else if (useShizuku) shizuku?.accept() ?: false
-    else if (useRoot) root?.accept() ?: false
+    else if (useSpawned) spawned?.accept() ?: false
     else {
       val c = client
       val d = if (c != null) directDevice() else null
@@ -1735,7 +1793,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun reject(): Boolean =
     if (rawActive) raw?.reject() ?: false
     else if (useShizuku) shizuku?.reject() ?: false
-    else if (useRoot) root?.reject() ?: false
+    else if (useSpawned) spawned?.reject() ?: false
     else {
       val c = client
       val d = if (c != null) directDevice() else null
@@ -1745,7 +1803,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   fun hangup(): Boolean =
     if (rawActive) raw?.hangup() ?: false
     else if (useShizuku) shizuku?.hangup() ?: false
-    else if (useRoot) root?.hangup() ?: false
+    else if (useSpawned) spawned?.hangup() ?: false
     else {
       val c = client
       val d = if (c != null) directDevice() else null
@@ -1792,7 +1850,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // call is silent on both devices.
     allowAudioRoute(device.value)
     if (useShizuku) shizuku?.connectAudio()
-    else if (useRoot) root?.connectAudio()
+    else if (useSpawned) spawned?.connectAudio()
     else HiddenHfp.connectAudio(client, device.value)
     if (autoAudio) audio.ensureCallAudio(device.value, volumeBoost)
   }
@@ -1829,7 +1887,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       logConnection("השמע הוחזר לטלפון לבקשת המשתמש - הנגן ממשיך לשלוט בשיחה", false)
       if (rawActive) return true
       return if (useShizuku) shizuku?.disconnectAudio() ?: false
-      else if (useRoot) root?.disconnectAudio() ?: false
+      else if (useSpawned) spawned?.disconnectAudio() ?: false
       else HiddenHfp.disconnectAudio(client, device.value)
     }
 
@@ -1849,7 +1907,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // one returned above.
     allowAudioRoute(device.value, forceRetry = true)
     val ok = if (useShizuku) shizuku?.connectAudio() ?: false
-    else if (useRoot) root?.connectAudio() ?: false
+    else if (useSpawned) spawned?.connectAudio() ?: false
     else HiddenHfp.connectAudio(client, device.value)
     audio.forceRetry(device.value, volumeBoost)
     return ok
@@ -1868,8 +1926,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     client = null
     shizuku?.unbind()
     shizuku = null
-    root?.stop()
-    root = null
+    // stop() is a suspending call now (it may have to go out over ADB), and
+    // shutdown() is not - so it is launched rather than awaited. The scope is
+    // the service's, which outlives this call by exactly long enough.
+    spawned?.let { bridge -> scope.launch { bridge.stop() } }
+    spawned = null
     raw?.disconnect()
     raw = null
     rawCollectorsLaunched = false
@@ -1953,7 +2014,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         if (!rawActive) {
           if (useShizuku) {
             pollShizuku()
-          } else if (useRoot) {
+          } else if (useSpawned) {
             pollRoot()
           } else {
             val c = client
@@ -2061,7 +2122,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   /** Polls call state from the remote root user service. */
   private fun pollRoot() {
-    val b = root ?: return
+    val b = spawned ?: return
     var d = device.value
     if (d == null) {
       // Rediscover the connected device, mirroring pollShizuku().

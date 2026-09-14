@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeService
+import com.example.kosherbridge.BuildConfig
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ChannelState
@@ -76,6 +77,10 @@ fun ConnectionSettingsScreen(
   val channelState by channelStateFlow.collectAsStateWithLifecycle(ChannelState("AUTO", "AUTO", ""))
   var showDevices by remember { mutableStateOf(false) }
   var showChannelDialog by remember { mutableStateOf(false) }
+  // BuildConfig, not a runtime probe: whether this APK even contains the ADB
+  // channel is decided at build time by the product flavour, so a runtime
+  // check would be asking a question whose answer is already compiled in.
+  val adbChannelAvailable = BuildConfig.HAS_ADB_CHANNEL
   var showPairDialog by remember { mutableStateOf(false) }
   var discovered by remember { mutableStateOf(listOf<Pair<String, String>>()) }
   var scanning by remember { mutableStateOf(false) }
@@ -265,13 +270,17 @@ fun ConnectionSettingsScreen(
       title = { Text("ערוץ חיבור") },
       text = {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          listOf(
-            "AUTO" to "אוטומטי - האפליקציה בוחרת לבד",
-            "DIRECT" to "ישיר (ללא Shizuku)",
-            "SHIZUKU" to "דרך Shizuku",
-            "ROOT" to "דרך הרשאת רוט (su)",
-            "RAW" to "חיבור ישיר RFCOMM",
-          ).forEach { (mode, label) ->
+          buildList {
+            add("AUTO" to "אוטומטי - האפליקציה בוחרת לבד")
+            add("DIRECT" to "ישיר (ללא Shizuku)")
+            add("SHIZUKU" to "דרך Shizuku")
+            // Only where the build actually has it. Offering a channel the
+            // standard flavour cannot run would be a menu entry whose only
+            // outcome is an error message.
+            if (adbChannelAvailable) add("ADB" to "דרך ADB מקומי (בלי Shizuku)")
+            add("ROOT" to "דרך הרשאת רוט (su)")
+            add("RAW" to "חיבור ישיר RFCOMM")
+          }.forEach { (mode, label) ->
             Row(
               modifier = Modifier
                 .fillMaxWidth()
@@ -337,6 +346,7 @@ private fun channelLabel(cs: ChannelState): String {
   val name = when (cs.effective) {
     "DIRECT" -> "ישיר"
     "SHIZUKU" -> "Shizuku"
+    "ADB" -> "ADB מקומי"
     "ROOT" -> "Root"
     "RAW" -> "RFCOMM ישיר"
     else -> "אוטומטי"

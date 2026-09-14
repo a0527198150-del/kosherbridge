@@ -5,63 +5,82 @@ import android.content.Context
 import android.os.IBinder
 import android.util.Log
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
- * Client side of the privileged HFP bridge running through **root** (`su`).
+ * Client side of a privileged HFP bridge running in a process this app spawned
+ * for itself.
  *
- * [ShizukuBridge] needs the separate Shizuku app + server; this class needs
- * nothing but a rooted device (Magisk / KernelSU / SuperSU - any `su` that
- * grants this app uid 0). The app spawns its own privileged process:
+ * [ShizukuBridge] needs the separate Shizuku app and its server. This class
+ * needs neither: it starts its own privileged process directly,
  *
- *     su -c "CLASSPATH=<our apk> app_process ... RootBridgeMain ..."
+ *     <launcher> "CLASSPATH=<our apk> app_process ... SpawnedBridgeMain ..."
  *
- * That process runs under uid 0 - exempt from hidden-API enforcement and
- * granted BLUETOOTH_PRIVILEGED - so the same reflection calls that are
- * blocked in the normal app process succeed there (see [RootBridgeMain]).
- * [HfpUserService] is instantiated in that process, and its binder is handed
- * back into this process through [RootBridgeProvider] (a ContentProvider.call
- * with a Bundle.putBinder extra - the same handoff mechanism Shizuku's server
- * uses, minus the Shizuku app). Every operation is then proxied over the
- * [IHfpBridge] AIDL interface, exactly like [ShizukuBridge].
+ * and [PrivilegedLauncher] is the only thing that differs between the two ways
+ * of doing that:
+ *
+ *  - [SuLauncher] runs it through `su`, so the process is uid 0 - exempt from
+ *    hidden-API enforcement and past every permission check.
+ *  - [AdbLauncher] runs it through the player's own ADB daemon, so the process
+ *    is uid 2000 (`shell`) - which holds BLUETOOTH_PRIVILEGED and
+ *    WRITE_SECURE_SETTINGS, and is exactly the identity Shizuku hands out. No
+ *    root, no second app, no PC.
+ *
+ * Everything after the spawn is identical for both, which is the point of the
+ * split: [HfpUserService] is instantiated in that process and its binder is
+ * handed back here through [SpawnedBridgeProvider] (a ContentProvider.call with
+ * a Bundle.putBinder extra - the same handoff Shizuku's server performs), and
+ * every operation is then proxied over the [IHfpBridge] AIDL interface.
  */
-class RootBridge(private val context: Context) {
+class SpawnedBridge(
+  private val context: Context,
+  private val launcher: PrivilegedLauncher,
+) {
 
   companion object {
-    private const val TAG = "RootBridge"
+    private const val TAG = "SpawnedBridge"
 
-    const val AUTHORITIES = "com.example.kosherbridge.rootbridge"
+    const val AUTHORITIES = "com.example.kosherbridge.spawnedbridge"
     const val METHOD_SEND_BINDER = "sendBinder"
     const val EXTRA_BINDER = "binder"
     const val EXTRA_TOKEN = "token"
     const val EXTRA_PID = "pid"
 
-    private const val ENTRY_CLASS = "com.example.kosherbridge.bluetooth.RootBridgeMain"
+    private const val ENTRY_CLASS = "com.example.kosherbridge.bluetooth.SpawnedBridgeMain"
     private const val SERVICE_CLASS = "com.example.kosherbridge.bluetooth.HfpUserService"
 
     /** A spawn older than this without delivering its binder is dead - re-spawn. */
     private const val SPAWN_RETRY_AFTER_MS = 45_000L
 
-    // Bridge between RootBridgeProvider (running in this process on a binder
-    // thread) and the manager's RootBridge instance. The provider only lets
-    // uid-0 callers through, and the one-time token ties the handoff to the
-    // process start() actually launched.
-    @Volatile private var active: RootBridge? = null
-    @Volatile private var expectedToken: String? = null
+    /** The uids a process this app spawned can legitimately run as. */
+    val SPAWNABLE_UIDS = setOf(0, 2000)
 
-    /** Called by [RootBridgeProvider] when the root process hands over its binder. */
+    /**
+     * Spawns waiting for their binder, keyed by the one-time token each was
+     * started with.
+     *
+     * This used to be a single `active` field plus a single `expectedToken`,
+     * which quietly assumed only one bridge could ever exist. With two
+     * launchers that assumption is false: constructing the second bridge
+     * replaced the first as `active`, so the first one's binder - when it
+     * finally arrived - was delivered to the wrong instance or dropped. Keying
+     * by token makes each handoff find its own spawn, and consuming the entry
+     * on delivery means a replayed token is ignored.
+     */
+    private val pending = ConcurrentHashMap<String, SpawnedBridge>()
+
+    /** Called by [SpawnedBridgeProvider] when a spawned process hands over its binder. */
     fun accept(binder: IBinder, pid: Int, token: String?) {
-      val b = active ?: return
-      if (expectedToken == null || token != expectedToken) return
-      b.onRemoteDelivered(binder, pid)
+      val bridge = token?.let { pending.remove(it) } ?: return
+      bridge.onRemoteDelivered(binder, pid)
     }
   }
 
-  init {
-    active = this
-  }
-
   @Volatile private var remote: IHfpBridge? = null
-  @Volatile private var rootPid = -1
+  @Volatile private var spawnedPid = -1
+  private val startMutex = Mutex()
   @Volatile private var started = false
   /** When the last spawn was launched - used to un-stick a spawn that never
    * delivered its binder (silent app_process crash, bad CLASSPATH, ...).
@@ -72,97 +91,37 @@ class RootBridge(private val context: Context) {
 
   val isBound: Boolean get() = remote != null
 
-  /** Fired when the root process dies (binder death). */
+  /** Fired when the spawned process dies (binder death). */
   fun onRemoteDied(callback: () -> Unit) {
     remoteDied = callback
   }
 
   /**
-   * True when a `su` binary exists on this device. Does NOT trigger the root
-   * grant prompt (safe to call from diagnostics at boot). A binary can exist
-   * while the app was never granted root - [isRootAvailable] proves the grant.
-   */
-  fun hasRootBinary(): Boolean {
-    val r = execWithTimeout(arrayOf("sh", "-c", "command -v su"), 3_000)
-    return r.exited && r.exitCode == 0 && r.output.isNotBlank()
-  }
-
-  /**
-   * True when `su` actually grants this app root (uid 0). On the first call
-   * the root manager (Magisk/KernelSU) may show its grant prompt - call only
-   * when the user opted into the root path.
-   */
-  fun isRootAvailable(): Boolean {
-    val r = execWithTimeout(arrayOf("su", "-c", "id"), 3_000)
-    return r.exited && r.exitCode == 0 && r.output.contains("uid=0")
-  }
-
-  private data class CmdResult(val exited: Boolean, val exitCode: Int, val output: String)
-
-  /**
-   * Runs a command with a hard timeout, minSdk-safe (Process.waitFor(long,
-   * TimeUnit) is API 26+). A hanging su prompt (root not granted yet) must not
-   * block the app, so the wait runs on a watchdog thread and the process is
-   * destroyed if it does not finish in time.
-   */
-  private fun execWithTimeout(cmd: Array<String>, timeoutMs: Long): CmdResult {
-    val p = try {
-      Runtime.getRuntime().exec(cmd)
-    } catch (t: Throwable) {
-      return CmdResult(false, -1, "")
-    }
-    val output = StringBuilder()
-    val reader = Thread {
-      try {
-        p.inputStream.bufferedReader().use { output.append(it.readText()) }
-      } catch (_: Throwable) {
-        // best effort - the output is only used for detection
-      }
-    }
-    reader.start()
-    val waiter = Thread {
-      try {
-        p.waitFor()
-        reader.join()
-      } catch (_: Throwable) {
-        // best effort
-      }
-    }
-    waiter.start()
-    try {
-      waiter.join(timeoutMs)
-    } catch (_: InterruptedException) {
-      Thread.currentThread().interrupt()
-    }
-    if (waiter.isAlive) {
-      runCatching { p.destroy() }
-      return CmdResult(false, -1, output.toString())
-    }
-    return CmdResult(true, p.exitValue(), output.toString())
-  }
-
-  /**
-   * Spawns the privileged root process. The command backgrounds a subshell
-   * (like Shizuku's start.sh) so `su` returns immediately; the app_process
-   * child keeps running under uid 0. The binder handoff arrives asynchronously
-   * via [RootBridgeProvider] - poll [isBound] or wait in the caller.
+   * Spawns the privileged process. The command backgrounds a subshell (like
+   * Shizuku's start.sh) so the launcher returns immediately while the
+   * app_process child keeps running; the binder handoff then arrives
+   * asynchronously via [SpawnedBridgeProvider] - poll [isBound] or wait in the
+   * caller.
    *
-   * Synchronized so two concurrent bindRoot() coroutines cannot both spawn a
-   * second process (each spawn replaces expectedToken, silently rejecting the
-   * other's delivery and leaking a booted-but-idle app_process). A spawn that
-   * never delivers its binder within [SPAWN_RETRY_AFTER_MS] is treated as
-   * dead and re-spawned on the next call instead of sticking forever.
+   * A spawn that never delivers its binder within [SPAWN_RETRY_AFTER_MS] is
+   * treated as dead and re-spawned on the next call rather than sticking for
+   * ever (a silent app_process crash, a bad CLASSPATH).
+   *
+   * The mutex is not decoration: two concurrent bind calls would otherwise
+   * both spawn, and the second would leak a booted-but-idle app_process whose
+   * binder nothing is waiting for.
    */
-  @Synchronized
-  fun start(): Boolean {
-    if (remote != null) return true
-    if (started && System.currentTimeMillis() - startedAt < SPAWN_RETRY_AFTER_MS) return true
+  suspend fun start(): Boolean = startMutex.withLock {
+    if (remote != null) return@withLock true
+    if (started && System.currentTimeMillis() - startedAt < SPAWN_RETRY_AFTER_MS) {
+      return@withLock true
+    }
     val token = UUID.randomUUID().toString()
-    expectedToken = token
+    pending[token] = this
     // packageCodePath is only the BASE apk. An app installed as an app bundle
     // keeps its Kotlin/AndroidX classes in split apks, and a CLASSPATH missing
-    // them makes the root process die with NoClassDefFoundError before it can
-    // report anything - the channel just silently never binds.
+    // them makes the spawned process die with NoClassDefFoundError before it
+    // can report anything - the channel just silently never binds.
     val info = context.applicationInfo
     val apk = buildList {
       add(info.sourceDir ?: context.packageCodePath)
@@ -170,43 +129,45 @@ class RootBridge(private val context: Context) {
     }.filter { it.isNotBlank() }.distinct().joinToString(":")
     val cmd = buildString {
       append("( CLASSPATH='").append(apk).append("' /system/bin/app_process /system/bin --nice-name='")
-      append(context.packageName).append(":root' ")
+      append(context.packageName).append(':').append(launcher.processSuffix).append("' ")
       append(ENTRY_CLASS)
       append(" --package=").append(context.packageName)
       append(" --class=").append(SERVICE_CLASS)
       append(" --token=").append(token)
       append(" ) >/dev/null 2>&1 &")
     }
-    val r = execWithTimeout(arrayOf("su", "-c", cmd), 5_000)
-    val ok = r.exited && r.exitCode == 0
+    val ok = launcher.runDetached(cmd)
     started = ok
     startedAt = if (ok) System.currentTimeMillis() else 0L
-    if (!ok) expectedToken = null
-    Log.i(TAG, if (ok) "root process spawned" else "failed to spawn root process")
-    return ok
+    // A spawn that could not even be sent will never deliver anything, so its
+    // entry would otherwise sit in the map for the life of the process.
+    if (!ok) pending.remove(token)
+    Log.i(
+      TAG,
+      if (ok) "${launcher.label} process spawned" else "failed to spawn ${launcher.label} process",
+    )
+    ok
   }
 
-  /** Stops the root process: asks it to destroy itself, then kills by pid. */
-  @Synchronized
-  fun stop() {
+  /** Stops the spawned process: asks it to destroy itself, then kills by pid. */
+  suspend fun stop(): Unit = startMutex.withLock {
     runCatching { remote?.destroy() }
-    if (rootPid > 0) {
-      runCatching { Runtime.getRuntime().exec(arrayOf("su", "-c", "kill -9 $rootPid")) }
-    }
+    if (spawnedPid > 0) launcher.kill(spawnedPid)
     remote = null
-    rootPid = -1
+    spawnedPid = -1
     started = false
     startedAt = 0L
-    expectedToken = null
+    // Anything still waiting for THIS bridge is now stale.
+    pending.entries.removeAll { it.value === this }
   }
 
   internal fun onRemoteDelivered(binder: IBinder, pid: Int) {
-    rootPid = pid
+    spawnedPid = pid
     runCatching {
       binder.linkToDeath({
         Log.w(TAG, "root process died")
         remote = null
-        rootPid = -1
+        spawnedPid = -1
         started = false
         startedAt = 0L
         remoteDied?.invoke()

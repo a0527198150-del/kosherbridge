@@ -12,10 +12,10 @@ import android.os.Process
 import android.util.Log
 
 /**
- * Entry point of the privileged **root** process, run by [RootBridge] as
+ * Entry point of the privileged **root** process, run by [SpawnedBridge] as
  *
  *     su -c "CLASSPATH=<our apk> app_process /system/bin --nice-name=<app>:root \
- *            com.example.kosherbridge.bluetooth.RootBridgeMain \
+ *            com.example.kosherbridge.bluetooth.SpawnedBridgeMain \
  *            --package=<app> --class=...HfpUserService --token=<token>"
  *
  * The process runs under uid 0, so it is exempt from hidden-API enforcement
@@ -23,7 +23,7 @@ import android.util.Log
  * two walls that block the normal app process. It boots the app's Application
  * (the same sequence Shizuku's starter uses), instantiates [HfpUserService]
  * there, and delivers the service binder back into the app process through
- * [RootBridgeProvider] using a ContentProvider.call + Bundle.putBinder - the
+ * [SpawnedBridgeProvider] using a ContentProvider.call + Bundle.putBinder - the
  * same handoff Shizuku's server performs, without the Shizuku app.
  *
  * Everything Android-specific here is accessed through reflection because the
@@ -31,9 +31,9 @@ import android.util.Log
  * IContentProvider) are hidden from the public SDK - fine in this process,
  * since hidden-API enforcement does not apply to app_process children.
  */
-object RootBridgeMain {
+object SpawnedBridgeMain {
 
-  private const val TAG = "RootBridgeMain"
+  private const val TAG = "SpawnedBridgeMain"
 
   private const val ARG_PACKAGE = "--package="
   private const val ARG_CLASS = "--class="
@@ -138,7 +138,7 @@ object RootBridgeMain {
 
   /**
    * Hands [HfpUserService]'s binder to the app process through its
-   * RootBridgeProvider. Mirrors Shizuku's ServiceStarter.sendBinder(): obtain
+   * SpawnedBridgeProvider. Mirrors Shizuku's ServiceStarter.sendBinder(): obtain
    * the provider via ActivityManager.getContentProviderExternal, then call it
    * with a Bundle carrying the binder as an extra.
    */
@@ -161,7 +161,7 @@ object RootBridgeMain {
         Int::class.javaPrimitiveType,
         IBinder::class.java,
         String::class.java,
-      ).invoke(iam, RootBridge.AUTHORITIES, 0, tokenBinder, RootBridge.AUTHORITIES)
+      ).invoke(iam, SpawnedBridge.AUTHORITIES, 0, tokenBinder, SpawnedBridge.AUTHORITIES)
       icp = icpClass.cast(provider) as? IInterface
       if (icp == null || !icp.asBinder().pingBinder()) return false
 
@@ -173,18 +173,18 @@ object RootBridgeMain {
       }, 0)
 
       val extras = Bundle().apply {
-        putBinder(RootBridge.EXTRA_BINDER, binder.asBinder())
-        putString(RootBridge.EXTRA_TOKEN, token)
-        putInt(RootBridge.EXTRA_PID, Process.myPid())
+        putBinder(SpawnedBridge.EXTRA_BINDER, binder.asBinder())
+        putString(SpawnedBridge.EXTRA_TOKEN, token)
+        putInt(SpawnedBridge.EXTRA_PID, Process.myPid())
       }
-      callCompat(icpClass, icp, pkg, RootBridge.AUTHORITIES, RootBridge.METHOD_SEND_BINDER, null, extras) != null
+      callCompat(icpClass, icp, pkg, SpawnedBridge.AUTHORITIES, SpawnedBridge.METHOD_SEND_BINDER, null, extras) != null
     } catch (t: Throwable) {
       Log.e(TAG, "deliverBinder failed", t)
       false
     } finally {
       runCatching {
         amClass.getMethod("removeContentProviderExternal", String::class.java, IBinder::class.java)
-          .invoke(iam, RootBridge.AUTHORITIES, tokenBinder)
+          .invoke(iam, SpawnedBridge.AUTHORITIES, tokenBinder)
       }
     }
   }

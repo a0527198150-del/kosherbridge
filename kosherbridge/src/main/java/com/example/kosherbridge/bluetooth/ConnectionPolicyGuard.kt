@@ -63,8 +63,8 @@ class ConnectionPolicyGuard {
    * Whether profile 16 (HFP-client) may be set to FORBIDDEN for a channel mode.
    * Only the explicit, sticky RAW choice may sacrifice it: FORBIDDEN is a
    * persistent per-device policy, and disabling the HFP-client profile breaks
-   * the Shizuku/root/DIRECT channels afterwards. AUTO (which today resolves to
-   * the raw path) and the privileged channels leave it untouched.
+   * the Shizuku/ADB/root/DIRECT channels afterwards. AUTO (which today resolves
+   * to the raw path) and the privileged channels leave it untouched.
    */
   fun shouldForbidHeadsetClient(channelMode: String): Boolean = channelMode == "RAW"
 

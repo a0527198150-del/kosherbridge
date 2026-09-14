@@ -27,7 +27,7 @@ class ShizukuBridge(private val context: Context) {
   @Volatile private var remote: IHfpBridge? = null
   @Volatile private var bindRequested = false
   /** When the last bind was requested - un-sticks a bind whose user-service
-   * process crashed before delivering its binder (mirror of RootBridge).
+   * process crashed before delivering its binder (mirror of SpawnedBridge).
    * Without it `bindRequested` stayed true forever and the Shizuku channel
    * was dead until the app restarted. */
   @Volatile private var bindRequestedAt = 0L
@@ -76,7 +76,7 @@ class ShizukuBridge(private val context: Context) {
     }
   }
 
-  /** Fired when the Shizuku user-service process dies (mirror of RootBridge). */
+  /** Fired when the Shizuku user-service process dies (mirror of SpawnedBridge). */
   fun onRemoteDied(callback: () -> Unit) {
     remoteDied = callback
   }
