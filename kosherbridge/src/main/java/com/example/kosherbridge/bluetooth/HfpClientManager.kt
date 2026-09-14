@@ -751,7 +751,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       useSpawned -> spawned?.selinuxMode()
       else -> null
     }
-    val result = PlayerCapabilities.probe(context, profiles, selinux)
+    val result = PlayerCapabilities.probe(context, profiles, selinux, channelMode)
     logConnection("בדיקת יכולות הנגן: ${result.verdict}", result.profileEnabled != true)
     result
   }
@@ -805,7 +805,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       if (gate) logConnection("שער השמע נפתח גם הוא (מאפיין)", false)
       return@withContext if (restartBluetoothPrivileged()) {
         "המאפיין כבר היה דלוק" + (if (gate) ", שער השמע נפתח" else "") +
-          ", והבלוטוס הופעל מחדש. הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה."
+          ", והבלוטוס הופעל מחדש. הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה." +
+          channelAdviceAfterEnable()
       } else {
         "המאפיין כבר דלוק אבל לא הצלחתי להפעיל מחדש את הבלוטוס. כבה והדלק בלוטוס ידנית ובדוק שוב."
       }
@@ -877,8 +878,13 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
               "המחסנית של הנגן פשוט לא קוראת את השם הזה.",
           )
           if (!key.startsWith("persist.")) {
-            append(" בנוסף, המאפיין נמחק בכל אתחול - הרץ את הפעולה שוב אחרי כל הפעלה מחדש.")
+            append(
+              " בנוסף, המאפיין נמחק בכל אתחול - אבל האפליקציה זוכרת אותו ומחזירה " +
+                "אותו לבד אחרי כל הדלקה, כל עוד יש ערוץ מורשה זמין (Shizuku פעילה " +
+                "או ADB מקומי מחובר).",
+            )
           }
+          append(channelAdviceAfterEnable())
         }
       }
       refusals += "$key: ${propertyErrorDetail(result) ?: "נדחה"}"
@@ -956,6 +962,30 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
     }
   }
+
+  /**
+   * The step everyone misses right after the profile finally comes up.
+   *
+   * The default channel is AUTO, which carries calls over a raw RFCOMM socket
+   * and switches the player's hands-free profile OFF for the bridged phone, so
+   * the two do not compete for the phone's single hands-free slot. That is the
+   * right trade on a player with no profile - which is nearly all of them, and
+   * why it is the default. It is precisely the wrong one the moment the
+   * profile exists, because the profile is the only path that carries voice.
+   *
+   * So a user could do everything right - Shizuku, the ladder, a working
+   * property - watch the profile come up, and still hear nothing, because the
+   * channel they were left on was quietly disabling it. Empty when the channel
+   * already uses the profile, so nobody is sent to change a correct setting.
+   */
+  private fun channelAdviceAfterEnable(): String =
+    if (channelMode == "AUTO" || channelMode == "RAW") {
+      " ואז, וזה חשוב: עבור להגדרות ← כל הגדרות החיבור ← 'ערוץ חיבור' ובחר " +
+        "Shizuku, ADB מקומי, רוט או 'ישיר'. הערוץ האוטומטי מכבה בכוונה את פרופיל " +
+        "הדיבורית של הנגן, ולכן דווקא הוא לא ייתן קול אחרי שהדלקת אותו."
+    } else {
+      ""
+    }
 
   private val profileEnablePrefs =
     context.getSharedPreferences("profile_enable", Context.MODE_PRIVATE)

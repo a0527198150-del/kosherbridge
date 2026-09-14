@@ -55,6 +55,19 @@ data class PlayerCapabilities(
    * plausible.
    */
   val enabledProfiles: List<Int>? = null,
+  /**
+   * The connection channel in force when this probe was taken.
+   *
+   * Part of the capability picture, not decoration: "the profile is on" and
+   * "the profile is being used" are different facts, and on this app they can
+   * disagree. AUTO and RAW carry calls over a raw RFCOMM socket and
+   * deliberately switch the system hands-free profile OFF for the bridged
+   * phone, so that the app's socket does not compete with it for the phone's
+   * single hands-free slot. On a player where the profile is enabled, that
+   * trade is backwards - the profile is the only path that carries VOICE -
+   * and the verdict has to say so instead of promising audio.
+   */
+  val activeChannel: String? = null,
   /** Developer options on. Wireless debugging is inside them. */
   val adbEnabled: Boolean? = null,
   /** Wireless debugging on - the gate on every no-root shell route. */
@@ -82,6 +95,13 @@ data class PlayerCapabilities(
    */
   val verdict: String
     get() = when {
+      profileEnabled == true && channelBypassesProfile ->
+        "פרופיל הדיבורית פעיל בנגן - אבל ערוץ החיבור הנוכחי אינו משתמש בו. הערוץ " +
+          "האוטומטי (וגם 'RFCOMM ישיר') פותח שקע ישיר אל הטלפון ומכבה בכוונה את " +
+          "פרופיל הדיבורית של הנגן, כדי ששניהם לא יתחרו על חיבור הדיבורית היחיד " +
+          "שיש לטלפון. זה נכון בנגן שאין לו פרופיל - אבל כאן יש, והפרופיל הוא " +
+          "היחיד שמעביר קול. עבור להגדרות ← כל הגדרות החיבור ← 'ערוץ חיבור' " +
+          "ובחר Shizuku, ADB מקומי, רוט או 'ישיר' - ואז התחבר מחדש."
       profileEnabled == true ->
         "פרופיל הדיבורית פעיל בנגן - הקול אמור לעבור. אם עדיין אין קול, בדוק את " +
           "שורת 'ניתוב שמע השיחה' והרץ 'פתח ניתוב שמע לשיחה'."
@@ -145,11 +165,25 @@ data class PlayerCapabilities(
   val discoveredProfileCandidates: List<String>
     get() = profileCandidatesIn(bluetoothProperties)
 
+  /**
+   * True when the channel in force carries calls over the raw RFCOMM socket,
+   * which bypasses - and actively disables - the player's hands-free profile.
+   *
+   * Null (unknown) counts as "no": a missing channel is not evidence of a
+   * mismatch, and claiming one would send the user to change a setting that
+   * may already be right.
+   */
+  val channelBypassesProfile: Boolean
+    get() = activeChannel == "AUTO" || activeChannel == "RAW"
+
   /** True when trying the privileged enable is worth the user's time. */
   val worthTryingEnable: Boolean
     get() = profileEnabled == false && profilePresent != false
 
   fun report(): String = buildString {
+    activeChannel?.let {
+      appendLine("ערוץ חיבור בזמן הבדיקה: $it" + if (channelBypassesProfile) " (עוקף את הפרופיל)" else "")
+    }
     appendLine("מכשיר: $device")
     appendLine(
       "פרופיל דיבורית פעיל במחסנית: " + when (profileEnabled) {
@@ -325,6 +359,7 @@ data class PlayerCapabilities(
       context: Context,
       privilegedProfiles: List<Int>? = null,
       privilegedSelinux: String? = null,
+      activeChannel: String? = null,
     ): PlayerCapabilities = withContext(Dispatchers.IO) {
       HiddenHfp.init()
       val profiles = privilegedProfiles?.takeIf { it.isNotEmpty() } ?: supportedProfiles(context)
@@ -337,6 +372,7 @@ data class PlayerCapabilities(
         selinuxMode = privilegedSelinux?.takeIf { it.isNotBlank() } ?: selinuxMode(),
         hiddenApiReachable = HiddenHfp.isAvailable,
         enabledProfiles = profiles,
+        activeChannel = activeChannel,
         bluetoothProperties = bluetoothProperties(),
         adbEnabled = globalFlag(context, ADB_ENABLED),
         wirelessDebugging = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
