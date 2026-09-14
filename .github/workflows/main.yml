@@ -52,8 +52,13 @@ jobs:
       # Unit tests are plain JVM tests (no emulator needed) — see
       # kosherbridge/src/test. A regression in the SLC/AT protocol logic now
       # fails CI instead of shipping silently.
+      # One flavour is enough for the unit tests: src/test is shared, and the
+      # two products differ only in whether the in-app ADB channel is compiled
+      # in. Running plain `test` would run the same suite twice and double the
+      # step for no new coverage; the plus sources are still compiled below by
+      # assembleRelease, so a break there still fails CI.
       - name: Test kosherbridge
-        run: ./gradlew :kosherbridge:test --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew :kosherbridge:testStandardDebugUnitTest --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
 
       # A red run must be diagnosable from the run page (the test task only
       # prints a local file:// link), so upload the report on failure.
@@ -70,14 +75,14 @@ jobs:
       # green run carried a red step and an "exit code 1" that was
       # indistinguishable from a real break.
       - name: Lint kosherbridge
-        run: ./gradlew :kosherbridge:lintDebug --no-daemon --continue -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew :kosherbridge:lintStandardDebug --no-daemon --continue -Pkotlin.compiler.execution.strategy=daemon
 
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v5
         with:
           name: kosherbridge-lint
-          path: kosherbridge/build/reports/lint-results-debug.html
+          path: kosherbridge/build/reports/lint-results-standardDebug.html
 
       # :app (the Hebrew budget app) is INTENTIONALLY unbuilt in CI: it is a
       # separate, unrelated application that shares this Gradle root (see the
@@ -92,7 +97,11 @@ jobs:
       # Minification stays OFF by design - see the note in build.gradle.kts.
       # Override kotlin.compiler.execution.strategy (gradle.properties uses
       # 'in-process', which breaks KSP2 on CI runners).
-      - name: Build kosherbridge (release APK)
+      # Builds BOTH products: `standard` (no network permission at all) and
+      # `plus` (adds android.permission.INTERNET and the in-app ADB channel).
+      # See the productFlavors block in kosherbridge/build.gradle.kts for why
+      # that choice is left to the person installing it.
+      - name: Build kosherbridge (release APKs)
         run: ./gradlew :kosherbridge:assembleRelease --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
 
       # Name every downloadable by its version. Without this each run produced
@@ -103,17 +112,29 @@ jobs:
         id: ver
         run: echo "version=1.0.$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Stage the APK under its version
+      - name: Stage the APKs under their version
         run: |
           mkdir -p dist
-          cp kosherbridge/build/outputs/apk/release/kosherbridge-release.apk \
+          cp kosherbridge/build/outputs/apk/standard/release/kosherbridge-standard-release.apk \
              "dist/KosherBridge-${{ steps.ver.outputs.version }}.apk"
+          cp kosherbridge/build/outputs/apk/plus/release/kosherbridge-plus-release.apk \
+             "dist/KosherBridge-${{ steps.ver.outputs.version }}-plus.apk"
 
-      - name: Upload kosherbridge APK
+      # The default download. No INTERNET permission in the manifest at all.
+      - name: Upload kosherbridge APK (standard)
         uses: actions/upload-artifact@v5
         with:
           name: KosherBridge-${{ steps.ver.outputs.version }}-apk
-          path: dist/KosherBridge-*.apk
+          path: dist/KosherBridge-${{ steps.ver.outputs.version }}.apk
+
+      # Same app plus the in-app ADB channel, which needs INTERNET to reach the
+      # player's own ADB daemon over 127.0.0.1. Offered separately so nobody
+      # gets that permission without choosing it.
+      - name: Upload kosherbridge APK (plus)
+        uses: actions/upload-artifact@v5
+        with:
+          name: KosherBridge-${{ steps.ver.outputs.version }}-apk-plus
+          path: dist/KosherBridge-${{ steps.ver.outputs.version }}-plus.apk
 
       # Package the built APK into the Magisk module (final solution for rooted
       # players: installs the app as a system priv-app with BLUETOOTH_PRIVILEGED
@@ -121,7 +142,7 @@ jobs:
       - name: Package Magisk module
         run: |
           sh magisk-module/build.sh \
-            kosherbridge/build/outputs/apk/release/kosherbridge-release.apk \
+            kosherbridge/build/outputs/apk/standard/release/kosherbridge-standard-release.apk \
             "${{ steps.ver.outputs.version }}"
 
       - name: Upload Magisk module

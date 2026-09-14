@@ -54,6 +54,40 @@ android {
     }
   }
 
+  /**
+   * Two products, one difference: whether the app may open a TCP socket.
+   *
+   * The bridge's remaining no-root lever is a shell identity, and the only way
+   * to get one without a second app is to speak ADB to the player's own adbd
+   * over 127.0.0.1. Android gates EVERY TCP socket behind
+   * android.permission.INTERNET - there is no narrower permission, and none
+   * that says "loopback only". For an app whose users choose a kosher phone
+   * precisely to have no internet, a network permission in the manifest is not
+   * a detail: a kashrut reviewer reads the manifest.
+   *
+   * So the choice is not made for them:
+   *
+   *  - standard: no INTERNET, and the ADB library is not even a dependency, so
+   *    nothing can merge the permission back in. Shell access, if wanted, comes
+   *    from Shizuku - a separate app, with its own permission.
+   *  - plus: INTERNET, and the in-app ADB channel. No second app, no PC.
+   *
+   * Same applicationId and the same signing key, so one installs over the other
+   * without losing any data.
+   */
+  flavorDimensions += "network"
+  productFlavors {
+    create("standard") {
+      dimension = "network"
+      buildConfigField("boolean", "HAS_ADB_CHANNEL", "false")
+    }
+    create("plus") {
+      dimension = "network"
+      versionNameSuffix = "-plus"
+      buildConfigField("boolean", "HAS_ADB_CHANNEL", "true")
+    }
+  }
+
   buildTypes {
     release {
       isMinifyEnabled = false
@@ -97,6 +131,15 @@ android {
 }
 
 dependencies {
+  // "plus" only - see the productFlavors block above. Keeping these off the
+  // standard variant is what keeps android.permission.INTERNET out of it:
+  // libadb-android declares the permission in its own manifest, and a manifest
+  // merge would put it back however carefully the app's own manifest is
+  // written.
+  "plusImplementation"(libs.libadb.android)
+  "plusImplementation"(libs.conscrypt.android)
+  "plusImplementation"(libs.sun.security.android)
+
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.mockito.core)

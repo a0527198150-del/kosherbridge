@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      The ONLY difference between the two products.
+
+      This permission exists so the app can open a TCP socket to 127.0.0.1 -
+      the player's own ADB daemon - and nothing else. Android has no narrower
+      permission: INTERNET gates every socket, loopback included.
+
+      The app makes no outbound connection of any kind. There is no analytics,
+      no update check, no crash reporting and no remote server anywhere in this
+      code base; the only socket it ever opens over IP is to the loopback
+      address, and the only other socket it opens at all is Bluetooth RFCOMM,
+      which is not IP. Anyone can verify that: grep the sources for Socket,
+      HttpURLConnection, OkHttp or Retrofit and the only hits are the loopback
+      ADB client and the RFCOMM link.
+
+      Users who would rather not have the permission on the device at all
+      should install the standard build, which does not declare it and does not
+      even ship the ADB library.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+</manifest>
