@@ -44,6 +44,21 @@ data class PlayerCapabilities(
   val selinuxMode: String,
   /** True when the hidden BluetoothHeadsetClient class is reachable. */
   val hiddenApiReachable: Boolean,
+  /**
+   * Every profile id the stack actually started, or null when unreadable.
+   *
+   * The single "is 16 there" answer was not enough to reason about a player
+   * from a screenshot: whether A2DP-sink is on says what kind of build this is,
+   * and the presence of the other client-role profiles (PBAP_CLIENT,
+   * MAP_CLIENT, AVRCP_CONTROLLER) is the signature of a build that was
+   * configured for car/media use - exactly the builds where HFP-client is
+   * plausible.
+   */
+  val enabledProfiles: List<Int>? = null,
+  /** Developer options on. Wireless debugging is inside them. */
+  val adbEnabled: Boolean? = null,
+  /** Wireless debugging on - the gate on every no-root shell route. */
+  val wirelessDebugging: Boolean? = null,
 ) {
 
   /**
@@ -95,12 +110,58 @@ data class PlayerCapabilities(
     appendLine("$AUDIO_ROUTE_PROPERTY: ${audioRouteFlag.ifBlank { "לא מוגדר" }}")
     appendLine("SELinux: ${selinuxMode.ifBlank { "לא ניתן לקריאה" }}")
     appendLine("API נסתר (HFP) נגיש: ${if (hiddenApiReachable) "כן" else "לא"}")
+    appendLine("אפשרויות מפתח: " + yesNo(adbEnabled))
+    appendLine("ניפוי באגים אלחוטי: " + yesNo(wirelessDebugging))
+    appendLine("פרופילים פעילים: $profileSummary")
     appendLine("מסקנה: $verdict")
   }
+
+  private fun yesNo(value: Boolean?): String = when (value) {
+    true -> "דלוק"
+    false -> "כבוי"
+    null -> "לא ניתן לקריאה"
+  }
+
+  /** The started profiles, named where the name means something to a reader. */
+  val profileSummary: String
+    get() {
+      val profiles = enabledProfiles ?: return "לא ניתן לקריאה"
+      if (profiles.isEmpty()) return "אין"
+      return profiles.sorted().joinToString(", ") { id ->
+        PROFILE_NAMES[id]?.let { "$it ($id)" } ?: id.toString()
+      }
+    }
 
   companion object {
     /** BluetoothProfile.HEADSET_CLIENT - hidden constant. */
     private const val PROFILE_HEADSET_CLIENT = 16
+
+    /**
+     * Profile ids worth naming in a report someone has to read. Deliberately
+     * partial: an unnamed id is printed as a number rather than guessed at.
+     */
+    private val PROFILE_NAMES = mapOf(
+      1 to "דיבורית (AG)",
+      2 to "A2DP",
+      5 to "HID",
+      6 to "PAN",
+      9 to "PBAP",
+      10 to "GATT",
+      11 to "A2DP-sink",
+      12 to "AVRCP-controller",
+      16 to "דיבורית-לקוח",
+      17 to "PBAP-client",
+      18 to "MAP-client",
+      19 to "HID-device",
+      22 to "מכשיר שמיעה",
+      23 to "LE Audio",
+    )
+
+    /** Developer options master switch. World-readable. */
+    private const val ADB_ENABLED = "adb_enabled"
+
+    /** Wireless debugging (Android 11+). World-readable. */
+    private const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
 
     const val HFP_HF_PROPERTY = "bluetooth.profile.hfp.hf.enabled"
 
@@ -184,6 +245,15 @@ data class PlayerCapabilities(
         audioRouteFlag = systemProperty(AUDIO_ROUTE_PROPERTY),
         selinuxMode = privilegedSelinux?.takeIf { it.isNotBlank() } ?: selinuxMode(),
         hiddenApiReachable = HiddenHfp.isAvailable,
+        enabledProfiles = profiles,
+        adbEnabled = globalFlag(context, ADB_ENABLED),
+        wirelessDebugging = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          globalFlag(context, ADB_WIFI_ENABLED)
+        } else {
+          // Wireless debugging does not exist before Android 11, so "off"
+          // would be a wrong answer rather than a missing one.
+          null
+        },
       )
     }
 
@@ -219,6 +289,16 @@ data class PlayerCapabilities(
       // else means the query itself failed and we must not claim to know.
       if (error is PackageManager.NameNotFoundException) false else null
     }
+
+    /**
+     * Reads a Settings.Global flag. These are world-readable, so this needs no
+     * permission and no privileged channel - which is the point: the answer to
+     * "is wireless debugging even on?" should not itself require the shell
+     * access that wireless debugging is the gate on.
+     */
+    private fun globalFlag(context: Context, key: String): Boolean? = runCatching {
+      android.provider.Settings.Global.getInt(context.contentResolver, key) != 0
+    }.getOrNull()
 
     /** Reads a system property. Readable by any app; no permission needed. */
     fun systemProperty(key: String): String = runCatching {

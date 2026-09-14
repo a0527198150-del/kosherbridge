@@ -278,6 +278,22 @@ fun DiagnosticsScreen(
           caps.selinuxMode.ifBlank { "לא ניתן לקריאה" },
           caps.selinuxMode.equals("Permissive", ignoreCase = true),
         )
+        // The gate on every no-root shell route, and the one thing a user can
+        // turn on themselves. Reading it needs no permission at all.
+        DiagRow(
+          "ניפוי באגים אלחוטי",
+          when (caps.wirelessDebugging) {
+            true -> "דלוק"
+            false -> "כבוי"
+            null -> "לא רלוונטי בגרסה הזו"
+          },
+          caps.wirelessDebugging == true,
+        )
+        DiagRow(
+          "פרופילים פעילים במחסנית",
+          caps.profileSummary,
+          caps.profileEnabled == true,
+        )
         Card(
           shape = RoundedCornerShape(12.dp),
           colors = CardDefaults.cardColors(
