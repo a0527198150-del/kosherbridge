@@ -69,6 +69,11 @@ data class BridgeUiState(
   val rawDropInfo: String? = null, // raw RFCOMM link drop stats (count + last duration)
   val rawConnectionDiagnostics: String? = null, // SDP/channel attempts before connection
   val headsetClientPolicy: String? = null, // HFP-client connection policy, for diagnostics
+  // What the PHONE publishes in SDP, and what that means. Half of every "no
+  // sound" question is about the phone, and the app used to answer only the
+  // player half.
+  val phoneProfiles: String? = null,
+  val phoneProfilesVerdict: String? = null,
   val fullScreenAllowed: Boolean? = null, // can the system honour a full-screen call intent?
   val connectionLog: List<String> = emptyList(), // recent local connection log
   val permissionHint: String? = null, // shown when a required runtime permission is missing

@@ -294,6 +294,27 @@ fun DiagnosticsScreen(
           caps.profileSummary,
           caps.profileEnabled == true,
         )
+        // The other half of the question: not what the player can receive, but
+        // what the phone is willing to offer.
+        DiagRow(
+          "פרופילים שהטלפון מפרסם",
+          state.phoneProfiles ?: "טרם התגלו - חבר את הטלפון",
+          state.phoneProfiles != null,
+        )
+        state.phoneProfilesVerdict?.let { verdict ->
+          Card(
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+              containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            ),
+          ) {
+            Text(
+              verdict,
+              style = MaterialTheme.typography.bodySmall,
+              modifier = Modifier.padding(12.dp),
+            )
+          }
+        }
         Card(
           shape = RoundedCornerShape(12.dp),
           colors = CardDefaults.cardColors(
@@ -492,6 +513,8 @@ private fun buildDiagnosticsReport(
   state.scoSupport?.let { appendLine("שמע (SCO): $it") }
   state.scoTechnique?.let { appendLine("טכניקת שמע אחרונה: $it") }
   state.audioRouteAllowed?.let { appendLine("ניתוב שמע השיחה (HFP Client): $it") }
+  state.phoneProfiles?.let { appendLine("פרופילים שהטלפון מפרסם: $it") }
+  state.phoneProfilesVerdict?.let { appendLine("מסקנה לגבי הטלפון: $it") }
   capabilities?.let {
     appendLine()
     appendLine("-- יכולות הנגן --")

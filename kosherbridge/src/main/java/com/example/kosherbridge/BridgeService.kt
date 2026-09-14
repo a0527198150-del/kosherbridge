@@ -25,6 +25,7 @@ import com.example.kosherbridge.bluetooth.CallState
 import com.example.kosherbridge.bluetooth.HfpClientManager
 import com.example.kosherbridge.bluetooth.HiddenHfp
 import com.example.kosherbridge.bluetooth.PairedDeviceInfo
+import com.example.kosherbridge.bluetooth.PeerProfiles
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ContactsRepository
 import kotlinx.coroutines.CoroutineScope
@@ -713,6 +714,8 @@ class BridgeService : Service() {
           it.copy(
             deviceName = d?.name ?: remembered?.name?.takeIf { n -> n.isNotBlank() },
             deviceAddress = d?.address ?: remembered?.address,
+            phoneProfiles = PeerProfiles.describe(d) ?: it.phoneProfiles,
+            phoneProfilesVerdict = PeerProfiles.verdict(d) ?: it.phoneProfilesVerdict,
           )
         }
         updateBridgeNotification()
