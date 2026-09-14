@@ -1,6 +1,7 @@
 package com.example.kosherbridge.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothProfile
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -43,6 +44,12 @@ import com.example.kosherbridge.bluetooth.TelecomBridge
  * Device/connection diagnostics previously shown under the "אבחון" card on the
  * main settings screen, now a dedicated page inside the connection settings.
  */
+// BatteryLife: lint flags ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS because
+// Play policy restricts it to apps whose core function genuinely breaks under
+// Doze. This is a sideloaded bridge whose entire purpose is holding a Bluetooth
+// link alive so the phone's calls reach the player - the documented legitimate
+// case - and the row only opens the system dialog, it never grants anything.
+@SuppressLint("BatteryLife")
 @Composable
 fun DiagnosticsScreen(
   state: BridgeUiState,

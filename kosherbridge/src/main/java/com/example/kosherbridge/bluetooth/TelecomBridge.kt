@@ -1,6 +1,7 @@
 package com.example.kosherbridge.bluetooth
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -148,6 +149,11 @@ class TelecomBridge(
    * empty list, which the caller must not confuse with "the player has no
    * HFP-Client profile" — [canReadState] separates the two.
    */
+  // Lint cannot see through the has()/canReadState helper to the runtime
+  // permission check, so it flags every annotated TelecomManager call below.
+  // Each one checks its permission first AND catches SecurityException, which
+  // is exactly what the lint rule asks for - it just cannot prove it here.
+  @SuppressLint("MissingPermission")
   private fun accountRefs(): List<TelecomSupport.AccountRef> {
     val tm = telecom ?: return emptyList()
     if (!canReadState) return emptyList()
@@ -167,6 +173,7 @@ class TelecomBridge(
     }
   }
 
+  @SuppressLint("MissingPermission")
   private fun handleFor(ref: TelecomSupport.AccountRef): PhoneAccountHandle? {
     val tm = telecom ?: return null
     return try {
@@ -283,6 +290,7 @@ class TelecomBridge(
    * Answers the ringing call on the phone. The system brings the SCO voice link
    * up on its own, so there is nothing to do for audio afterwards.
    */
+  @SuppressLint("MissingPermission")
   fun answer(): Boolean {
     val tm = telecom ?: return false
     if (!canAnswer) {
@@ -303,6 +311,7 @@ class TelecomBridge(
    * Rejects a ringing call, or hangs up the active one — `endCall()` does both,
    * depending on what is in the foreground.
    */
+  @SuppressLint("MissingPermission")
   fun endCall(): Boolean {
     val tm = telecom ?: return false
     if (!canAnswer) {
@@ -322,6 +331,7 @@ class TelecomBridge(
    * Dials through the kosher phone's SIM by aiming the call at that device's
    * HFP PhoneAccount, so it is never placed on some other account.
    */
+  @SuppressLint("MissingPermission")
   fun dial(number: String): Boolean {
     val tm = telecom ?: return false
     if (number.isBlank()) return false
