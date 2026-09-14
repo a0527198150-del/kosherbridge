@@ -40,6 +40,23 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Companion device (Android 8+). The bridge exists to serve ONE Bluetooth
+         device, which is exactly the situation these permissions are for. All
+         three are normal permissions - granted at install, no root, no
+         privileged identity - and they only take effect once the user has
+         confirmed the association dialog for their own phone. See
+         CompanionBridge.
+         RUN_IN_BACKGROUND lifts the ordinary background limits;
+         START_FOREGROUND_SERVICES_FROM_BACKGROUND removes the Android 12+
+         refusal that a notification's "ענה" button hits when the app is not on
+         screen; OBSERVE_COMPANION_DEVICE_PRESENCE lets the platform itself
+         bind BridgeCompanionService when the phone comes into range. -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission
+        android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
+
     <!-- Privileged permission: allows full HFP control (dial/answer/AT commands).
          Ignored on stock devices; enables the full experience on system-signed
          players / custom ROMs. -->
@@ -149,6 +166,18 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Bound by the PLATFORM when the kosher phone comes into range, which
+             is the one recovery path a vendor power manager cannot drop. See
+             BridgeCompanionService. -->
+        <service
+            android:name=".BridgeCompanionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
 
         <!-- Restarts the bridge when a vendor "power manager" killed it and
              did not honour START_STICKY. See BridgeWatchdog. -->

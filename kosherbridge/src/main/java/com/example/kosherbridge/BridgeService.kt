@@ -219,6 +219,12 @@ class BridgeService : Service() {
     // ignores START_STICKY - without it the bridge simply ceases to exist and
     // nothing on the device says so.
     BridgeWatchdog.schedule(this)
+    // And the one recovery path a vendor power manager cannot drop: once the
+    // user has associated the phone as a companion device, the PLATFORM binds
+    // BridgeCompanionService when it comes into range. Re-registering an
+    // existing observation is a no-op, so doing it on every start is what
+    // makes it survive a reboot with no extra bookkeeping.
+    observeCompanionPresence()
     // Undo any audio-HAL state a previous run left behind when it was killed
     // mid-call; otherwise Bluetooth media stays suspended on the device.
     manager.audio.resetHalAudioState()
@@ -371,6 +377,8 @@ class BridgeService : Service() {
       }
       manager.connect(device)
       ServiceLocator.settings.rememberDevice(device.name ?: address, address)
+      // The association may have been made before this phone was chosen.
+      CompanionBridge.startObservingPresence(this@BridgeService, address)
     }
   }
 
@@ -479,6 +487,26 @@ class BridgeService : Service() {
       else -> ""
     }
     return conn + audio
+  }
+
+  /**
+   * Re-arms the companion-presence watch for the remembered phone.
+   *
+   * Silent when the user has not associated a device: the association is a
+   * system dialog they confirm once, offered on the readiness screen, and the
+   * bridge works without it - just with one fewer way back from being killed.
+   */
+  private fun observeCompanionPresence() {
+    scope.launch {
+      val address = runCatching { ServiceLocator.settings.lastDevice.first()?.address }.getOrNull()
+      if (address.isNullOrBlank()) return@launch
+      if (!CompanionBridge.isAssociated(this@BridgeService, address)) return@launch
+      CompanionBridge.startObservingPresence(this@BridgeService, address)
+      manager.logConnection(
+        "מעקב נוכחות מכשיר נלווה פעיל - המערכת עצמה תעיר את הגשר כשהטלפון בטווח",
+        false,
+      )
+    }
   }
 
   private fun maybeAutoConnect() {

@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -50,6 +51,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.kosherbridge.BridgeService
+import com.example.kosherbridge.CompanionBridge
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.bluetooth.PlayerCapabilities
 import kotlinx.coroutines.launch
@@ -106,6 +108,21 @@ fun SetupScreen(
   val settingsLauncher = rememberLauncherForActivityResult(
     ActivityResultContracts.StartActivityForResult(),
   ) { refresh++ }
+  // The companion-device association is confirmed in a SYSTEM dialog, which is
+  // handed to the app as an IntentSender rather than an Intent - so it needs
+  // its own contract.
+  val associationLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.StartIntentSenderForResult(),
+  ) { result ->
+    refresh++
+    if (result.resultCode == android.app.Activity.RESULT_OK) {
+      // Arm the presence watch immediately: the service reads the association
+      // on start, and waiting for the next start would leave the feature off
+      // for the rest of this session.
+      CompanionBridge.startObservingPresence(context, state.deviceAddress)
+      onSnackbar("הטלפון שויך - המערכת עצמה תעיר עכשיו את הגשר כשהוא בטווח")
+    }
+  }
 
   LaunchedEffect(refresh) {
     BridgeService.withManager(
@@ -128,6 +145,18 @@ fun SetupScreen(
     requestPermissions = { perms -> permissionLauncher.launch(perms.toTypedArray()) },
     openSettings = { intent -> runCatching { settingsLauncher.launch(intent) } },
     onOpenConnectionSettings = onOpenConnectionSettings,
+    requestAssociation = { address ->
+      CompanionBridge.requestAssociation(
+        context = context,
+        address = address,
+        onReady = { sender ->
+          runCatching {
+            associationLauncher.launch(IntentSenderRequest.Builder(sender).build())
+          }.onFailure { onSnackbar("לא ניתן לפתוח את דיאלוג השיוך") }
+        },
+        onFailure = onSnackbar,
+      )
+    },
   )
   val blocking = items.count { it.level == SetupLevel.ACTION }
 
@@ -256,6 +285,7 @@ private fun buildSetupItems(
   requestPermissions: (List<String>) -> Unit,
   openSettings: (Intent) -> Unit,
   onOpenConnectionSettings: () -> Unit,
+  requestAssociation: (String) -> Unit,
 ): List<SetupItem> {
   val items = mutableListOf<SetupItem>()
 
@@ -391,6 +421,29 @@ private fun buildSetupItems(
     actionLabel = if (state.deviceName != null) null else "בחר טלפון",
     action = if (state.deviceName != null) null else onOpenConnectionSettings,
   )
+
+  // 5b. Companion-device association. Offered only once a phone is chosen,
+  // because the association names that specific device - and worth its own row
+  // because it is the single most effective thing a user can do about "the
+  // bridge stopped working overnight", short of rooting the player.
+  val companionAddress = state.deviceAddress
+  if (companionAddress != null && CompanionBridge.isSupported(context)) {
+    val associated = CompanionBridge.isAssociated(context, companionAddress)
+    items += SetupItem(
+      title = "שיוך הטלפון כמכשיר נלווה",
+      detail = if (associated) {
+        "משויך. המערכת עצמה מעירה את הגשר כשהטלפון נכנס לטווח, ומרשה לו לפעול " +
+          "ברקע ולפתוח מסך שיחה גם כשהאפליקציה סגורה"
+      } else {
+        "לא משויך. זו הדרך הרשמית של אנדרואיד לומר 'האפליקציה הזו משרתת את " +
+          "המכשיר הזה': היא מעירה את הגשר בעצמה כשהטלפון בטווח - המנגנון היחיד " +
+          "שמנהל הצריכה של היצרן לא יכול לבטל. אישור חד-פעמי בחלון של המערכת"
+      },
+      level = if (associated) SetupLevel.OK else SetupLevel.OPTIONAL,
+      actionLabel = if (associated) null else "שייך עכשיו",
+      action = if (associated) null else ({ requestAssociation(companionAddress) }),
+    )
+  }
 
   // 6. Call audio - the one item that can be honestly impossible, and the one
   // the user most needs a straight answer about before buying into the app.

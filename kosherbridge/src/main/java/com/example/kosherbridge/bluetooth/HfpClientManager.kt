@@ -426,6 +426,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
               device.value = null
               connectionState.value = BluetoothProfile.STATE_DISCONNECTED
               ServiceLocator.settings.forgetDevice()
+              // The companion association names this exact MAC. Leaving it
+              // behind would keep the platform watching for a device that can
+              // no longer connect, and leave a stale entry in the system's
+              // companion-device list that the user never asked for.
+              com.example.kosherbridge.CompanionBridge.forget(context, addr)
               logConnection("הזיווג בוטל - הטלפון הוסר מהבחירה. בחר טלפון מחדש כדי לחדש את הגשר", true)
             }
           }
