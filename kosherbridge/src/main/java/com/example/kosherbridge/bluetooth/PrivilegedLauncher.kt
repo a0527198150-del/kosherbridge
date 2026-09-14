@@ -183,7 +183,11 @@ class AdbLauncher(private val shell: AdbShell) : PrivilegedLauncher {
   }
 
   override suspend fun kill(pid: Int) {
-    if (!available()) return
+    // The cached state, deliberately NOT available(): that reconnects, and
+    // this runs during teardown. Re-establishing a channel in order to close
+    // one down would spend ten seconds on discovery to no purpose, and on a
+    // channel the user is in the middle of abandoning.
+    if (shell.state != AdbShell.State.CONNECTED) return
     shell.exec("kill -9 $pid")
   }
 

@@ -16,6 +16,7 @@ import java.lang.reflect.Proxy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -2330,10 +2331,20 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     client = null
     shizuku?.unbind()
     shizuku = null
-    // stop() is a suspending call now (it may have to go out over ADB), and
-    // shutdown() is not - so it is launched rather than awaited. The scope is
-    // the service's, which outlives this call by exactly long enough.
-    spawned?.let { bridge -> scope.launch { bridge.stop() } }
+    // stop() is a suspending call (it may have to go out over ADB) and
+    // shutdown() is not, so it has to be launched rather than awaited - but
+    // NOT on this manager's scope. BridgeService.onDestroy() calls shutdown()
+    // and then cancels that scope on the very next line, so the teardown was
+    // cancelled at its first suspension point, which is exactly where the
+    // child is killed. The privileged process - uid 0 under root, uid 2000
+    // over ADB - therefore survived the service that spawned it and stayed
+    // alive for the rest of the boot, holding a registered Bluetooth profile.
+    //
+    // A detached scope is the right tool for a one-shot teardown that must
+    // outlive its owner: it lives exactly as long as the kill takes.
+    spawned?.let { bridge ->
+      CoroutineScope(Dispatchers.IO + SupervisorJob()).launch { bridge.stop() }
+    }
     spawned = null
     raw?.disconnect()
     raw = null
