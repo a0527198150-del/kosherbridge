@@ -106,7 +106,15 @@ class TelecomBridge(
   /** Caller ID. Without it calls still show, just without a number (Android 9+). */
   val canReadNumber: Boolean get() = has(Manifest.permission.READ_CALL_LOG)
 
-  /** Answering and hanging up. */
+  /**
+   * Answering and hanging up.
+   *
+   * InlinedApi: ANSWER_PHONE_CALLS was added in API 26 and this app's minSdk is
+   * 24, but the constant is a compile-time string - referencing it below 26 is
+   * harmless, and asking for a permission the platform does not know is simply
+   * denied. The channel itself refuses to run below API 28 anyway.
+   */
+  @SuppressLint("InlinedApi")
   val canAnswer: Boolean get() = has(Manifest.permission.ANSWER_PHONE_CALLS)
 
   /** Placing calls through the phone. */
@@ -121,6 +129,7 @@ class TelecomBridge(
      * dangerous permissions granted from a dialog — the channel needs nothing
      * privileged, which is the entire point of it.
      */
+    @SuppressLint("InlinedApi")
     val PERMISSIONS: List<String> = listOf(
       Manifest.permission.READ_PHONE_STATE,
       Manifest.permission.READ_CALL_LOG,
@@ -293,6 +302,16 @@ class TelecomBridge(
   @SuppressLint("MissingPermission")
   fun answer(): Boolean {
     val tm = telecom ?: return false
+    // acceptRingingCall() needs API 26 and endCall() needs API 28, while the
+    // app's minSdk is 24. The channel picker refuses to select TELECOM below
+    // MIN_SDK, but that gate guards SELECTION only - a channel value persisted
+    // or learned before the gate existed would still route here and throw
+    // NoSuchMethodError into runCatching, failing silently. Check the version
+    // where the call actually happens.
+    if (Build.VERSION.SDK_INT < TelecomSupport.MIN_SDK) {
+      onLog("ערוץ המערכת דורש אנדרואיד 9 ומעלה - לא ניתן לענות מכאן", true)
+      return false
+    }
     if (!canAnswer) {
       onLog("אין הרשאת מענה לשיחות - אשר אותה כדי לענות מהנגן", true)
       return false
@@ -314,6 +333,10 @@ class TelecomBridge(
   @SuppressLint("MissingPermission")
   fun endCall(): Boolean {
     val tm = telecom ?: return false
+    if (Build.VERSION.SDK_INT < TelecomSupport.MIN_SDK) {
+      onLog("ערוץ המערכת דורש אנדרואיד 9 ומעלה - לא ניתן לנתק מכאן", true)
+      return false
+    }
     if (!canAnswer) {
       onLog("אין הרשאת מענה לשיחות - אשר אותה כדי לנתק מהנגן", true)
       return false
