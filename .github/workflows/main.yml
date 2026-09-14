@@ -70,6 +70,18 @@ jobs:
         run: ./gradlew :kosherbridge:lintDebug --no-daemon --continue -Pkotlin.compiler.execution.strategy=daemon
         continue-on-error: true
 
+      # Print the full lint findings into the run log. Gradle prints only the
+      # FIRST failure and ships the rest as an HTML artifact, so the only way to
+      # see what lint actually found was to download and open a zip - which
+      # makes a lint regression effectively invisible in review (it hid three
+      # errors this branch added). Same reasoning as the test-report upload
+      # above: a finding you cannot read from the run page does not exist.
+      - name: Show lint findings
+        if: always()
+        run: |
+          f=kosherbridge/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt
+          if [ -f "$f" ]; then cat "$f"; else echo "no lint text report at $f"; fi
+
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4

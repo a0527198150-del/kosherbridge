@@ -28,9 +28,31 @@ only: **is the HFP-Client profile enabled in that player's Bluetooth stack?**
   privileged permission** — only four ordinary runtime permissions. The
   system owns the SCO link, so the app never touches audio routing.
 - **Disabled** (the factory default on many cheap players) — no app can turn
-  it on: it is a read-only system property the Bluetooth stack reads at boot.
-  That case still needs the Magisk module, and no amount of app code changes
-  it. Shizuku does not help here either.
+  it on, and no app can supply the audio another way. That case still needs
+  the Magisk module. Three independent routes were checked against AOSP
+  source and all three are closed:
+  1. *Enabling the profile*: older builds gate it on
+     `profile_supported_hfpclient`, a resource **compiled into the Bluetooth
+     APK**; newer ones on the read-only `bluetooth.profile.hfp.hf.enabled`
+     system property read at stack start. Both need a custom ROM or root —
+     there is no `settings`, `DeviceConfig`, or app-reachable path.
+  2. *Reading the calls through Telecom*: `HfpClientConnectionService` lives
+     inside `com.android.bluetooth/.hfpclient/` and is started by
+     `HeadsetClientService` on connect, so it does not run when the profile
+     is off. It gives a clean path to a player whose profile is already on;
+     it turns nothing on.
+  3. *Opening SCO directly*: `BluetoothSocket.TYPE_SCO` exists and the native
+     stack implements `btsock_sco_connect()`, but `btif_sock_sco.cc` states
+     what that socket is: *"No SCO data is transferred across these sockets;
+     instead, they are used to manage SCO connection lifecycles while the data
+     routing takes place over the I2S bus."* The voice travels over a
+     **hardware I2S bus** between the Bluetooth chip and the audio codec,
+     routed by the audio HAL for a stack-managed link that a profile owns. An
+     app cannot intercept, redirect, or create it.
+
+  On such a player, call **control** works fully over the direct channel and
+  the voice stays on the kosher phone. That is a hardware and platform limit,
+  not missing app code.
 
 The diagnostics screen answers this directly, with no reflection: the row
 **"ערוץ מערכת (Telecom)"** reports whether the platform published an HFP
