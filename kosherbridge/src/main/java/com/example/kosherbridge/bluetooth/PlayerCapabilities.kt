@@ -350,6 +350,18 @@ data class PlayerCapabilities(
     }
 
     /**
+     * Whether the HFP hands-free (client) profile is running RIGHT NOW, read
+     * without any privileged channel. Null when the stack will not say.
+     *
+     * This is the question the boot-time restore turns on: re-applying a
+     * property and restarting Bluetooth is disruptive, and doing it when the
+     * profile is already up would be both pointless and rude. A null answer
+     * means "unknown", and the caller treats that as "do not act".
+     */
+    fun headsetClientRunning(context: Context): Boolean? =
+      supportedProfiles(context)?.contains(PROFILE_HEADSET_CLIENT)
+
+    /**
      * Profile ids the stack has actually started, or null when the read is
      * refused. Deliberately NOT confused with "the profile proxy binds": a
      * dormant HeadsetClientService binds and then answers nothing.

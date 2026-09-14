@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import com.example.kosherbridge.data.ServiceLocator
 import java.lang.reflect.InvocationHandler
@@ -34,6 +35,28 @@ import kotlinx.coroutines.sync.withLock
  *     reflection is permitted;
  *  2. a lightweight poll of getCurrentCalls() that works everywhere the profile does.
  */
+/**
+ * What came of a boot-time attempt to put the profile property back.
+ *
+ * Only [NO_CHANNEL] is worth retrying, and distinguishing it is the whole
+ * reason this is not a Boolean: "there is nothing to restore" and "there is
+ * something to restore but no privileged channel yet" look identical from
+ * outside and call for opposite behaviour.
+ */
+enum class BootRestore {
+  /** Nothing on record, nothing wrong, or the wrong moment. Do not retry. */
+  NOT_NEEDED,
+
+  /** Worth doing, but no privileged channel yet. Retry - one may appear. */
+  NO_CHANNEL,
+
+  /** The property was written and Bluetooth restarted. */
+  DONE,
+
+  /** The channel was there and refused. Retrying now changes nothing. */
+  FAILED,
+}
+
 class HfpClientManager(private val context: Context, private val scope: CoroutineScope) {
 
   private val adapter: BluetoothAdapter? =
@@ -831,6 +854,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       val result = writePrivilegedProperty(key, "true")
       if (result == "true") {
         logConnection("מאפיין הפרופיל נכתב בהצלחה: $key", false)
+        // Remember WHICH name worked. A name that is not `persist.*` is wiped
+        // at the next boot, and without this the user's one successful setup
+        // silently became a dead player the following morning - see
+        // restoreProfileFlagAfterBoot().
+        rememberWinningProfileKey(key)
         val restarted = restartBluetoothPrivileged()
         return@withContext buildString {
           append("המאפיין $key נכתב בהצלחה! ")
@@ -921,6 +949,174 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         )
       }
     }
+  }
+
+  private val profileEnablePrefs =
+    context.getSharedPreferences("profile_enable", Context.MODE_PRIVATE)
+
+  /** Records the property name that actually switched the profile on here. */
+  private fun rememberWinningProfileKey(key: String) {
+    profileEnablePrefs.edit().putString(WINNING_PROFILE_KEY, key).apply()
+  }
+
+  /**
+   * Puts back, after a reboot, the property that switched the profile on.
+   *
+   * This is the difference between a no-root setup that works once and one
+   * that works every day, and it is easy to miss because nothing is broken:
+   * a system property without a `persist.` prefix simply does not survive a
+   * reboot. So a user who follows the whole Shizuku or ADB procedure, sees the
+   * profile come up and hears a call in the player, switches the player off -
+   * and the next morning has an ordinary player again, with no error message
+   * and nothing in the app to suggest what changed. The only cure was to
+   * repeat the setup by hand after every single boot.
+   *
+   * Everything here is something the user already did deliberately: the same
+   * property name, written by the same channel they chose. It never invents a
+   * step, and it does nothing at all unless ALL of these hold:
+   *
+   *  - a property name is on record as having worked on this player, and it is
+   *    one of the volatile (non-`persist.`) ones - a `persist.` name comes back
+   *    by itself and must not be touched;
+   *  - the profile really is down now (read without any privilege - a null
+   *    "cannot tell" counts as no);
+   *  - a privileged channel is actually available;
+   *  - nothing is connected and no call is up, because the last step is a
+   *    Bluetooth restart;
+   *  - it has not already been tried during THIS boot.
+   *
+   * The outcome is reported rather than reduced to a boolean, because the
+   * caller must retry for exactly one of them: [BootRestore.NO_CHANNEL]. The
+   * commonest no-root setup is Shizuku, and Shizuku does not survive a reboot
+   * either - the user starts it by hand, minutes later. A single attempt at
+   * service start would always land before that and give up for good.
+   */
+  suspend fun restoreProfileFlagAfterBoot(): BootRestore {
+    val key = profileEnablePrefs.getString(WINNING_PROFILE_KEY, null) ?: return BootRestore.NOT_NEEDED
+    // A persist.* property is restored by init itself. Rewriting it would cost
+    // a Bluetooth restart for nothing.
+    if (key.startsWith("persist.")) return BootRestore.NOT_NEEDED
+    if (!bootRestoreDue()) return BootRestore.NOT_NEEDED
+    // Already up? Then either the property survived after all (some forks do
+    // persist it) or the ROM enables the profile on its own. Either way there
+    // is nothing to repair, and restarting Bluetooth would be pure damage.
+    if (PlayerCapabilities.headsetClientRunning(context) != false) return BootRestore.NOT_NEEDED
+    // A restart mid-call would drop the call, and a restart mid-connect loses
+    // the link the user is waiting for. This normally runs at boot, where the
+    // answer is trivially yes - but the watchdog restarts the service too, and
+    // that happens at arbitrary moments.
+    val live = call.value?.state
+    if (device.value != null || (live != null && live != CallState.IDLE)) return BootRestore.NOT_NEEDED
+
+    // Deliberately NOT marked as attempted when no channel answers: the
+    // channel is the missing piece, and it may well appear in a few minutes.
+    val boundHere = bindAnyPrivilegedChannel() ?: return BootRestore.NO_CHANNEL
+
+    markBootRestoreAttempted()
+    logConnection("אחרי הפעלה מחדש: מחזיר את מאפיין הפרופיל ($key)", false)
+    val written = withContext(Dispatchers.IO) { writePrivilegedProperty(key, "true") }
+    if (written != "true") {
+      logConnection(
+        "החזרת מאפיין הפרופיל נכשלה: ${propertyErrorDetail(written) ?: written ?: "ללא תשובה"}",
+        true,
+      )
+      if (boundHere) releaseTransientChannel()
+      return BootRestore.FAILED
+    }
+    // The audio gate is a second volatile property, wiped by the same reboot.
+    // Restoring the profile without it produces the worst outcome there is:
+    // the call connects and nobody hears anything.
+    if (withContext(Dispatchers.IO) { writeAudioRouteProperty() }) {
+      logConnection("שער השמע הוחזר גם הוא", false)
+    }
+    val restarted = withContext(Dispatchers.IO) { restartBluetoothPrivileged() }
+    logConnection(
+      if (restarted) "הבלוטוס הופעל מחדש - הפרופיל אמור לחזור לפעול"
+      else "לא ניתן להפעיל מחדש את הבלוטוס - כבה והדלק אותו ידנית",
+      !restarted,
+    )
+    if (boundHere) releaseTransientChannel()
+    return if (restarted) BootRestore.DONE else BootRestore.FAILED
+  }
+
+  /**
+   * Binds whichever privileged channel is available right now, for the boot
+   * restore only.
+   *
+   * Deliberately not the configured channel. The two are independent: the
+   * profile is enabled through Shizuku or ADB once, while the channel the
+   * bridge then uses for calls is usually AUTO (raw RFCOMM), because that is
+   * the path that does not fight the phone for its single hands-free slot.
+   * Restoring only through `channelMode` would therefore skip exactly the
+   * players this exists for.
+   *
+   * Every probe here is cheap and silent. That matters because the caller
+   * retries once a minute for half an hour: a probe that logged a line, or
+   * raised a dialog, would turn a background repair into a nuisance.
+   *
+   * @return true when THIS call bound the channel, so the caller must release
+   *   it again; false when one was already bound for the user's own reasons
+   *   and must be left alone; null when no channel is available at all.
+   */
+  private suspend fun bindAnyPrivilegedChannel(): Boolean? {
+    // Already bound for the user's own reasons: use it, and leave it alone.
+    if (useShizuku || useSpawned) return false
+    // Shizuku first - the no-root default. Both checks are local: a binder
+    // ping and a permission read. Requiring the grant means no dialog can be
+    // raised behind the user's back at boot.
+    val z = shizuku ?: ShizukuBridge(context).also { shizuku = it }
+    if (z.isAvailable && z.permissionGranted && bindShizuku()) return true
+    // Then this build's own ADB channel, if it has one and it is live.
+    adbShell?.let { s ->
+      val launcher = AdbLauncher(s)
+      if (launcher.available() && bindSpawned(launcher)) return true
+    }
+    // Root last, and only when the user actually chose that channel: `su` can
+    // raise a grant prompt, and an unexplained prompt at boot is worse than a
+    // profile that stays off until they next open the app.
+    if (channelMode == "ROOT" && suLauncher.available() && bindSpawned(suLauncher)) return true
+    return null
+  }
+
+  /**
+   * Hands back a channel that was bound only to perform the boot restore.
+   *
+   * Binding is not free of consequence: a bound bridge becomes the source of
+   * call state and of dial/answer routing for every channel except the raw
+   * one, and it relabels the backend in the UI. On a player set to AUTO - the
+   * common case, since the profile is enabled through Shizuku but calls are
+   * carried over raw RFCOMM - leaving it bound would mean a repair silently
+   * changed how the bridge works. So it is released, and the state it touched
+   * is put back.
+   */
+  private suspend fun releaseTransientChannel() {
+    if (channelMode in PROFILE_DRIVEN_CHANNELS) return
+    runCatching { shizuku?.unbind() }
+    runCatching { spawned?.stop() }
+    profileReady.value = false
+    backendLabel.value = null
+    pollJob?.cancel()
+    pollJob = null
+  }
+
+  /**
+   * True when no restore has been tried since the player last booted.
+   *
+   * `elapsedRealtime` is the clock that answers this: it counts from boot, so a
+   * stored value LARGER than the current one can only mean the player has
+   * rebooted since - no wall clock, no BOOT_COMPLETED delivery, and correct
+   * even when the app was killed and restarted in between. That matters
+   * because without it a service the watchdog restarts every few minutes would
+   * restart Bluetooth every few minutes with it.
+   */
+  private fun bootRestoreDue(): Boolean {
+    val stored = profileEnablePrefs.getLong(LAST_BOOT_RESTORE, -1L)
+    if (stored < 0L) return true
+    return SystemClock.elapsedRealtime() < stored
+  }
+
+  private fun markBootRestoreAttempted() {
+    profileEnablePrefs.edit().putLong(LAST_BOOT_RESTORE, SystemClock.elapsedRealtime()).apply()
   }
 
   /**
@@ -2261,4 +2457,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
 
   private fun mapDirection(d: Int): CallDirection =
     if (d == HiddenHfp.callDirectionOutgoing) CallDirection.OUTGOING else CallDirection.INCOMING
+
+  private companion object {
+    /** The property name that actually switched the profile on here. */
+    const val WINNING_PROFILE_KEY = "winning_profile_key"
+
+    /** elapsedRealtime of the last boot-restore attempt. See bootRestoreDue(). */
+    const val LAST_BOOT_RESTORE = "last_boot_restore"
+  }
 }

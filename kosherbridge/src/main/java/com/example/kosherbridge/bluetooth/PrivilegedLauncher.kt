@@ -163,7 +163,16 @@ class AdbLauncher(private val shell: AdbShell) : PrivilegedLauncher {
   override val label = "ADB מקומי"
   override val processSuffix = "adb"
 
-  override suspend fun available(): Boolean = shell.state == AdbShell.State.CONNECTED
+  /**
+   * Reconnects when the socket is down rather than reporting "unavailable".
+   *
+   * The pairing is permanent but the connection is not - it dies at every
+   * power-off, and the port is randomised at the next boot. Checking the
+   * cached state alone meant the channel was dead after the first reboot and
+   * stayed dead until someone opened the ADB screen by hand, which for a
+   * bridge that lives in a drawer is indistinguishable from broken.
+   */
+  override suspend fun available(): Boolean = shell.ensureConnected()
 
   override suspend fun runDetached(command: String): Boolean {
     if (!available()) {

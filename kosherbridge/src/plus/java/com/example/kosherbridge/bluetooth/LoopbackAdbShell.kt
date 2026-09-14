@@ -2,6 +2,7 @@ package com.example.kosherbridge.bluetooth
 
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import android.sun.security.x509.AlgorithmId
 import android.sun.security.x509.CertificateAlgorithmId
 import android.sun.security.x509.CertificateExtensions
@@ -35,6 +36,8 @@ import java.security.spec.PKCS8EncodedKeySpec
 import java.util.Date
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -55,6 +58,10 @@ internal class LoopbackAdbShell(private val context: Context) : AdbShell {
 
   @Volatile private var paired = false
   @Volatile private var manager: Manager? = null
+
+  /** Serialises reconnect attempts, so ten callers cause one mDNS sweep. */
+  private val reconnectMutex = Mutex()
+  @Volatile private var lastReconnectAttempt = 0L
 
   init {
     // The daemon remembers the pairing, not us - but our key pair has to
@@ -108,6 +115,11 @@ internal class LoopbackAdbShell(private val context: Context) : AdbShell {
     }.fold(
       onSuccess = {
         if (mgr.isConnected) {
+          // Remember the port for THIS boot. It is randomised at the next one,
+          // so this is not a shortcut past discovery - it is what makes a
+          // reconnect after a dropped socket instant instead of a ten-second
+          // mDNS sweep.
+          if (port != null) runCatching { connectMarker().writeText(port.toString()) }
           "מחובר ל-ADB המקומי - ערוץ ההרשאות פעיל"
         } else {
           "החיבור לא הושלם. ודא שניפוי באגים אלחוטי דלוק, ונסה להזין יציאה ידנית"
@@ -127,6 +139,27 @@ internal class LoopbackAdbShell(private val context: Context) : AdbShell {
         }
       },
     )
+  }
+
+  override suspend fun ensureConnected(): Boolean {
+    if (state == AdbShell.State.CONNECTED) return true
+    // Never paired: reconnecting is not the missing step, and silently probing
+    // would hide the one thing the user has to do.
+    if (!paired) return false
+    return reconnectMutex.withLock {
+      // Another caller may have won the race while this one waited.
+      if (state == AdbShell.State.CONNECTED) return@withLock true
+      val now = SystemClock.elapsedRealtime()
+      if (now - lastReconnectAttempt < RECONNECT_INTERVAL_MS) return@withLock false
+      lastReconnectAttempt = now
+      // The remembered port first: within one boot it is still the right one
+      // and costs a single socket, while discovery costs the full timeout. It
+      // is simply wrong after a reboot, which is why discovery follows.
+      val remembered = runCatching { connectMarker().readText().trim().toIntOrNull() }.getOrNull()
+      if (remembered != null) connect(remembered)
+      if (state != AdbShell.State.CONNECTED) connect(null)
+      state == AdbShell.State.CONNECTED
+    }
   }
 
   override suspend fun exec(command: String): String = withContext(Dispatchers.IO) {
@@ -161,6 +194,9 @@ internal class LoopbackAdbShell(private val context: Context) : AdbShell {
   // ------------------------------------------------------------------ internals
 
   private fun pairedMarker() = File(context.filesDir, "adb_paired")
+
+  /** The connect port that last worked. Boot-scoped: adbd randomises it. */
+  private fun connectMarker() = File(context.filesDir, "adb_connect_port")
 
   private fun AdbStream.readAll(): String {
     val out = StringBuilder()
@@ -277,5 +313,15 @@ internal class LoopbackAdbShell(private val context: Context) : AdbShell {
 
   private companion object {
     const val CONNECT_TIMEOUT_MS = 10_000L
+
+    /**
+     * Shortest gap between two failed reconnect attempts.
+     *
+     * A failure here almost always means wireless debugging is off, and that
+     * does not become true again within seconds. Retrying faster would burn
+     * the player's battery on mDNS sweeps for a condition only the user can
+     * clear.
+     */
+    const val RECONNECT_INTERVAL_MS = 30_000L
   }
 }

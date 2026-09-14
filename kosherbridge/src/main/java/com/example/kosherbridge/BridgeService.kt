@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import com.example.kosherbridge.bluetooth.CallAudioOutcome
 import com.example.kosherbridge.bluetooth.CallDirection
 import com.example.kosherbridge.bluetooth.CallInfo
+import com.example.kosherbridge.bluetooth.BootRestore
 import com.example.kosherbridge.bluetooth.CallState
 import com.example.kosherbridge.bluetooth.HfpClientManager
 import com.example.kosherbridge.bluetooth.HiddenHfp
@@ -593,6 +594,32 @@ class BridgeService : Service() {
             manager.connect(target)
           }
         }
+      }
+    }
+    scope.launch {
+      // A volatile system property does not survive a reboot, so a player the
+      // user set up successfully yesterday comes back today with the profile
+      // off and no sign of why. Put it back once per boot. The manager decides
+      // whether there is anything to put back at all - it does nothing unless
+      // the user already enabled the profile this way on this player.
+      val cs = ServiceLocator.settings.channelState(Build.FINGERPRINT).first()
+      manager.setChannelMode(cs.effective)
+      // Wait for the adapter. At BOOT_COMPLETED the stack is usually still
+      // coming up, and restarting Bluetooth while it does is how a player ends
+      // up with no Bluetooth at all until the next reboot.
+      for (i in 0 until 60) {
+        if (adapter()?.isEnabled == true) break
+        delay(1_000)
+      }
+      if (adapter()?.isEnabled != true) return@launch
+      // Retry only while the privileged channel is the missing piece. Shizuku
+      // is the usual no-root channel and it does not survive a reboot either -
+      // the user starts it by hand, and that is often several minutes after
+      // the player finished booting. Half an hour of patience costs one bind
+      // attempt a minute and covers that; every other outcome stops at once.
+      for (attempt in 0 until 30) {
+        if (manager.restoreProfileFlagAfterBoot() != BootRestore.NO_CHANNEL) return@launch
+        delay(60_000)
       }
     }
   }

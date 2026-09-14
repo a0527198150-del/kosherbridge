@@ -210,6 +210,13 @@ fun ShizukuChannelScreen(
             "הדלקה - זו מגבלה של Shizuku עצמה.",
           style = MaterialTheme.typography.bodySmall,
         )
+        Text(
+          "אם הדלקת כאן את פרופיל הדיבורית: המאפיין שמדליק אותו נמחק בכל אתחול. " +
+            "האפליקציה זוכרת איזה מאפיין עבד ומחזירה אותו לבד ברגע ש-Shizuku " +
+            "חוזרת לפעול - היא ממתינה לה עד חצי שעה אחרי ההדלקה. אין צורך " +
+            "לחזור על ההדלקה ידנית, רק להפעיל את Shizuku.",
+          style = MaterialTheme.typography.bodySmall,
+        )
         SettingRow("בדוק את הערוץ", "מתחבר דרך Shizuku ומדווח מה קרה") {
           scope.launch {
             result = "בודק..."

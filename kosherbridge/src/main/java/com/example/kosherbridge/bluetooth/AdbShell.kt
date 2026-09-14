@@ -59,6 +59,29 @@ interface AdbShell {
    */
   suspend fun connect(port: Int? = null): String
 
+  /**
+   * Makes sure the channel is usable right now, reconnecting if it is not.
+   *
+   * This is what turns the ADB route from a demo into something that survives
+   * ordinary use. The pairing is permanent - the daemon stores our key - but
+   * the CONNECTION is not: it dies when the player is switched off, when
+   * wireless debugging is toggled, and when adbd restarts. Worse, the port it
+   * listens on is randomised at every boot, so "reconnect to the port that
+   * worked yesterday" is not a thing.
+   *
+   * Without this, everything the privileged channel achieved stopped working
+   * at the first reboot and stayed broken until the user happened to open the
+   * ADB screen and press Connect - for a bridge whose whole job is to sit in a
+   * drawer and answer calls, that is the same as not working.
+   *
+   * Callers may invoke it freely: it returns immediately when already
+   * connected, serialises concurrent attempts, and rate-limits failures so a
+   * player with wireless debugging switched off is not probed in a loop.
+   *
+   * @return true when [exec] and [runDetached] can be used on return.
+   */
+  suspend fun ensureConnected(): Boolean
+
   /** Runs one command and returns its combined output. */
   suspend fun exec(command: String): String
 
