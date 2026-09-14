@@ -1175,21 +1175,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     pollJob = null
   }
 
-  /**
-   * True when no restore has been tried since the player last booted.
-   *
-   * `elapsedRealtime` is the clock that answers this: it counts from boot, so a
-   * stored value LARGER than the current one can only mean the player has
-   * rebooted since - no wall clock, no BOOT_COMPLETED delivery, and correct
-   * even when the app was killed and restarted in between. That matters
-   * because without it a service the watchdog restarts every few minutes would
-   * restart Bluetooth every few minutes with it.
-   */
-  private fun bootRestoreDue(): Boolean {
-    val stored = profileEnablePrefs.getLong(LAST_BOOT_RESTORE, -1L)
-    if (stored < 0L) return true
-    return SystemClock.elapsedRealtime() < stored
-  }
+  /** True when no restore has been tried since the player last booted. */
+  private fun bootRestoreDue(): Boolean = BootMarker.isNewBoot(
+    stored = profileEnablePrefs.getLong(LAST_BOOT_RESTORE, -1L),
+    now = SystemClock.elapsedRealtime(),
+  )
 
   private fun markBootRestoreAttempted() {
     profileEnablePrefs.edit().putLong(LAST_BOOT_RESTORE, SystemClock.elapsedRealtime()).apply()
