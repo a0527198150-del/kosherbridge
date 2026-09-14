@@ -59,6 +59,8 @@ data class PlayerCapabilities(
   val adbEnabled: Boolean? = null,
   /** Wireless debugging on - the gate on every no-root shell route. */
   val wirelessDebugging: Boolean? = null,
+  /** Android API level of the player - this decides how the profile is gated. */
+  val sdkInt: Int = Build.VERSION.SDK_INT,
 ) {
 
   /**
@@ -76,6 +78,13 @@ data class PlayerCapabilities(
       profileEnabled == false && selinuxMode.equals("Permissive", ignoreCase = true) ->
         "הפרופיל קיים בנגן אבל כבוי, ו-SELinux במצב Permissive - יש סיכוי טוב " +
           "שאפשר להדליק אותו בלי רוט. הרץ 'הפעל פרופיל דיבורית' (דרוש Shizuku)."
+      profileEnabled == false && !profileGateIsProperty ->
+        "הפרופיל קיים בנגן אבל כבוי, והנגן מריץ אנדרואיד ${sdkVersionName()}. עד " +
+          "אנדרואיד 12 הפרופיל נשלט על ידי משאב שמהודר לתוך אפליקציית הבלוטוס " +
+          "(profile_supported_hfpclient), לא על ידי מאפיין מערכת - ולכן שום מאפיין " +
+          "ושום הגדרה לא ידליקו אותו, גם לא עם רוט. מה שכן עוזר שם זה ROM שנבנה עם " +
+          "הפרופיל דלוק. אפשר בכל זאת לנסות 'הפעל פרופיל דיבורית': יש יצרנים " +
+          "שהוסיפו מאפיין משלהם לגרסה הישנה, אבל זו הזדמנות קלושה ולא המסלול הצפוי."
       profileEnabled == false ->
         "הפרופיל קיים בנגן אבל כבוי (bluetooth.profile.hfp.hf.enabled לא מוגדר). " +
           "SELinux במצב Enforcing, ולכן סביר שרק רוט/מודול Magisk יוכלו להדליק אותו - " +
@@ -85,6 +94,30 @@ data class PlayerCapabilities(
         "לא ניתן לקבוע את מצב הפרופיל בנגן הזה. הרץ 'בדוק יכולות הנגן' שוב אחרי " +
           "שהבלוטוס דלוק."
     }
+
+  /**
+   * True when the profile is gated by a SYSTEM PROPERTY on this Android
+   * version, rather than by a resource compiled into the Bluetooth app.
+   *
+   * This is the most important thing to know before trying to switch the
+   * profile on, and it is decided entirely by the Android version:
+   *
+   *  - Android 13+ (where Bluetooth became a Mainline module) gates each
+   *    profile on a sysprop - `bluetooth.profile.hfp.hf.enabled` for this one -
+   *    which is what every property route in this app targets.
+   *  - Android 12 and below gate it on a boolean RESOURCE compiled into the
+   *    Bluetooth APK (`profile_supported_hfpclient`, in its config.xml). No
+   *    property and no setting can change a compiled resource, so on those
+   *    players the property ladder cannot work - not even with root. What
+   *    helps there is a ROM built with the profile on, or a resource overlay,
+   *    neither of which an app can ship generically.
+   *
+   * Vendor forks of the older stack sometimes added a property of their own,
+   * which is why the ladder still tries on Android 12 - but as a long shot
+   * described honestly, not as the expected path.
+   */
+  val profileGateIsProperty: Boolean
+    get() = sdkInt >= 33
 
   /** True when trying the privileged enable is worth the user's time. */
   val worthTryingEnable: Boolean
@@ -113,7 +146,28 @@ data class PlayerCapabilities(
     appendLine("אפשרויות מפתח: " + yesNo(adbEnabled))
     appendLine("ניפוי באגים אלחוטי: " + yesNo(wirelessDebugging))
     appendLine("פרופילים פעילים: $profileSummary")
+    appendLine(
+      "שליטה בפרופיל: " + if (profileGateIsProperty) {
+        "מאפיין מערכת (אנדרואיד 13+)"
+      } else {
+        "משאב מהודר באפליקציית הבלוטוס (אנדרואיד 12 ומטה) - מאפיינים לא רלוונטיים"
+      },
+    )
     appendLine("מסקנה: $verdict")
+  }
+
+  /** The marketing-ish Android version, for a line a human has to read. */
+  private fun sdkVersionName(): String = when {
+    sdkInt >= 36 -> "16"
+    sdkInt >= 35 -> "15"
+    sdkInt >= 34 -> "14"
+    sdkInt >= 33 -> "13"
+    sdkInt >= 31 -> "12"
+    sdkInt >= 30 -> "11"
+    sdkInt >= 29 -> "10"
+    sdkInt >= 28 -> "9"
+    sdkInt >= 26 -> "8"
+    else -> "ישנה מאוד (SDK $sdkInt)"
   }
 
   private fun yesNo(value: Boolean?): String = when (value) {

@@ -748,11 +748,35 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
     val selinux = privilegedSelinux()
 
+    // Say up front what the ladder can and cannot do on THIS Android version.
+    // Below Android 13 the profile is gated by a boolean compiled into the
+    // Bluetooth APK, not by a property - so every write below is a long shot
+    // against a vendor fork rather than the expected path, and a user who is
+    // not told that will read each refusal as a bug in this app.
+    val gateIsProperty = Build.VERSION.SDK_INT >= 33
+    if (!gateIsProperty) {
+      logConnection(
+        "אנדרואיד ${Build.VERSION.SDK_INT}: הפרופיל נשלט במשאב מהודר, לא במאפיין - " +
+          "הניסיון נמשך אך סיכוייו נמוכים",
+        true,
+      )
+    }
+
     // Already on but dormant: the stack simply has not re-read the flag.
     if (privilegedProperty(PlayerCapabilities.HFP_HF_PROPERTY) == "true") {
       logConnection("מאפיין הפרופיל כבר מוגדר - מפעיל מחדש את הבלוטוס", false)
+      // Open the audio gate in the same breath. A player whose profile flag is
+      // already set is EXACTLY the one where the gate is the remaining problem
+      // - the profile runs, the call connects, and nobody hears anything on
+      // either side - and the restart below is the moment the stack re-reads
+      // both. Doing it only from allowAudioRoute() meant the user ran "enable
+      // the profile", was told it was already on, and got a restart that
+      // changed nothing.
+      val gate = writeAudioRouteProperty()
+      if (gate) logConnection("שער השמע נפתח גם הוא (מאפיין)", false)
       return@withContext if (restartBluetoothPrivileged()) {
-        "המאפיין כבר היה דלוק, והבלוטוס הופעל מחדש. הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה."
+        "המאפיין כבר היה דלוק" + (if (gate) ", שער השמע נפתח" else "") +
+          ", והבלוטוס הופעל מחדש. הרץ 'בדוק יכולות הנגן' כדי לראות אם הפרופיל עלה."
       } else {
         "המאפיין כבר דלוק אבל לא הצלחתי להפעיל מחדש את הבלוטוס. כבה והדלק בלוטוס ידנית ובדוק שוב."
       }
@@ -779,9 +803,20 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
     }
 
-    // Properties ARE writable here. Walk every name known to switch the
-    // profile on - they live in different SELinux contexts, so the official
-    // one being refused says nothing about the rest.
+    // Properties ARE writable on this player. Before anything else, open the
+    // audio gate: it is a different property in a different context from the
+    // profile flags, it costs one write, and it is useless to win the profile
+    // argument and then have the stack answer the phone's voice link with a
+    // disconnect. It is also the ONLY thing that helps on a player whose
+    // profile is already running, so it must not be conditional on the profile
+    // write below succeeding.
+    if (writeAudioRouteProperty()) {
+      logConnection("שער השמע נפתח דרך מאפיין המערכת", false)
+    }
+
+    // Now walk every name known to switch the profile on - they live in
+    // different SELinux contexts, so the official one being refused says
+    // nothing about the rest.
     val refusals = mutableListOf<String>()
     for (key in PlayerCapabilities.HFP_HF_PROPERTY_CANDIDATES) {
       val result = writePrivilegedProperty(key, "true")
@@ -858,10 +893,24 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       append("הנגן מאפשר כתיבת מאפיינים, אבל דחה את כל השמות שמדליקים את פרופיל הדיבורית")
       if (selinux.isNotBlank()) append(" (SELinux: $selinux)")
       append(", וגם הפעלה ישירה של שירות הפרופיל נדחתה. ")
-      append(
-        "המאפיינים האלה שמורים ל-init במדיניות של הנגן. הדרך שנשארה היא מודול " +
-          "ה-Magisk (דורש רוט), שמחיל אותם לפני שתהליך הבלוטוס עולה.",
-      )
+      if (gateIsProperty) {
+        append(
+          "המאפיינים האלה שמורים ל-init במדיניות של הנגן. הדרך שנשארה היא מודול " +
+            "ה-Magisk (דורש רוט), שמחיל אותם לפני שתהליך הבלוטוס עולה.",
+        )
+      } else {
+        // Not a policy problem at all on this version, and saying "use the
+        // Magisk module" here would send the user after something that cannot
+        // work: the module writes a property, and this Android does not read
+        // one.
+        append(
+          "וזה צפוי: באנדרואיד ${Build.VERSION.SDK_INT} הפרופיל נקבע במשאב מהודר " +
+            "בתוך אפליקציית הבלוטוס (profile_supported_hfpclient), ולא במאפיין. " +
+            "גם מודול ה-Magisk לא יעזור בנגן הזה - הוא כותב מאפיין שהגרסה הזו " +
+            "פשוט לא קוראת. מה שעוזר כאן הוא ROM שנבנה עם הפרופיל דלוק. עד אז " +
+            "הנגן יעבוד כשלט מלא, והקול יישאר בטלפון.",
+        )
+      }
     }
   }
 

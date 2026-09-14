@@ -13,4 +13,14 @@
 # Magisk applies system.prop with resetprop at the post-fs-data stage, i.e.
 # BEFORE the Bluetooth process starts and reads it. A `setprop` from service.sh
 # would run far too late to have any effect.
+#
+# ANDROID 13 OR NEWER ONLY. This property is read by Config.java in the
+# Bluetooth Mainline module, which arrived in Android 13. On Android 12 and
+# below the same decision is made by a boolean RESOURCE compiled into the
+# Bluetooth APK (profile_supported_hfpclient, in its config.xml), and no
+# property - set by this module or by anything else, with or without root -
+# changes a compiled resource. On those players this module cannot enable the
+# profile; a ROM built with it on, or a resource overlay, is the only route.
+# The app says so on its own, from the capability probe, rather than letting
+# someone install this and wonder why nothing changed.
 bluetooth.profile.hfp.hf.enabled=true
