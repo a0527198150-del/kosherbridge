@@ -1435,7 +1435,7 @@ fun CategoryGroupCard(
                             }
                             
                             LinearProgressIndicator(
-                                progress = progress.toFloat(),
+                                progress = { progress.toFloat() },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(8.dp)

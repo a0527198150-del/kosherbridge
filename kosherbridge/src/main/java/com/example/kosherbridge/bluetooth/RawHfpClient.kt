@@ -206,7 +206,10 @@ class RawHfpClient(
     reconnectEnabled && generation == connectionGeneration
 
   private suspend fun runConnection(generation: Long) {
-    val target = targetDevice ?: return
+    // No target selected: return BEFORE acquiring the wake lock below, which is
+    // a SCREEN_DIM + ACQUIRE_CAUSES_WAKEUP lock and would light the player's
+    // screen up for a connection attempt that cannot happen.
+    if (targetDevice == null) return
     // On MediaTek firmware (Jelly2, many Chinese Android boxes) the Bluetooth
     // controller is suspended when the device enters deep sleep - even with a
     // persistent PARTIAL_WAKE_LOCK in BridgeService. Acquire a fresh wake lock
