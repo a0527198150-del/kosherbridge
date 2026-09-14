@@ -45,9 +45,12 @@ it stopped rather than a flat "it did not work":
 1. **Writability probe** — a harmless `debug.*` write, the most permissive
    SELinux context there is. Refused? The property route is closed entirely
    and the remaining names cannot help either.
-2. **Five profile property names** — the official
-   `bluetooth.profile.hfp.hf.enabled` plus `persist.*` variants, which sit in
-   a different SELinux context that shell is more often allowed to write.
+2. **Every profile property name** — the official
+   `bluetooth.profile.hfp.hf.enabled` and the `persist.*` variants that sit in
+   a different SELinux context shell is more often allowed to write, *plus the
+   names discovered on the player itself*: the hand-written list came from
+   build.prop recipes for other people's devices, while `getprop` (world
+   readable, no channel needed) shows what this vendor fork actually has.
 3. **`pm enable`** on the service component — some builds disable the
    component rather than the flag; that needs
    `CHANGE_COMPONENT_ENABLED_STATE`, which the shell identity holds.
@@ -57,6 +60,25 @@ it stopped rather than a flat "it did not work":
 5. **Direct service start** — on Android 12/13 a profile is started by sending
    its service the `STATE_CHANGED` intent, which is literally how
    `AdapterService` does it. Reversible with a Bluetooth restart.
+
+Two things about that ladder are easy to get wrong, and both cost the user the
+entire result:
+
+- **The property does not survive a reboot.** A system property without a
+  `persist.` prefix is wiped at every boot, and so is the audio gate. The app
+  records which name actually won on this player and puts it back once per
+  boot — guarded by `BootMarker`, which reads a reboot off `elapsedRealtime`
+  rather than trusting `BOOT_COMPLETED` — then restarts Bluetooth and
+  reconnects. It waits up to half an hour for a privileged channel, because
+  Shizuku does not survive a reboot either and is started by hand.
+- **The default channel disables the profile.** `AUTO` carries calls over a raw
+  RFCOMM socket and deliberately switches the player's hands-free profile off
+  for the bridged phone, so the two do not fight over the phone's single
+  hands-free slot. That is right on a player with no profile — nearly all of
+  them — and exactly wrong once the profile exists, since the profile is the
+  only path that carries voice. Enabling the profile and staying on `AUTO`
+  therefore achieves nothing, silently. The capability verdict, the enable
+  action's answer and the diagnostics report all say so now.
 
 ### 2. The audio gate must be open
 
