@@ -196,6 +196,11 @@ only when the tests fail:
 | `KosherBridge-<version>-magisk-module` | the standard APK packaged as a Magisk module | rooted players only; needs a reboot |
 | `kosherbridge-lint` | static-analysis HTML report | developers; never gates the build |
 
+**The full no-root map** — everything considered for getting call audio onto
+the player without root, and exactly where each path ends — is written up in
+[`docs/no-root.md`](docs/no-root.md). Read that before proposing an idea; most
+of them are in there with the reason they stop.
+
 **Why two APKs.** The last no-root lever is a shell identity:
 `com.android.shell` holds BLUETOOTH_PRIVILEGED and WRITE_SECURE_SETTINGS, which
 is what the audio gate, the connection-policy repair and the profile-enable
