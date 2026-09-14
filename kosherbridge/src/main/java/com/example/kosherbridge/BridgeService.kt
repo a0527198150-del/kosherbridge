@@ -18,15 +18,16 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.example.kosherbridge.bluetooth.BootRestore
 import com.example.kosherbridge.bluetooth.CallAudioOutcome
 import com.example.kosherbridge.bluetooth.CallDirection
 import com.example.kosherbridge.bluetooth.CallInfo
-import com.example.kosherbridge.bluetooth.BootRestore
 import com.example.kosherbridge.bluetooth.CallState
 import com.example.kosherbridge.bluetooth.HfpClientManager
 import com.example.kosherbridge.bluetooth.HiddenHfp
 import com.example.kosherbridge.bluetooth.PairedDeviceInfo
 import com.example.kosherbridge.bluetooth.PeerProfiles
+import com.example.kosherbridge.bluetooth.PlayerCapabilities
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ContactsRepository
 import kotlinx.coroutines.CoroutineScope
@@ -617,8 +618,38 @@ class BridgeService : Service() {
       // the user starts it by hand, and that is often several minutes after
       // the player finished booting. Half an hour of patience costs one bind
       // attempt a minute and covers that; every other outcome stops at once.
+      manager.onProfileRestored = {
+        scope.launch {
+          // The stack needs a moment to come back after the restart before it
+          // will accept a connection.
+          delay(5_000)
+          for (i in 0 until 20) {
+            if (manager.adapterOn) break
+            delay(1_000)
+          }
+          val dev = ServiceLocator.settings.lastDevice.first()
+          val target = dev?.let { runCatching { adapter()?.getRemoteDevice(it.address) }.getOrNull() }
+          if (target != null) manager.connect(target)
+        }
+      }
       for (attempt in 0 until 30) {
-        if (manager.restoreProfileFlagAfterBoot() != BootRestore.NO_CHANNEL) return@launch
+        val outcome = manager.restoreProfileFlagAfterBoot()
+        if (outcome != BootRestore.NO_CHANNEL && outcome != BootRestore.BUSY) return@launch
+        if (attempt == 29 && outcome == BootRestore.NO_CHANNEL) {
+          // Say why, once, rather than leaving a player that quietly lost its
+          // profile overnight with nothing in the journal.
+          val wireless = PlayerCapabilities.wirelessDebuggingEnabled(this@BridgeService)
+          manager.logConnection(
+            if (wireless == false) {
+              "פרופיל הדיבורית כבה באתחול ולא הוחזר: 'ניפוי באגים אלחוטי' כבוי, " +
+                "ולכן אין ערוץ מורשה. הדלק אותו (ואת Shizuku, אם זה הערוץ שנבחר) ונסה שוב"
+            } else {
+              "פרופיל הדיבורית כבה באתחול ולא הוחזר: לא נמצא ערוץ מורשה זמין בחצי " +
+                "השעה שאחרי ההדלקה. הפעל את Shizuku או התחבר בערוץ ADB המקומי"
+            },
+            true,
+          )
+        }
         delay(60_000)
       }
     }

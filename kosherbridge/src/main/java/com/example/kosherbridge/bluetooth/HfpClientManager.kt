@@ -50,6 +50,12 @@ enum class BootRestore {
   /** Worth doing, but no privileged channel yet. Retry - one may appear. */
   NO_CHANNEL,
 
+  /**
+   * Worth doing, but a call is up and the last step restarts Bluetooth.
+   * Retry: the call will end.
+   */
+  BUSY,
+
   /** The property was written and Bluetooth restarted. */
   DONE,
 
@@ -1001,12 +1007,19 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // persist it) or the ROM enables the profile on its own. Either way there
     // is nothing to repair, and restarting Bluetooth would be pure damage.
     if (PlayerCapabilities.headsetClientRunning(context) != false) return BootRestore.NOT_NEEDED
-    // A restart mid-call would drop the call, and a restart mid-connect loses
-    // the link the user is waiting for. This normally runs at boot, where the
-    // answer is trivially yes - but the watchdog restarts the service too, and
-    // that happens at arbitrary moments.
+    // The last step restarts Bluetooth, so a live call is an absolute bar -
+    // and a retryable one, because calls end. This normally runs at boot,
+    // where there is no call at all; the watchdog restarts the service too,
+    // and that happens at arbitrary moments.
+    //
+    // A mere CONNECTION is deliberately not a bar. The service reconnects the
+    // remembered phone about eight seconds after it starts, which is well
+    // inside the window this runs in - treating that as "busy" would have
+    // meant the restore never ran on any player with auto-connect on, which
+    // is to say on almost every player. The cost is a few seconds without a
+    // link, and onProfileRestored puts it back.
     val live = call.value?.state
-    if (device.value != null || (live != null && live != CallState.IDLE)) return BootRestore.NOT_NEEDED
+    if (live != null && live != CallState.IDLE) return BootRestore.BUSY
 
     // Deliberately NOT marked as attempted when no channel answers: the
     // channel is the missing piece, and it may well appear in a few minutes.
@@ -1036,8 +1049,21 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       !restarted,
     )
     if (boundHere) releaseTransientChannel()
-    return if (restarted) BootRestore.DONE else BootRestore.FAILED
+    if (!restarted) return BootRestore.FAILED
+    // The restart dropped whatever link existed, and the service's own
+    // reconnect is driven by a connection-state change that may already have
+    // been consumed - or that was scheduled for a moment when Bluetooth was
+    // off. Asking explicitly is the only reliable way back.
+    onProfileRestored?.invoke()
+    return BootRestore.DONE
   }
+
+  /**
+   * Called after the boot restore has restarted Bluetooth, so the service can
+   * reconnect the remembered phone. Without it a successful repair left the
+   * player with the profile back and nothing connected to it.
+   */
+  var onProfileRestored: (() -> Unit)? = null
 
   /**
    * Binds whichever privileged channel is available right now, for the boot
