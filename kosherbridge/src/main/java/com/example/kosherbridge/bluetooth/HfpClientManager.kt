@@ -1139,15 +1139,21 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // raised behind the user's back at boot.
     val z = shizuku ?: ShizukuBridge(context).also { shizuku = it }
     if (z.isAvailable && z.permissionGranted && bindShizukuServiceOnly(z)) return true
-    // Then this build's own ADB channel, if it has one and it is live.
-    adbShell?.let { s ->
-      val launcher = AdbLauncher(s)
-      if (launcher.available() && bindSpawnedServiceOnly(launcher)) return true
-    }
-    // Root last, and only when the user actually chose that channel: `su` can
-    // raise a grant prompt, and an unexplained prompt at boot is worse than a
-    // profile that stays off until they next open the app.
-    if (channelMode == "ROOT" && suLauncher.available() && bindSpawnedServiceOnly(suLauncher)) {
+    // Then a spawned process - but only ONE launcher per pass. The bridge
+    // object is created around its launcher and reused while it exists, so
+    // trying ADB and then root would hand the root attempt the ADB bridge and
+    // spawn through the wrong identity, reporting a root failure that never
+    // involved root.
+    //
+    // Root is chosen only when the user actually selected that channel: `su`
+    // can raise a grant prompt, and an unexplained prompt at boot is worse
+    // than a profile that stays off until they next open the app.
+    val spawnLauncher =
+      if (channelMode == "ROOT") suLauncher else adbShell?.let { AdbLauncher(it) }
+    if (spawnLauncher != null &&
+      spawnLauncher.available() &&
+      bindSpawnedServiceOnly(spawnLauncher)
+    ) {
       return true
     }
     return null
