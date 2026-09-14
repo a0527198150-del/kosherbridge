@@ -156,6 +156,12 @@ fun ShizukuChannelScreen(
           style = MaterialTheme.typography.bodySmall,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+          Text(
+            "תנאי מקדים שתופס רבים: באנדרואיד רגיל המתג של 'ניפוי באגים אלחוטי' " +
+              "אפור כשהנגן אינו מחובר ל-Wi-Fi. די בכל רשת, כולל נקודה חמה " +
+              "מהטלפון, ואפשר לנתק אותה אחרי ש-Shizuku עלתה.",
+            style = MaterialTheme.typography.bodySmall,
+          )
           SettingRow(
             "ניפוי באגים אלחוטי",
             when (wirelessDebugging) {
