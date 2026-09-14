@@ -47,6 +47,20 @@ object TelecomSupport {
   const val HFP_CONNECTION_SERVICE = "HfpClientConnectionService"
 
   /**
+   * Lowest Android version this channel can run on: **API 28 (Android 9)**.
+   *
+   * `TelecomManager.endCall()` — reject a ringing call and hang up an active
+   * one, i.e. two of the app's four call verbs — was only added in API 28. The
+   * app's own minSdk is 24, so on Android 7.0-8.1 this channel would otherwise
+   * look available, answer calls, and then fail silently the moment the user
+   * pressed reject or hang up.
+   *
+   * 28 also clears the `ANSWER_PHONE_CALLS` permission, added in API 26, so one
+   * floor covers both and no separate permission-era check is needed.
+   */
+  const val MIN_SDK = 28
+
+  /**
    * The parts of an `android.telecom.PhoneAccountHandle` this logic needs,
    * lifted out of the Android type so it can be built in a JVM test.
    *

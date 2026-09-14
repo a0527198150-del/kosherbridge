@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -36,6 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.bluetooth.BridgeUiState
+import com.example.kosherbridge.bluetooth.TelecomBridge
 
 /**
  * Device/connection diagnostics previously shown under the "אבחון" card on the
@@ -50,6 +52,23 @@ fun DiagnosticsScreen(
 ) {
   val context = LocalContext.current
   var micResult by remember { mutableStateOf<String?>(null) }
+  // Recomputed on every recomposition (no remember): the user can grant or
+  // revoke these in system settings while this screen is open, and a cached
+  // value would keep offering a button that does nothing.
+  val telecomMissing = TelecomBridge.missingPermissions(context)
+  val ignoringBattery = runCatching {
+    val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+  }.getOrDefault(false)
+
+  val telecomPermissions = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions(),
+  ) { grants ->
+    onSnackbar(
+      if (grants.values.all { it }) "ההרשאות אושרו - ערוץ המערכת מוכן"
+      else "חלק מההרשאות נדחו - פתח הגדרות → אפליקציות → גשר כשר → הרשאות",
+    )
+  }
 
   // Re-read the HFP connection-policy row each time this screen opens. The read
   // is a blocking binder round trip, so it runs off the main thread (see
@@ -181,6 +200,46 @@ fun DiagnosticsScreen(
               true
             }.getOrDefault(false)
             if (!opened) {
+              onSnackbar("לא ניתן לפתוח את המסך הזה במכשיר הזה")
+            }
+          }
+        }
+      }
+      // The Telecom channel is the only one that carries voice without root, and
+      // it is driven entirely by these four ordinary runtime permissions. If the
+      // user denied them (or revoked them later), the channel goes quiet with no
+      // way back from inside the app - this row is that way back.
+      if (telecomMissing.isNotEmpty()) {
+        SettingRow(
+          "אשר הרשאות לערוץ המערכת",
+          "חסרות ${telecomMissing.size} הרשאות (מצב שיחות / יומן שיחות / מענה / חיוג) - בלעדיהן הערוץ לא יעבוד",
+          error = true,
+        ) { telecomPermissions.launch(telecomMissing.toTypedArray()) }
+      }
+      // REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is declared in the manifest to stop
+      // Doze suspending Bluetooth on MediaTek players - but declaring it only
+      // permits ASKING. Nothing ever asked, so the protection did not exist.
+      DiagRow(
+        "חיסכון בסוללה",
+        if (ignoringBattery) "מבוטל - החיבור יציב" else "פעיל - עלול לנתק את החיבור",
+        ignoringBattery,
+      )
+      if (!ignoringBattery) {
+        SettingRow(
+          "בטל חיסכון בסוללה לאפליקציה",
+          "מונע מהמערכת להשהות את הבלוטוס כשהמסך כבוי - מומלץ בנגנים שמתנתקים",
+        ) {
+          val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(Uri.parse("package:${context.packageName}"))
+          val opened = runCatching { context.startActivity(intent); true }.getOrDefault(false)
+          if (!opened) {
+            // Some players ship without that dialog; the app-details page is the
+            // fallback the user can still reach the setting from.
+            val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+              .setData(Uri.parse("package:${context.packageName}"))
+            if (runCatching { context.startActivity(fallback); true }.getOrDefault(false)) {
+              onSnackbar("פתח: סוללה ← ללא הגבלה")
+            } else {
               onSnackbar("לא ניתן לפתוח את המסך הזה במכשיר הזה")
             }
           }

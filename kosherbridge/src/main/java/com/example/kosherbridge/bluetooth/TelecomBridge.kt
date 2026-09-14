@@ -73,6 +73,15 @@ class TelecomBridge(
   val hasSeenCallEvents: Boolean get() = sawBroadcast
 
   /**
+   * Whether this Android version has the whole API this channel needs.
+   *
+   * Below [TelecomSupport.MIN_SDK] the channel must report itself unusable
+   * rather than half-work: answering would succeed and hanging up would throw,
+   * which on a player the user cannot debug is the worst possible outcome.
+   */
+  val isSupportedHere: Boolean get() = Build.VERSION.SDK_INT >= TelecomSupport.MIN_SDK
+
+  /**
    * True while this bridge is actually observing Telecom.
    *
    * Goes false on [stop], which is what a deliberate user disconnect calls.
@@ -175,6 +184,10 @@ class TelecomBridge(
    * profile exists, is enabled, and is connected to a phone.
    */
   fun isUsable(): Boolean {
+    if (!isSupportedHere) {
+      available.value = false
+      return false
+    }
     val usable = TelecomSupport.isChannelUsable(accountRefs())
     available.value = usable
     return usable
@@ -190,6 +203,7 @@ class TelecomBridge(
    * broadcast (the channel cannot be used, but for a different reason).
    */
   fun statusText(): String = when {
+    !isSupportedHere -> "דורש אנדרואיד 9 ומעלה (בגרסה זו אין ניתוק שיחה דרך Telecom)"
     telecom == null -> "שירות Telecom לא זמין בנגן"
     !canReadState -> "אין הרשאת מצב שיחות - אשר אותה כדי להפעיל את הערוץ"
     !isUsable() -> "אין חשבון HFP - הנגן לא חיבר את הטלפון כדיבורית מערכת"
@@ -209,6 +223,10 @@ class TelecomBridge(
   fun start(address: String?) {
     deviceAddress = address
     isUsable()
+    if (!isSupportedHere) {
+      onLog("ערוץ המערכת דורש אנדרואיד 9 ומעלה - בחר ערוץ אחר", true)
+      return
+    }
     if (receiver != null) return
     if (!canReadState) {
       onLog("ערוץ המערכת דורש הרשאת 'מצב שיחות' - אשר אותה בהגדרות ההרשאות", true)

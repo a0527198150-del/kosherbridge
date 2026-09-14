@@ -44,6 +44,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.bluetooth.TelecomBridge
+import com.example.kosherbridge.bluetooth.TelecomSupport
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ChannelState
 import kotlinx.coroutines.delay
@@ -111,6 +112,10 @@ fun ConnectionSettingsScreen(
       onSnackbar("חלק מההרשאות נדחו - ייתכן שלא יוצג מספר מתקשר או שלא ניתן יהיה לענות")
     }
   }
+  // Android 9+ only: TelecomManager.endCall() (reject / hang up) does not exist
+  // before API 28, so offering the channel on an older player would answer
+  // calls and then fail silently on every hang-up.
+  val telecomSupported = remember { Build.VERSION.SDK_INT >= TelecomSupport.MIN_SDK }
   val requestTelecomPermissions: () -> Unit = {
     val missing = TelecomBridge.missingPermissions(context)
     if (missing.isEmpty()) {
@@ -288,8 +293,12 @@ fun ConnectionSettingsScreen(
             Triple(
               "TELECOM",
               "דרך המערכת (Telecom) - כולל קול, בלי רוט",
-              "הנגן מתחבר לטלפון כדיבורית רגילה והאפליקציה שולטת בשיחות. " +
-                "הערוץ היחיד שמעביר גם קול בלי רוט ובלי Shizuku - דורש שהנגן תומך בפרופיל דיבורית.",
+              if (telecomSupported) {
+                "הנגן מתחבר לטלפון כדיבורית רגילה והאפליקציה שולטת בשיחות. " +
+                  "הערוץ היחיד שמעביר גם קול בלי רוט ובלי Shizuku - דורש שהנגן תומך בפרופיל דיבורית."
+              } else {
+                "לא זמין בגרסת האנדרואיד של הנגן - הערוץ דורש אנדרואיד 9 ומעלה."
+              },
             ),
             Triple("DIRECT", "ישיר (ללא Shizuku)", null),
             Triple("SHIZUKU", "דרך Shizuku", null),
@@ -300,7 +309,7 @@ fun ConnectionSettingsScreen(
               modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
-                .clickable {
+                .clickable(enabled = mode != "TELECOM" || telecomSupported) {
                   scope.launch { settings.setChannel(fp, mode) }
                   // The Telecom channel is driven entirely by ordinary runtime
                   // permissions, so ask for them at the moment the user opts in
@@ -311,8 +320,14 @@ fun ConnectionSettingsScreen(
                 .padding(vertical = 10.dp, horizontal = 4.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
+              val enabled = mode != "TELECOM" || telecomSupported
               Column(Modifier.weight(1f)) {
-                Text(label, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                  label,
+                  style = MaterialTheme.typography.bodyLarge,
+                  color = if (enabled) MaterialTheme.colorScheme.onSurface
+                  else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                )
                 if (hint != null) {
                   Text(
                     hint,

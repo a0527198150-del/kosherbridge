@@ -103,6 +103,21 @@ class TelecomSupportTest {
     assertFalse(TelecomSupport.isChannelUsable(emptyList()))
   }
 
+  // ------------------------------------------------------------- api floor
+
+  @Test
+  fun min_sdk_covers_every_api_the_channel_calls() {
+    // The channel's four verbs are acceptRingingCall (API 21), placeCall and
+    // getCallCapablePhoneAccounts (23) and endCall (28), and it needs the
+    // ANSWER_PHONE_CALLS permission (26). endCall is the binding constraint, so
+    // the floor must be at least 28 - the app's own minSdk is 24, and below 28
+    // the channel would answer calls and then fail on every hang-up.
+    assertTrue(
+      "endCall() needs API 28, so the channel floor cannot be lower",
+      TelecomSupport.MIN_SDK >= 28,
+    )
+  }
+
   // ------------------------------------------------------------- call mapping
 
   @Test
