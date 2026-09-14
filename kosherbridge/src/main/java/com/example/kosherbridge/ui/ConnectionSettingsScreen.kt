@@ -60,6 +60,7 @@ fun ConnectionSettingsScreen(
   onBack: () -> Unit,
   onOpenDiagnostics: () -> Unit,
   onOpenConnectionLog: () -> Unit,
+  onOpenAdbChannel: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -146,6 +147,12 @@ fun ConnectionSettingsScreen(
     SettingsCard("כלים") {
       SettingRow("אבחון", "מצב המכשיר, ערוץ פעיל ובדיקות") { onOpenDiagnostics() }
       SettingRow("יומן חיבור בלוטוס", "ניסיונות החיבור שנרשמו במכשיר") { onOpenConnectionLog() }
+      if (adbChannelAvailable) {
+        SettingRow(
+          "ערוץ ADB מקומי",
+          "זהות shell מה-ADB של הנגן עצמו - בלי מחשב, בלי רוט ובלי Shizuku",
+        ) { onOpenAdbChannel() }
+      }
     }
 
     SettingsCard("תיקון") {

@@ -105,6 +105,14 @@
         <intent>
             <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
         </intent>
+        <!-- The developer-options screen, where wireless debugging lives. The
+             ADB channel's setup page offers a button that opens it, and the
+             choice between the targeted wireless-debugging activity and this
+             documented fallback is made with resolveActivity. -->
+        <intent>
+            <action android:name="android.settings.APPLICATION_DEVELOPMENT_SETTINGS" />
+        </intent>
+        <package android:name="com.android.settings" />
         <!-- Store page / project site, for installing Shizuku. -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
