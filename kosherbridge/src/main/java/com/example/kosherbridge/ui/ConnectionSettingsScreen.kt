@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.kosherbridge.BridgeService
 import com.example.kosherbridge.bluetooth.BridgeUiState
+import com.example.kosherbridge.bluetooth.TelecomBridge
 import com.example.kosherbridge.data.ServiceLocator
 import com.example.kosherbridge.data.local.ChannelState
 import kotlinx.coroutines.delay
@@ -95,6 +96,30 @@ fun ConnectionSettingsScreen(
     val missing = perms.filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
     if (missing.isEmpty()) startScan() else scanPermLauncher.launch(missing.toTypedArray())
   }
+  // The Telecom channel needs four ordinary runtime permissions and nothing
+  // else - no root, no Shizuku, no privileged permission. They are requested
+  // when the user picks that channel; a refusal degrades the channel rather
+  // than breaking it (no caller ID without READ_CALL_LOG, no answering without
+  // ANSWER_PHONE_CALLS), so the result only has to be reported, not enforced.
+  val telecomPermLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions(),
+  ) { grants ->
+    val denied = grants.filterValues { !it }.keys
+    if (denied.isEmpty()) {
+      onSnackbar("ערוץ המערכת מוכן - חבר את הטלפון כדיבורית בהגדרות הבלוטוס של הנגן")
+    } else {
+      onSnackbar("חלק מההרשאות נדחו - ייתכן שלא יוצג מספר מתקשר או שלא ניתן יהיה לענות")
+    }
+  }
+  val requestTelecomPermissions: () -> Unit = {
+    val missing = TelecomBridge.missingPermissions(context)
+    if (missing.isEmpty()) {
+      onSnackbar("ערוץ המערכת מוכן - חבר את הטלפון כדיבורית בהגדרות הבלוטוס של הנגן")
+    } else {
+      telecomPermLauncher.launch(missing.toTypedArray())
+    }
+  }
+
   val pairDevice: (String) -> Unit = { address ->
     val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     val d = runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
@@ -259,24 +284,43 @@ fun ConnectionSettingsScreen(
       text = {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
           listOf(
-            "AUTO" to "אוטומטי - האפליקציה בוחרת לבד",
-            "DIRECT" to "ישיר (ללא Shizuku)",
-            "SHIZUKU" to "דרך Shizuku",
-            "ROOT" to "דרך הרשאת רוט (su)",
-            "RAW" to "חיבור ישיר RFCOMM",
-          ).forEach { (mode, label) ->
+            Triple("AUTO", "אוטומטי - האפליקציה בוחרת לבד", null),
+            Triple(
+              "TELECOM",
+              "דרך המערכת (Telecom) - כולל קול, בלי רוט",
+              "הנגן מתחבר לטלפון כדיבורית רגילה והאפליקציה שולטת בשיחות. " +
+                "הערוץ היחיד שמעביר גם קול בלי רוט ובלי Shizuku - דורש שהנגן תומך בפרופיל דיבורית.",
+            ),
+            Triple("DIRECT", "ישיר (ללא Shizuku)", null),
+            Triple("SHIZUKU", "דרך Shizuku", null),
+            Triple("ROOT", "דרך הרשאת רוט (su)", null),
+            Triple("RAW", "חיבור ישיר RFCOMM - בקרה בלבד, בלי קול", null),
+          ).forEach { (mode, label, hint) ->
             Row(
               modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .clickable {
                   scope.launch { settings.setChannel(fp, mode) }
+                  // The Telecom channel is driven entirely by ordinary runtime
+                  // permissions, so ask for them at the moment the user opts in
+                  // rather than prompting every user on first launch.
+                  if (mode == "TELECOM") requestTelecomPermissions()
                   showChannelDialog = false
                 }
                 .padding(vertical = 10.dp, horizontal = 4.dp),
               verticalAlignment = Alignment.CenterVertically,
             ) {
-              Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+              Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.bodyLarge)
+                if (hint != null) {
+                  Text(
+                    hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  )
+                }
+              }
               if (channelState.effective == mode) {
                 Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
               }
@@ -332,6 +376,7 @@ private fun channelLabel(cs: ChannelState): String {
     "SHIZUKU" -> "Shizuku"
     "ROOT" -> "Root"
     "RAW" -> "RFCOMM ישיר"
+    "TELECOM" -> "מערכת (Telecom)"
     else -> "אוטומטי"
   }
   return when {

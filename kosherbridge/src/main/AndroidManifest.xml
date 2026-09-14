@@ -40,6 +40,23 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- TELECOM channel: the only path to call AUDIO without root, Shizuku or a
+         Magisk module. The player's own Bluetooth stack connects to the kosher
+         phone with the HFP-Client profile; AOSP's HfpClientConnectionService
+         publishes those calls into Telecom, and these four ordinary runtime
+         permissions are enough to see and drive them:
+           READ_PHONE_STATE   - observe ringing / in-call / idle
+           READ_CALL_LOG      - caller ID in that broadcast (Android 9+ gates
+                                the number behind this; without it calls still
+                                appear, just without a number)
+           ANSWER_PHONE_CALLS - accept a ringing call, reject / hang up
+           CALL_PHONE         - place a call through the phone's PhoneAccount
+         None of these is privileged; all are granted by the user in a dialog. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
     <!-- Privileged permission: allows full HFP control (dial/answer/AT commands).
          Ignored on stock devices; enables the full experience on system-signed
          players / custom ROMs. -->

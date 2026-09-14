@@ -141,6 +141,12 @@ fun DiagnosticsScreen(
         state.shizukuGranted,
       )
       DiagRow("Root (su)", if (state.rootAvailable) "זמין" else "לא זמין", state.rootAvailable)
+      // The decisive row for a player with no root and no Shizuku: when this
+      // says the system bridges the phone's calls, the player can carry call
+      // AUDIO through the "מערכת (Telecom)" channel.
+      state.telecomStatus?.let {
+        DiagRow("ערוץ מערכת (Telecom)", it, it.startsWith("פעיל"))
+      }
       state.scoSupport?.let {
         DiagRow("שמע (SCO)", it, it.startsWith("מחובר") || it.startsWith("נתמך"))
       }
@@ -224,6 +230,13 @@ fun DiagnosticsScreen(
  */
 private fun buildGuidance(state: BridgeUiState): String? = when {
   !state.adapterOn -> "הדלק את הבלוטוס בהגדרות המערכת וחזור לכאן."
+  // Before sending anyone to Shizuku or root: if the platform already bridges
+  // the phone's calls, the system channel gives full calls INCLUDING voice with
+  // nothing but runtime permissions. That is strictly the best option, so it is
+  // offered first whenever it is actually available.
+  state.telecomStatus?.startsWith("פעיל") == true && state.backendLabel?.contains("Telecom") != true ->
+    "הנגן הזה מגשר את שיחות הטלפון בעצמו. בחר 'ערוץ חיבור' ← 'דרך המערכת (Telecom)' - " +
+      "ככה מקבלים שיחות מלאות כולל קול, בלי רוט ובלי Shizuku."
   state.connectionState != BluetoothProfile.STATE_CONNECTED -> {
     when {
       !state.hiddenApiAvailable && !state.shizukuAvailable && state.rootAvailable ->
@@ -284,6 +297,7 @@ private fun buildDiagnosticsReport(state: BridgeUiState): String = buildString {
     }",
   )
   appendLine("Root (su): ${if (state.rootAvailable) "זמין" else "לא זמין"}")
+  state.telecomStatus?.let { appendLine("ערוץ מערכת (Telecom): $it") }
   appendLine("בלוטוס: ${if (state.adapterOn) "פועל" else "כבוי"}")
   appendLine("חיבור: ${connectionText(state)}")
   appendLine(

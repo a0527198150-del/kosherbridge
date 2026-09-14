@@ -12,10 +12,29 @@ The Hebrew user guide lives in [`kosherbridge/README.md`](kosherbridge/README.md
 
 **Call control** (ring, answer, reject, dial, caller ID) works on every
 channel, including the default direct RFCOMM channel. **Call audio** (the
-voice through the player's speaker/microphone) only flows through the real
-HFP client profile — the Shizuku, root, or Magisk-module channels. On the
-raw RFCOMM channel the voice stays on the kosher phone and the player acts
-as a remote control, dialer, and call screen.
+voice through the player's speaker/microphone) only ever flows through the
+real HFP-Client profile. On the raw RFCOMM channel the voice stays on the
+kosher phone and the player acts as a remote control, dialer, and call
+screen.
+
+What decides whether a given player can carry audio is therefore one thing
+only: **is the HFP-Client profile enabled in that player's Bluetooth stack?**
+
+- **Enabled** — use the **`מערכת (Telecom)` channel**: the player connects to
+  the phone as an ordinary hands-free device, AOSP's
+  `HfpClientConnectionService` publishes those calls into the Telecom
+  framework, and this app drives them through public `TelecomManager` API.
+  Full calls including voice, with **no root, no Shizuku, no hidden API and no
+  privileged permission** — only four ordinary runtime permissions. The
+  system owns the SCO link, so the app never touches audio routing.
+- **Disabled** (the factory default on many cheap players) — no app can turn
+  it on: it is a read-only system property the Bluetooth stack reads at boot.
+  That case still needs the Magisk module, and no amount of app code changes
+  it. Shizuku does not help here either.
+
+The diagnostics screen answers this directly, with no reflection: the row
+**"ערוץ מערכת (Telecom)"** reports whether the platform published an HFP
+phone account, which happens only when the profile is enabled and connected.
 
 ## Repository layout
 

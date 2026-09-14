@@ -33,6 +33,9 @@ data class BridgeUiState(
   val shizukuAvailable: Boolean = false,
   val shizukuGranted: Boolean = false,
   val rootAvailable: Boolean = false, // a su binary exists on this device
+  // TELECOM channel: whether the platform published an HFP PhoneAccount, i.e.
+  // whether this player can carry call AUDIO with no root and no Shizuku.
+  val telecomStatus: String? = null,
 
   val scoSupport: String? = null, // does this player expose SCO at all?
   val scoTechnique: String? = null, // last SCO technique the stack was asked for

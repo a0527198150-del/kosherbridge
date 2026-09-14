@@ -403,6 +403,9 @@ class BridgeService : Service() {
     scope.launch {
       val (sAvail, sGranted) = manager.shizukuState()
       val rootAvail = manager.rootState()
+      // Reading the Telecom phone accounts is a binder round trip, so it never
+      // runs on the main thread - the rest of this report is cheap, this is not.
+      val telecom = withContext(Dispatchers.IO) { manager.telecomStatus() }
       BridgeHub.update {
         it.copy(
           deviceInfo = "${Build.MANUFACTURER} ${Build.MODEL} (SDK ${Build.VERSION.SDK_INT})",
@@ -410,6 +413,7 @@ class BridgeService : Service() {
           shizukuAvailable = sAvail,
           shizukuGranted = sGranted,
           rootAvailable = rootAvail,
+          telecomStatus = telecom,
           fullScreenAllowed = Notifications.canUseFullScreen(this@BridgeService),
         )
       }
