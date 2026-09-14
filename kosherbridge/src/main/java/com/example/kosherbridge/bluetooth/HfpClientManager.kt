@@ -9,7 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
-import android.os.SystemClock
 import android.util.Log
 import com.example.kosherbridge.data.ServiceLocator
 import java.lang.reflect.InvocationHandler
@@ -1053,10 +1052,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // a Bluetooth restart for nothing.
     if (key.startsWith("persist.")) return BootRestore.NOT_NEEDED
     if (!bootRestoreDue()) return BootRestore.NOT_NEEDED
-    // Already up? Then either the property survived after all (some forks do
-    // persist it) or the ROM enables the profile on its own. Either way there
-    // is nothing to repair, and restarting Bluetooth would be pure damage.
-    if (PlayerCapabilities.headsetClientRunning(context) != false) return BootRestore.NOT_NEEDED
+    if (!withContext(Dispatchers.IO) { repairNeeded(key) }) return BootRestore.NOT_NEEDED
     // The last step restarts Bluetooth, so a live call is an absolute bar -
     // and a retryable one, because calls end. This normally runs at boot,
     // where there is no call at all; the watchdog restarts the service too,
@@ -1141,48 +1137,136 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // ping and a permission read. Requiring the grant means no dialog can be
     // raised behind the user's back at boot.
     val z = shizuku ?: ShizukuBridge(context).also { shizuku = it }
-    if (z.isAvailable && z.permissionGranted && bindShizuku()) return true
+    if (z.isAvailable && z.permissionGranted && bindShizukuServiceOnly(z)) return true
     // Then this build's own ADB channel, if it has one and it is live.
     adbShell?.let { s ->
       val launcher = AdbLauncher(s)
-      if (launcher.available() && bindSpawned(launcher)) return true
+      if (launcher.available() && bindSpawnedServiceOnly(launcher)) return true
     }
     // Root last, and only when the user actually chose that channel: `su` can
     // raise a grant prompt, and an unexplained prompt at boot is worse than a
     // profile that stays off until they next open the app.
-    if (channelMode == "ROOT" && suLauncher.available() && bindSpawned(suLauncher)) return true
+    if (channelMode == "ROOT" && suLauncher.available() && bindSpawnedServiceOnly(suLauncher)) {
+      return true
+    }
     return null
+  }
+
+  /**
+   * Whether the profile really is down and the recorded property really is
+   * gone, decided WITHOUT any privileged channel.
+   *
+   * Two readings, because neither is sufficient alone:
+   *
+   *  - Whether the profile is running is the direct question, but the only way
+   *    to ask it from the app process is `getSupportedProfiles()`, a hidden
+   *    API. On a build that enforces the hidden-API policy it answers null -
+   *    and that is not the rare case, it is the usual one on exactly the
+   *    players this repair exists for. Treating null as "leave it alone" meant
+   *    the repair silently never ran there.
+   *  - So when the profile cannot be read, the property is asked instead. It
+   *    is the thing being restored, `getprop` is world-readable, and its value
+   *    is decisive in both directions: still "true" means the flag survived
+   *    this boot, so rewriting the identical value and restarting Bluetooth
+   *    would cost the user a dropped link and change nothing; empty or "false"
+   *    means it was wiped, which is precisely the condition to repair.
+   *
+   * A running profile always wins: it is the outcome the repair is for, so
+   * there is nothing left to do whatever the property says.
+   *
+   * Both readings block - one is a binder round trip, the other can fall back
+   * to running `getprop` - and the caller lives on the main dispatcher, so it
+   * calls this on Dispatchers.IO.
+   */
+  private fun repairNeeded(key: String): Boolean {
+    when (PlayerCapabilities.headsetClientRunning(context)) {
+      true -> return false
+      false -> return true
+      null -> Unit // Unreadable - fall through to the property.
+    }
+    return !PlayerCapabilities.systemProperty(key).equals("true", ignoreCase = true)
+  }
+
+  /**
+   * Brings up the privileged user service and stops there.
+   *
+   * The full bind does three more things, and every one of them is wrong for a
+   * background repair:
+   *
+   *  - `registerProfile()` registers the system HFP profile in the privileged
+   *    process, and then CONNECTS it to the selected phone. On a player set to
+   *    AUTO that phone already has a live raw RFCOMM socket from this app, and
+   *    the phone has exactly one hands-free slot - so the repair would put the
+   *    app's own two paths in competition and the phone would drop both. That
+   *    is the "connects, then disconnects a few seconds later" failure this
+   *    code base warns about everywhere else.
+   *  - it publishes the channel in the UI (`backendLabel`, `profileReady`) and
+   *    starts polling call state through the bridge, which is not where call
+   *    state comes from on this player.
+   *  - `bindShizuku()` additionally reports SHIZUKU through `onBackendWorked`,
+   *    which BridgeService PERSISTS as the channel that works on this player.
+   *    A boot-time repair would have permanently switched the user's channel.
+   *
+   * The repair needs none of it. Writing a system property and restarting
+   * Bluetooth are plain calls on the user service; they need the binder alive
+   * and nothing else.
+   */
+  private suspend fun bindShizukuServiceOnly(b: ShizukuBridge): Boolean {
+    if (b.isBound) return true
+    if (!b.bind()) return false
+    var waited = 0
+    while (!b.isBound && waited < 30_000) {
+      delay(200)
+      waited += 200
+    }
+    return b.isBound
+  }
+
+  /** The same minimal bind for a process this app spawns itself. */
+  private suspend fun bindSpawnedServiceOnly(launcher: PrivilegedLauncher): Boolean {
+    val b = spawned ?: SpawnedBridge(context, launcher).also { spawned = it }
+    if (b.isBound) return true
+    if (!b.start()) return false
+    var waited = 0
+    while (!b.isBound && waited < 30_000) {
+      delay(200)
+      waited += 200
+    }
+    return b.isBound
   }
 
   /**
    * Hands back a channel that was bound only to perform the boot restore.
    *
-   * Binding is not free of consequence: a bound bridge becomes the source of
-   * call state and of dial/answer routing for every channel except the raw
-   * one, and it relabels the backend in the UI. On a player set to AUTO - the
-   * common case, since the profile is enabled through Shizuku but calls are
-   * carried over raw RFCOMM - leaving it bound would mean a repair silently
-   * changed how the bridge works. So it is released, and the state it touched
-   * is put back.
+   * Even the minimal bind is not free of consequence: while a bridge is bound,
+   * `dial`/`answer`/`hangup` prefer it over every path except the live raw
+   * socket - so between two raw reconnects the repair's leftover binding would
+   * start answering calls through a profile this channel does not use. On a
+   * player set to AUTO - the common case, since the profile is enabled through
+   * Shizuku while calls are carried over raw RFCOMM - that would mean a
+   * background repair silently changed how the bridge works.
    */
   private suspend fun releaseTransientChannel() {
     if (channelMode in PROFILE_DRIVEN_CHANNELS) return
     runCatching { shizuku?.unbind() }
     runCatching { spawned?.stop() }
-    profileReady.value = false
-    backendLabel.value = null
-    pollJob?.cancel()
-    pollJob = null
   }
 
   /** True when no restore has been tried since the player last booted. */
-  private fun bootRestoreDue(): Boolean = BootMarker.isNewBoot(
-    stored = profileEnablePrefs.getLong(LAST_BOOT_RESTORE, -1L),
-    now = SystemClock.elapsedRealtime(),
-  )
+  private fun bootRestoreDue(): Boolean {
+    // contains(), not a sentinel value: a boot instant is legitimately
+    // negative on a player whose clock starts at 1970 and is set later, so
+    // "negative means never recorded" would be wrong on exactly the cheap
+    // hardware this app runs on.
+    if (!profileEnablePrefs.contains(LAST_BOOT_RESTORE)) return true
+    return BootMarker.isNewBoot(
+      stored = profileEnablePrefs.getLong(LAST_BOOT_RESTORE, 0L),
+      current = BootMarker.currentBootInstant(),
+    )
+  }
 
   private fun markBootRestoreAttempted() {
-    profileEnablePrefs.edit().putLong(LAST_BOOT_RESTORE, SystemClock.elapsedRealtime()).apply()
+    profileEnablePrefs.edit().putLong(LAST_BOOT_RESTORE, BootMarker.currentBootInstant()).apply()
   }
 
   /**
@@ -2528,7 +2612,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     /** The property name that actually switched the profile on here. */
     const val WINNING_PROFILE_KEY = "winning_profile_key"
 
-    /** elapsedRealtime of the last boot-restore attempt. See bootRestoreDue(). */
+    /** Boot instant of the last boot-restore attempt. See bootRestoreDue(). */
     const val LAST_BOOT_RESTORE = "last_boot_restore"
   }
 }

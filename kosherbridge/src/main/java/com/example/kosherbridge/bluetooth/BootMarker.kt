@@ -1,35 +1,57 @@
 package com.example.kosherbridge.bluetooth
 
+import android.os.SystemClock
+import kotlin.math.abs
+
 /**
- * Answers "has the player rebooted since we last did this?" from nothing but
- * two readings of `SystemClock.elapsedRealtime()`.
+ * Answers "has the player rebooted since we last did this?".
  *
- * That clock counts from boot and is reset by it, which makes the whole
- * question a comparison: a stored reading LARGER than the current one cannot
- * have come from this boot, so a boot happened in between. No wall clock is
- * involved, so changing the time zone, an NTP correction or a user setting the
- * date cannot fool it; and nothing depends on BOOT_COMPLETED being delivered,
- * which on the cheap players this app targets is not something to rely on.
+ * The question matters because the thing it guards - re-applying the profile
+ * property and restarting Bluetooth - must happen once per boot and never
+ * twice. The watchdog restarts the bridge service on its own schedule, so
+ * "once per process" would have meant restarting Bluetooth every few minutes.
  *
- * It matters because the thing it guards - re-applying the profile property and
- * restarting Bluetooth - must happen once per boot and never twice. The
- * watchdog restarts the bridge service on its own schedule, so "once per
- * process" would have meant restarting Bluetooth every few minutes.
+ * The answer is the BOOT INSTANT: the wall-clock moment the player started,
+ * computed as `currentTimeMillis() - elapsedRealtime()`. Within one boot both
+ * clocks advance together so the difference is constant; a reboot resets
+ * `elapsedRealtime` to zero while the RTC keeps counting, so the difference
+ * jumps by the time the player spent off. Comparing two readings of it is
+ * therefore a direct comparison of "which boot is this".
  *
- * Pulled out of the manager as a pure function so it can be tested: it is one
- * line of arithmetic whose failure mode is invisible in ordinary use and
- * obvious in a test.
+ * A plain `elapsedRealtime` comparison - is the current reading SMALLER than
+ * the stored one - looks like it answers the same question and does not. It is
+ * only sound when the stored reading came from late in the previous boot. This
+ * marker is written EARLY in a boot (the repair runs within a minute of the
+ * service starting), so after the next reboot any check made later than that
+ * first minute - a delayed BOOT_COMPLETED, or the user simply opening the app
+ * ten minutes in - reads as "later in the same boot" and the repair is skipped
+ * for the rest of the day, silently.
+ *
+ * The tolerance absorbs clock corrections. Getting it wrong in that direction
+ * is safe: a false "new boot" costs one repair attempt, and the caller's first
+ * check is whether the profile is already running - which after a successful
+ * repair it is, so the attempt turns into a no-op. A false "same boot" costs
+ * the user call audio for the rest of the day and says nothing. The asymmetry
+ * is the whole design.
  */
 internal object BootMarker {
 
   /**
-   * @param stored the reading taken at the last attempt, or a negative number
-   *   when no attempt was ever made - which counts as a new boot, since the
-   *   work has certainly not been done.
-   * @param now the current reading.
+   * How far two readings may differ and still count as the same boot.
+   *
+   * An NTP correction, or a player with no RTC battery jumping from 1970 to
+   * the real date, shifts the wall clock and with it this value. A minute
+   * covers ordinary drift; a larger jump reads as a reboot, which by the
+   * argument above is the harmless direction.
    */
-  fun isNewBoot(stored: Long, now: Long): Boolean {
-    if (stored < 0L) return true
-    return now < stored
-  }
+  const val TOLERANCE_MS = 60_000L
+
+  /** This boot's identity. Android-only; [isNewBoot] is the testable half. */
+  fun currentBootInstant(): Long = System.currentTimeMillis() - SystemClock.elapsedRealtime()
+
+  /**
+   * @param stored the boot instant recorded at the last attempt.
+   * @param current the boot instant now.
+   */
+  fun isNewBoot(stored: Long, current: Long): Boolean = abs(current - stored) > TOLERANCE_MS
 }

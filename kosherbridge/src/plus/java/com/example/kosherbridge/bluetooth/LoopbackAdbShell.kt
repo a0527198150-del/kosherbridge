@@ -141,12 +141,14 @@ internal class LoopbackAdbShell(private val context: Context) : AdbShell {
     )
   }
 
-  override suspend fun ensureConnected(): Boolean {
-    if (state == AdbShell.State.CONNECTED) return true
+  override suspend fun ensureConnected(): Boolean = withContext(Dispatchers.IO) {
+    // Off the main dispatcher for the whole body: the callers live on it, and
+    // everything below touches a file or a socket.
+    if (state == AdbShell.State.CONNECTED) return@withContext true
     // Never paired: reconnecting is not the missing step, and silently probing
     // would hide the one thing the user has to do.
-    if (!paired) return false
-    return reconnectMutex.withLock {
+    if (!paired) return@withContext false
+    reconnectMutex.withLock {
       // Another caller may have won the race while this one waited.
       if (state == AdbShell.State.CONNECTED) return@withLock true
       val now = SystemClock.elapsedRealtime()
@@ -156,7 +158,15 @@ internal class LoopbackAdbShell(private val context: Context) : AdbShell {
       // and costs a single socket, while discovery costs the full timeout. It
       // is simply wrong after a reboot, which is why discovery follows.
       val remembered = runCatching { connectMarker().readText().trim().toIntOrNull() }.getOrNull()
-      if (remembered != null) connect(remembered)
+      if (remembered != null) {
+        connect(remembered)
+        // A remembered port is only right within the boot that produced it.
+        // Dropping it on failure keeps the next attempt from paying for a
+        // dead socket for the rest of the player's life - discovery is the
+        // correct path after a reboot, and it rewrites the marker when the
+        // user supplies a port by hand.
+        if (state != AdbShell.State.CONNECTED) runCatching { connectMarker().delete() }
+      }
       if (state != AdbShell.State.CONNECTED) connect(null)
       state == AdbShell.State.CONNECTED
     }

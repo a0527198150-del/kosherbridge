@@ -67,8 +67,9 @@ entire result:
 - **The property does not survive a reboot.** A system property without a
   `persist.` prefix is wiped at every boot, and so is the audio gate. The app
   records which name actually won on this player and puts it back once per
-  boot — guarded by `BootMarker`, which reads a reboot off `elapsedRealtime`
-  rather than trusting `BOOT_COMPLETED` — then restarts Bluetooth and
+  boot — guarded by `BootMarker`, which identifies a boot by its instant
+  (`currentTimeMillis() - elapsedRealtime()`, constant within a boot) rather
+  than trusting `BOOT_COMPLETED` — then restarts Bluetooth and
   reconnects. It waits up to half an hour for a privileged channel, because
   Shizuku does not survive a reboot either and is started by hand.
 - **The default channel disables the profile.** `AUTO` carries calls over a raw

@@ -18,29 +18,63 @@ import org.junit.Test
  */
 class BootRestoreTest {
 
+  /** A plausible wall-clock moment, so the numbers read like real readings. */
+  private val bootedAt = 1_760_000_000_000L
+
   @Test
-  fun `a first run counts as a new boot`() {
-    assertTrue(BootMarker.isNewBoot(stored = -1L, now = 0L))
-    assertTrue(BootMarker.isNewBoot(stored = -1L, now = 5_000_000L))
+  fun `the same boot instant is the same boot`() {
+    assertFalse(BootMarker.isNewBoot(stored = bootedAt, current = bootedAt))
   }
 
   @Test
-  fun `a later reading in the same boot is not a new boot`() {
-    // The restore ran 30 seconds after boot; it is now ten minutes in.
-    assertFalse(BootMarker.isNewBoot(stored = 30_000L, now = 600_000L))
+  fun `a later check within the same boot is still the same boot`() {
+    // THE REGRESSION THIS REPLACED. With an elapsedRealtime comparison, a
+    // marker written a minute into boot N and checked ten minutes into boot
+    // N+1 read as "later in the same boot", and the repair was skipped for the
+    // rest of the day. The boot instant does not move within a boot at all, so
+    // when the check happens is irrelevant.
+    assertFalse(BootMarker.isNewBoot(stored = bootedAt, current = bootedAt + 40))
   }
 
   @Test
-  fun `the same reading twice is not a new boot`() {
-    // The service was restarted so fast the clock did not move. Doing the work
-    // again here is exactly the loop the marker exists to stop.
-    assertFalse(BootMarker.isNewBoot(stored = 600_000L, now = 600_000L))
+  fun `a reboot moves the boot instant forward by the time spent off`() {
+    // Switched off for two minutes: the RTC kept counting, elapsedRealtime
+    // restarted, so the difference jumped.
+    assertTrue(BootMarker.isNewBoot(stored = bootedAt, current = bootedAt + 120_000L))
   }
 
   @Test
-  fun `a smaller reading than the stored one proves a reboot`() {
-    // elapsedRealtime is reset by the reboot, so the new reading is small.
-    assertTrue(BootMarker.isNewBoot(stored = 86_400_000L, now = 12_000L))
+  fun `a check made later in the new boot than the marker was written is still a reboot`() {
+    // The case that has to keep working however late the service starts: the
+    // marker was written one minute into the previous boot, and this check is
+    // ten minutes into the next one. Only the boot instant answers this.
+    assertTrue(BootMarker.isNewBoot(stored = bootedAt, current = bootedAt + 3_600_000L))
+  }
+
+  @Test
+  fun `ordinary clock drift does not look like a reboot`() {
+    // A small NTP correction shifts the wall clock and with it this value.
+    assertFalse(BootMarker.isNewBoot(stored = bootedAt, current = bootedAt + 1_200L))
+    assertFalse(BootMarker.isNewBoot(stored = bootedAt, current = bootedAt - 1_200L))
+  }
+
+  @Test
+  fun `a large clock correction errs towards repairing`() {
+    // A player with no RTC battery starts at 1970 and jumps to the real date
+    // when the clock is set. That reads as a reboot - deliberately the safe
+    // direction: the caller's first check is whether the profile is already
+    // running, so a needless attempt becomes a no-op, while a missed reboot
+    // costs the user call audio all day and says nothing.
+    assertTrue(BootMarker.isNewBoot(stored = 0L, current = bootedAt))
+  }
+
+  @Test
+  fun `a negative boot instant is an ordinary value`() {
+    // currentTimeMillis() - elapsedRealtime() really is negative while the
+    // clock is still at 1970 and the player has been up for a while, so it
+    // must never be mistaken for "nothing recorded".
+    assertFalse(BootMarker.isNewBoot(stored = -90_000L, current = -90_000L))
+    assertTrue(BootMarker.isNewBoot(stored = -90_000L, current = 90_000L))
   }
 
   @Test
