@@ -61,6 +61,7 @@ fun ConnectionSettingsScreen(
   onOpenDiagnostics: () -> Unit,
   onOpenConnectionLog: () -> Unit,
   onOpenAdbChannel: () -> Unit,
+  onOpenShizukuChannel: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -153,6 +154,10 @@ fun ConnectionSettingsScreen(
           "זהות shell מה-ADB של הנגן עצמו - בלי מחשב, בלי רוט ובלי Shizuku",
         ) { onOpenAdbChannel() }
       }
+      SettingRow(
+        "ערוץ Shizuku",
+        "הדרך השנייה לזהות shell בלי רוט - התקנה, הפעלה ואישור, שלב אחר שלב",
+      ) { onOpenShizukuChannel() }
     }
 
     SettingsCard("תיקון") {

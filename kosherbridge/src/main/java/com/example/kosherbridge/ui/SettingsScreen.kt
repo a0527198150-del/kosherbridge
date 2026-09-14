@@ -42,7 +42,7 @@ import com.example.kosherbridge.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 
 /** Sub-pages reachable from the Settings tab. */
-private enum class SettingsSubPage { MAIN, SETUP, CONNECTION, DIAGNOSTICS, LOG, ADB }
+private enum class SettingsSubPage { MAIN, SETUP, CONNECTION, DIAGNOSTICS, LOG, ADB, SHIZUKU }
 
 @Composable
 fun SettingsScreen(
@@ -235,8 +235,14 @@ fun SettingsScreen(
       onOpenDiagnostics = { subPage = SettingsSubPage.DIAGNOSTICS },
       onOpenConnectionLog = { subPage = SettingsSubPage.LOG },
       onOpenAdbChannel = { subPage = SettingsSubPage.ADB },
+      onOpenShizukuChannel = { subPage = SettingsSubPage.SHIZUKU },
     )
     SettingsSubPage.ADB -> AdbChannelScreen(
+      onSnackbar = onSnackbar,
+      onBack = { subPage = SettingsSubPage.CONNECTION },
+    )
+    SettingsSubPage.SHIZUKU -> ShizukuChannelScreen(
+      state = state,
       onSnackbar = onSnackbar,
       onBack = { subPage = SettingsSubPage.CONNECTION },
     )

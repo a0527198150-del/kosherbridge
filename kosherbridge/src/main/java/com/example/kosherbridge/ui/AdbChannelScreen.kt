@@ -1,9 +1,7 @@
 package com.example.kosherbridge.ui
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -128,7 +126,7 @@ fun AdbChannelScreen(
         style = MaterialTheme.typography.bodySmall,
       )
       SettingRow("פתח את אפשרויות המפתח", "אם הכפתור לא עובד, לך לשם ידנית") {
-        if (!openDeveloperOptions(context)) {
+        if (!openDeveloperOptionsScreen(context)) {
           onSnackbar("לא ניתן לפתוח את המסך אוטומטית - פתח אותו ידנית בהגדרות")
         }
       }
@@ -253,30 +251,4 @@ fun AdbChannelScreen(
       )
     }
   }
-}
-
-/**
- * Opens the developer options screen, preferring the wireless-debugging page
- * inside it where that is reachable.
- *
- * The wireless-debugging activity is not a documented action, so it is tried
- * by component and the documented developer-options action is the fallback -
- * and a false return lets the caller say "open it yourself" rather than
- * leaving a button that does nothing.
- */
-private fun openDeveloperOptions(context: Context): Boolean {
-  val candidates = listOf(
-    Intent().setComponent(
-      ComponentName("com.android.settings", "com.android.settings.Settings\$WirelessDebuggingActivity"),
-    ),
-    Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
-  )
-  for (intent in candidates) {
-    val ok = runCatching {
-      context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-      true
-    }.getOrDefault(false)
-    if (ok) return true
-  }
-  return false
 }

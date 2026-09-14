@@ -416,6 +416,19 @@ data class PlayerCapabilities(
         .map { it.key }
         .distinct()
 
+    /**
+     * Whether wireless debugging is on, without a whole probe.
+     *
+     * Public because the setup screens need it BEFORE any channel exists -
+     * which is the point: the answer to "is the thing every shell route
+     * depends on even switched on?" must not itself require a shell route. It
+     * is a world-readable global setting, so it does not.
+     */
+    fun wirelessDebuggingEnabled(context: Context): Boolean? {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+      return globalFlag(context, ADB_WIFI_ENABLED)
+    }
+
     /** Candidate names on THIS player, without running a whole probe. */
     fun discoverProfileCandidates(): List<String> =
       profileCandidatesIn(bluetoothProperties())
