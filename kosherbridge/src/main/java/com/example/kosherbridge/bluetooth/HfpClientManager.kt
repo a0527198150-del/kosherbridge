@@ -814,11 +814,20 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       logConnection("שער השמע נפתח דרך מאפיין המערכת", false)
     }
 
-    // Now walk every name known to switch the profile on - they live in
-    // different SELinux contexts, so the official one being refused says
-    // nothing about the rest.
+    // Now walk every name that might switch the profile on. Two sources, and
+    // the second matters more: the hand-written list came from build.prop
+    // recipes written for other people's devices, while the discovered list is
+    // read out of THIS player's own property store - so a vendor fork using a
+    // name nobody ever published is still found. Discovery needs no privileged
+    // channel at all (getprop is world-readable); it is only used here because
+    // here is where the writing happens.
+    val discovered = PlayerCapabilities.discoverProfileCandidates()
+    if (discovered.isNotEmpty()) {
+      logConnection("מאפיינים שזוהו בנגן עצמו: ${discovered.joinToString(", ")}", false)
+    }
+    val names = (PlayerCapabilities.HFP_HF_PROPERTY_CANDIDATES + discovered).distinct()
     val refusals = mutableListOf<String>()
-    for (key in PlayerCapabilities.HFP_HF_PROPERTY_CANDIDATES) {
+    for (key in names) {
       val result = writePrivilegedProperty(key, "true")
       if (result == "true") {
         logConnection("מאפיין הפרופיל נכתב בהצלחה: $key", false)

@@ -61,6 +61,19 @@ data class PlayerCapabilities(
   val wirelessDebugging: Boolean? = null,
   /** Android API level of the player - this decides how the profile is gated. */
   val sdkInt: Int = Build.VERSION.SDK_INT,
+  /**
+   * Every Bluetooth-related system property this player actually has, with its
+   * value.
+   *
+   * The app used to carry a hand-written list of five property names collected
+   * from build.prop recipes, and try each one. That is guessing: a vendor fork
+   * uses whatever name its own engineers chose, and no list written elsewhere
+   * can contain it. Reading what this specific player HAS turns the guess into
+   * a measurement - and `getprop` output is world-readable, so it needs no
+   * Shizuku, no ADB and no root. It works in the standard build, on a stock
+   * device, with nothing set up.
+   */
+  val bluetoothProperties: Map<String, String> = emptyMap(),
 ) {
 
   /**
@@ -119,6 +132,19 @@ data class PlayerCapabilities(
   val profileGateIsProperty: Boolean
     get() = sdkInt >= 33
 
+  /**
+   * Properties on THIS player that look like they gate the HFP hands-free
+   * (client) role and are currently off.
+   *
+   * Deliberately conservative about the role: `hfp` alone is not enough,
+   * because `bluetooth.profile.hfp.ag.enabled` is the AUDIO GATEWAY side -
+   * the profile every Android already runs and the one carrying the phone's
+   * own hands-free support. Writing to that would be meddling with something
+   * that works, to no purpose.
+   */
+  val discoveredProfileCandidates: List<String>
+    get() = profileCandidatesIn(bluetoothProperties)
+
   /** True when trying the privileged enable is worth the user's time. */
   val worthTryingEnable: Boolean
     get() = profileEnabled == false && profilePresent != false
@@ -154,6 +180,17 @@ data class PlayerCapabilities(
       },
     )
     appendLine("מסקנה: $verdict")
+    if (bluetoothProperties.isNotEmpty()) {
+      appendLine()
+      appendLine("מאפייני בלוטוס בנגן הזה (${bluetoothProperties.size}):")
+      bluetoothProperties.toSortedMap().forEach { (key, value) ->
+        appendLine("  $key = ${value.ifBlank { "(ריק)" }}")
+      }
+      val candidates = discoveredProfileCandidates
+      if (candidates.isNotEmpty()) {
+        appendLine("מועמדים שזוהו להדלקת פרופיל הדיבורית: ${candidates.joinToString(", ")}")
+      }
+    }
   }
 
   /** The marketing-ish Android version, for a line a human has to read. */
@@ -300,6 +337,7 @@ data class PlayerCapabilities(
         selinuxMode = privilegedSelinux?.takeIf { it.isNotBlank() } ?: selinuxMode(),
         hiddenApiReachable = HiddenHfp.isAvailable,
         enabledProfiles = profiles,
+        bluetoothProperties = bluetoothProperties(),
         adbEnabled = globalFlag(context, ADB_ENABLED),
         wirelessDebugging = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
           globalFlag(context, ADB_WIFI_ENABLED)
@@ -353,6 +391,58 @@ data class PlayerCapabilities(
     private fun globalFlag(context: Context, key: String): Boolean? = runCatching {
       android.provider.Settings.Global.getInt(context.contentResolver, key) != 0
     }.getOrNull()
+
+    /**
+     * Picks, out of a property map, the names that look like they gate the HFP
+     * hands-free (client) role and are currently off.
+     *
+     * Deliberately conservative about the role: `hfp` alone is not enough,
+     * because `bluetooth.profile.hfp.ag.enabled` is the AUDIO GATEWAY side -
+     * the profile every Android already runs, and the one carrying the phone's
+     * own hands-free support. Writing to that would be meddling with something
+     * that works, to no purpose.
+     */
+    fun profileCandidatesIn(properties: Map<String, String>): List<String> =
+      properties.entries
+        .filter { (key, value) ->
+          val lower = key.lowercase()
+          val mentionsHfp = "hfp" in lower || "handsfree" in lower
+          val clientRole = ".hf." in lower || "hf.enabled" in lower ||
+            "client" in lower || "hfpclient" in lower
+          val gatewayRole = ".ag." in lower || "ag.enabled" in lower
+          val looksOff = value.isBlank() || value.equals("false", true) || value == "0"
+          mentionsHfp && clientRole && !gatewayRole && looksOff
+        }
+        .map { it.key }
+        .distinct()
+
+    /** Candidate names on THIS player, without running a whole probe. */
+    fun discoverProfileCandidates(): List<String> =
+      profileCandidatesIn(bluetoothProperties())
+
+    /**
+     * Every Bluetooth-related system property on this device.
+     *
+     * `getprop` with no arguments dumps the whole property store in
+     * `[key]: [value]` form, and the store is world-readable - no permission,
+     * no privileged channel. The output is filtered here rather than in the
+     * caller so the report never carries the hundreds of unrelated properties
+     * a device has.
+     */
+    private fun bluetoothProperties(): Map<String, String> = runCatching {
+      val out = exec("getprop")
+      if (out.isBlank()) return@runCatching emptyMap()
+      val line = Regex("^\\[([^\\]]+)\\]: \\[(.*)\\]$")
+      out.lineSequence()
+        .mapNotNull { line.find(it.trim())?.destructured }
+        .map { (key, value) -> key to value }
+        .filter { (key, _) ->
+          val lower = key.lowercase()
+          "bluetooth" in lower || "hfp" in lower || "handsfree" in lower ||
+            lower.startsWith("bt.") || ".bt." in lower
+        }
+        .toMap()
+    }.getOrDefault(emptyMap())
 
     /** Reads a system property. Readable by any app; no permission needed. */
     fun systemProperty(key: String): String = runCatching {
