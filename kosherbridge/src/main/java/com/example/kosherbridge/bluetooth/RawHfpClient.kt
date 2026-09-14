@@ -792,9 +792,30 @@ class RawHfpClient(
     if (!sendAndWait("AT+CLIP=1", handshakeSocket)) {
       onLog("SLC: AT+CLIP=1 נדחה - ייתכן שלא יוצג מספר מתקשר", true)
     }
+    // 7. Report our gains. A hands-free unit tells the gateway its speaker and
+    // microphone levels on HFP's own 0-15 scale, and a gateway that never hears
+    // them is free to keep its own transmit gain wherever it was - which on
+    // some phones is very low or effectively muted. This is the AT-level
+    // counterpart of the `hfp_volume` HAL parameter, and it costs two commands
+    // whose refusal changes nothing.
+    for (command in listOf("AT+VGS=$MAX_HF_GAIN", "AT+VGM=$MAX_HF_GAIN")) {
+      if (!sendAndWait(command, handshakeSocket)) {
+        onLog("SLC: $command נדחה - עוצמת השמע נשארת כפי שהטלפון קבע", false)
+      }
+    }
     onLog("SLC הושלם דרך ${lastGateway ?: "שער לא ידוע"} (AG features=$agBrsfFeatures)", false)
     return true
   }
+
+  /**
+   * The top of HFP's speaker/microphone gain scale, which runs 0-15.
+   *
+   * Reported at maximum deliberately: the player has its own volume control
+   * that the user can reach, so attenuating a second time inside the protocol
+   * only costs headroom - and a call nobody can hear is the failure this app
+   * exists to avoid.
+   */
+  private val MAX_HF_GAIN = 15
 
   // ------------------------------------------------- test seams (no behavior change)
 

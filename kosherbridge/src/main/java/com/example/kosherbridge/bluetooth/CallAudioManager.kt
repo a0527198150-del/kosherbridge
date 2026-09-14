@@ -111,6 +111,9 @@ class CallAudioManager(private val context: Context) {
    */
   @Volatile var wideBandSpeech = false
 
+  /** HFP's speaker-gain scale is 0-15, the range AT+VGS carries. */
+  private val HFP_MAX_VOLUME = 15
+
   /** Grace period before declaring the voice unreachable. Long enough for a
    * slow stack to negotiate SCO, short enough that the user is not left
    * guessing through the first half of the conversation. */
@@ -310,6 +313,14 @@ class CallAudioManager(private val context: Context) {
    * It does NOT create the SCO link - only the Bluetooth stack does that. So
    * this helps where a link exists and does not reach the speakers; it cannot
    * conjure audio on a player that never establishes one.
+   *
+   * `hfp_volume` is the one that was missing, and it is the difference between
+   * a connected SCO link and an AUDIBLE one. AOSP sends it immediately after
+   * routeHfpAudio(true), converting the Android stream volume into HFP's own
+   * 0-15 scale - and a HAL whose HFP volume is still at its default of zero
+   * produces exactly the symptom this whole app has been chasing: the call
+   * connects, the link is up, the diagnostics say SCO is connected, and nobody
+   * hears anything.
    */
   private fun applyHalHfpParameters(enable: Boolean) {
     val rate = if (wideBandSpeech) 16000 else 8000
@@ -317,6 +328,7 @@ class CallAudioManager(private val context: Context) {
       listOf(
         "hfp_set_sampling_rate=$rate",
         "hfp_enable=true",
+        "hfp_volume=${hfpVolume()}",
         "A2dpSuspended=true",
         "BT_SCO=on",
       )
@@ -543,6 +555,21 @@ class CallAudioManager(private val context: Context) {
   }
 
   /**
+   * The current call volume on HFP's own scale.
+   *
+   * HFP speaker gain is 0-15 (the range AT+VGS carries), while Android's
+   * STREAM_VOICE_CALL has a device-specific maximum. AOSP converts between them
+   * before telling the HAL, and so does this: sending an Android volume
+   * straight through would be meaningless on a player whose maximum is 7, and
+   * dangerous on one whose maximum is 100.
+   */
+  private fun hfpVolume(): Int = runCatching {
+    val max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL).coerceAtLeast(1)
+    val current = am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+    (current * HFP_MAX_VOLUME / max).coerceIn(0, HFP_MAX_VOLUME)
+  }.getOrDefault(HFP_MAX_VOLUME)
+
+  /**
    * Raises the call volume to maximum for the duration of the call - and only
    * for the duration of the call.
    *
@@ -563,6 +590,10 @@ class CallAudioManager(private val context: Context) {
       am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, max, 0)
       boostedTo = max
     }
+    // The HAL was told the volume BEFORE this raised it, so without this the
+    // boost would move Android's slider and leave the HFP path at the old
+    // gain - a "volume boost" that boosts nothing.
+    runCatching { am.setParameters("hfp_volume=${hfpVolume()}") }
   }
 
   /**
