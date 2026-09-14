@@ -1,5 +1,9 @@
 package com.example.kosherbridge.ui
 
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -119,4 +123,39 @@ internal fun SubPageHeader(title: String, onBack: () -> Unit) {
       modifier = Modifier.padding(start = 4.dp),
     )
   }
+}
+
+/**
+ * Opens the wireless-debugging page where it is reachable, falling back to the
+ * documented developer-options action.
+ *
+ * Shared by both shell-channel screens, which open the same page for the same
+ * reason: wireless debugging is the gate on every route to a shell identity,
+ * whether the app gets there through Shizuku or through its own ADB client.
+ *
+ * The wireless-debugging activity is not a public action, so it is tried by
+ * component first and the documented action is the fallback. A false return
+ * lets the caller say "open it yourself" instead of leaving a button that
+ * silently does nothing - which is what happens on a build that hides it, and
+ * on Android 11+ for any app that has not declared the settings package in its
+ * <queries> (this one has).
+ */
+internal fun openDeveloperOptionsScreen(context: Context): Boolean {
+  val candidates = listOf(
+    Intent().setComponent(
+      ComponentName(
+        "com.android.settings",
+        "com.android.settings.Settings\$WirelessDebuggingActivity",
+      ),
+    ),
+    Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
+  )
+  for (intent in candidates) {
+    val ok = runCatching {
+      context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+      true
+    }.getOrDefault(false)
+    if (ok) return true
+  }
+  return false
 }

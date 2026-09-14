@@ -1,11 +1,9 @@
 package com.example.kosherbridge.ui
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -252,29 +250,6 @@ private fun openStoreOrSite(context: Context): Boolean {
   val candidates = listOf(
     Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$SHIZUKU_PACKAGE")),
     Intent(Intent.ACTION_VIEW, Uri.parse(SHIZUKU_SITE)),
-  )
-  for (intent in candidates) {
-    val ok = runCatching {
-      context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-      true
-    }.getOrDefault(false)
-    if (ok) return true
-  }
-  return false
-}
-
-/**
- * Opens the wireless-debugging page where it is reachable, falling back to the
- * documented developer-options action. The wireless-debugging activity is not a
- * public action, so it is tried by component first and the fallback is what
- * makes the button honest on builds that hide it.
- */
-private fun openDeveloperOptionsScreen(context: Context): Boolean {
-  val candidates = listOf(
-    Intent().setComponent(
-      ComponentName("com.android.settings", "com.android.settings.Settings\$WirelessDebuggingActivity"),
-    ),
-    Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
   )
   for (intent in candidates) {
     val ok = runCatching {
