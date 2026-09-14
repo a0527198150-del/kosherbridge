@@ -960,6 +960,26 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private val profileEnablePrefs =
     context.getSharedPreferences("profile_enable", Context.MODE_PRIVATE)
 
+  /**
+   * What will happen to the profile at the next power-on, in one line.
+   *
+   * The single question a user has after a successful setup is whether it will
+   * still be there tomorrow, and until now nothing in the app answered it -
+   * the property they had just written was volatile and the app knew it and
+   * said nothing. Null when the profile was never enabled this way here, so
+   * the report stays silent rather than raising a subject that does not apply.
+   */
+  val profileRestorePlan: String?
+    get() {
+      val key = profileEnablePrefs.getString(WINNING_PROFILE_KEY, null) ?: return null
+      return if (key.startsWith("persist.")) {
+        "המאפיין $key שרד את ההדלקה מחדש בעצמו (persist) - אין צורך בפעולה"
+      } else {
+        "המאפיין $key נמחק בכל אתחול, והאפליקציה מחזירה אותו לבד אחרי כל הדלקה " +
+          "(דרוש ערוץ מורשה זמין - Shizuku פעילה או ADB מקומי מחובר)"
+      }
+    }
+
   /** Records the property name that actually switched the profile on here. */
   private fun rememberWinningProfileKey(key: String) {
     profileEnablePrefs.edit().putString(WINNING_PROFILE_KEY, key).apply()

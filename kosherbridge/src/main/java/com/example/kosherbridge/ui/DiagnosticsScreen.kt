@@ -515,6 +515,7 @@ private fun buildDiagnosticsReport(
   state.audioRouteAllowed?.let { appendLine("ניתוב שמע השיחה (HFP Client): $it") }
   state.phoneProfiles?.let { appendLine("פרופילים שהטלפון מפרסם: $it") }
   state.phoneProfilesVerdict?.let { appendLine("מסקנה לגבי הטלפון: $it") }
+  state.profileRestorePlan?.let { appendLine("אחרי הדלקה מחדש: $it") }
   capabilities?.let {
     appendLine()
     appendLine("-- יכולות הנגן --")

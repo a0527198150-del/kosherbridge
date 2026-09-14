@@ -74,6 +74,8 @@ data class BridgeUiState(
   // player half.
   val phoneProfiles: String? = null,
   val phoneProfilesVerdict: String? = null,
+  /** What becomes of the profile at the next power-on. Null when not applicable. */
+  val profileRestorePlan: String? = null,
   val fullScreenAllowed: Boolean? = null, // can the system honour a full-screen call intent?
   val connectionLog: List<String> = emptyList(), // recent local connection log
   val permissionHint: String? = null, // shown when a required runtime permission is missing

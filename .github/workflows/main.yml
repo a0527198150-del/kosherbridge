@@ -104,6 +104,37 @@ jobs:
       - name: Build kosherbridge (release APKs)
         run: ./gradlew :kosherbridge:assembleRelease --no-daemon --stacktrace -Pkotlin.compiler.execution.strategy=daemon
 
+      # The standard APK must never gain a network permission. That is the
+      # whole reason the two products exist, and it is exactly the kind of
+      # promise that decays silently: any library added later can merge
+      # <uses-permission android:name="android.permission.INTERNET"/> into the
+      # manifest without a line of it appearing in this repository, and nobody
+      # would notice until someone read the permission list of a shipped build.
+      #
+      # So it is checked on the built artifact rather than on the sources, with
+      # aapt2 reading the APK's own manifest - the merged, final one people
+      # actually install. A regression fails the build here instead of reaching
+      # a user. The plus APK is asserted in the same breath: its permission must
+      # be present, or the ADB channel silently cannot open its loopback socket
+      # and the flavour is pointless.
+      - name: Assert the permission split holds
+        run: |
+          set -e
+          AAPT2="$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f | sort -V | tail -1)"
+          if [ -z "$AAPT2" ]; then echo "::error::aapt2 not found" && exit 1; fi
+          STD=kosherbridge/build/outputs/apk/standard/release/kosherbridge-standard-release.apk
+          PLUS=kosherbridge/build/outputs/apk/plus/release/kosherbridge-plus-release.apk
+          if "$AAPT2" dump permissions "$STD" | grep -q 'android.permission.INTERNET'; then
+            echo "::error::the standard APK declares INTERNET - the permission split is broken"
+            "$AAPT2" dump permissions "$STD"
+            exit 1
+          fi
+          if ! "$AAPT2" dump permissions "$PLUS" | grep -q 'android.permission.INTERNET'; then
+            echo "::error::the plus APK is missing INTERNET - its ADB channel cannot work"
+            exit 1
+          fi
+          echo "standard: no INTERNET. plus: INTERNET present. Split holds."
+
       # Name every downloadable by its version. Without this each run produced
       # "kosherbridge-apk" and "kosherbridge-magisk-v1.zip", so once downloaded
       # no file said which build it was - and two of them in a folder were

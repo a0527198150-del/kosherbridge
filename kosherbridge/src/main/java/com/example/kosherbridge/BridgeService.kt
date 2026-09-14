@@ -740,6 +740,10 @@ class BridgeService : Service() {
             // user staring at the home screen; they are not the same thing.
             reconnecting = s != BluetoothProfile.STATE_CONNECTED &&
               (manager.rawOwnsConnectionLoop || reconnecting),
+            // Refreshed here as well as on the device flow: enabling the
+            // profile ends in a Bluetooth restart, so a connection change is
+            // the first thing that happens after the plan becomes known.
+            profileRestorePlan = manager.profileRestorePlan,
           )
         }
         // With no link there is no way to learn that a call ended, so a call
@@ -774,6 +778,7 @@ class BridgeService : Service() {
             deviceAddress = d?.address ?: remembered?.address,
             phoneProfiles = PeerProfiles.describe(d) ?: it.phoneProfiles,
             phoneProfilesVerdict = PeerProfiles.verdict(d) ?: it.phoneProfilesVerdict,
+            profileRestorePlan = manager.profileRestorePlan,
           )
         }
         updateBridgeNotification()
