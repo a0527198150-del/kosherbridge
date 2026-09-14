@@ -194,6 +194,8 @@ class RawHfpClient(
    * SLC plus the first seconds of the live link - exactly the window in which
    * the link dies - without filling the journal during a healthy session. */
   @Volatile private var atTraceUntil = 0L
+  /** True between sending AT+CLCC and the OK/ERROR that terminates its batch. */
+  @Volatile private var clccQueryInFlight = false
   private val clccLock = Any()
   private val clccCalls = mutableListOf<CallInfo>()
   /**
@@ -959,11 +961,18 @@ class RawHfpClient(
     val ownedSocket = socket ?: return false
     synchronized(clccLock) { clccCalls.clear() }
     val batchBefore = clccBatchSeq
-    if (!sendCommand("AT+CLCC", ownedSocket)) return false
+    clccQueryInFlight = true
+    if (!sendCommand("AT+CLCC", ownedSocket)) {
+      clccQueryInFlight = false
+      return false
+    }
     val deadline = System.currentTimeMillis() + 3_000L
     while (clccBatchSeq == batchBefore && System.currentTimeMillis() < deadline) {
       delay(50)
     }
+    // A query the AG never terminated must not leave the flag set, or the next
+    // unrelated OK would be mistaken for this query's batch.
+    clccQueryInFlight = false
     return true
   }
 
@@ -1277,6 +1286,11 @@ class RawHfpClient(
     // The AG completed a command - release the CLCC poller waiting on this
     // batch, whatever its outcome (calls listed, empty list, or error).
     clccBatchSeq++
+    // ...but WHICH command completed matters below. Every OK on the link lands
+    // here, including the ones answering ATD, AT+CLIP and AT+VGS, and only an
+    // OK that terminated a CLCC QUERY says anything at all about call state.
+    val wasClccQuery = clccQueryInFlight
+    clccQueryInFlight = false
     var info: CallInfo? = null
     var sawCalls = false
     synchronized(clccLock) {
@@ -1291,6 +1305,12 @@ class RawHfpClient(
       return
     }
     if (sawCalls) return // rows arrived but none parsed - keep the current state
+    // Not a CLCC query, so this OK is not evidence of anything. Reading it as
+    // "no calls" cleared the number the instant it was dialled: ATD sets the
+    // outgoing call's number, the AG answers OK, and on a gateway that sends no
+    // CIEV - the feature phones this path exists for - the branch below then
+    // threw the whole call away before it had begun.
+    if (!wasClccQuery) return
     // Empty CLCC list = the AG reports no active call. If the AG never sends
     // +CIEV (CMER rejected / feature phone), CLCC is the only source of truth
     // and an empty batch means the call ended - clear the stale ringing/active

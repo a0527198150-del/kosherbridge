@@ -214,7 +214,10 @@ class RawHfpClientSlcTest {
     val ag = standardAg()
     val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
     val job = handshakeAsync(client, ag.link())
-    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    // Wait for the LAST command of the SLC, not an earlier one: dialling while
+    // the handshake is still reading makes the two share the link's single
+    // reader, and the test would be racing the protocol rather than testing it.
+    failFast(ag) { ag.awaitSent { it == "AT+VGM=15" } }
     client.dial("+972501234567")
     failFast(ag) { ag.awaitSent { it == "ATD+972501234567;" } }
     client.handleLineForTest("+CIEV: 3,2") // callsetup = outgoing, dialling
@@ -223,6 +226,32 @@ class RawHfpClientSlcTest {
     assertEquals("+972501234567", client.call.value?.number)
     client.disconnect()
     job.cancel()
+    ag.close()
+  }
+
+  @Test
+  fun an_unrelated_ok_does_not_clear_the_call() = runBlocking {
+    // Regression: every OK on the link reaches finishClccBatch, and when no
+    // CIEV had been seen it was read as "the AG reports no calls". So the OK
+    // answering ATD threw away the call ATD had just started - on exactly the
+    // feature phones the no-CIEV path exists to serve. Only an OK that
+    // terminates a CLCC QUERY is evidence about call state.
+    val ag = standardAg()
+    val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
+    client.handleLineForTest(
+      "+CIND: (\"service\",(0,1)),(\"call\",(0,1)),(\"callsetup\",(0,3)),(\"callheld\",(0,2))",
+    )
+    client.handleLineForTest("+CIND: 1,0,0,0")
+    client.handleLineForTest("+CLIP: \"+972501234567\",145")
+    client.handleLineForTest("RING")
+    assertEquals(CallState.INCOMING, client.call.value?.state)
+    assertEquals("+972501234567", client.call.value?.number)
+
+    // An OK that answered some other command - no CLCC was ever sent.
+    client.handleLineForTest("OK")
+    assertEquals(CallState.INCOMING, client.call.value?.state)
+    assertEquals("+972501234567", client.call.value?.number)
+    client.disconnect()
     ag.close()
   }
 
@@ -257,7 +286,10 @@ class RawHfpClientSlcTest {
     val ag = standardAg()
     val client = RawHfpClient(context = NoopContext, scope = TestScopes.service())
     val job = handshakeAsync(client, ag.link())
-    failFast(ag) { ag.awaitSent { it == "AT+CLIP=1" } }
+    // Wait for the LAST command of the SLC, not an earlier one: dialling while
+    // the handshake is still reading makes the two share the link's single
+    // reader, and the test would be racing the protocol rather than testing it.
+    failFast(ag) { ag.awaitSent { it == "AT+VGM=15" } }
     client.dial("+972501234567")
     failFast(ag) { ag.awaitSent { it == "ATD+972501234567;" } }
     client.disconnect()
