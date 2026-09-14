@@ -20,6 +20,11 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -41,6 +46,7 @@ fun IncomingCallScreen(
   onReject: () -> Unit,
   onHangup: () -> Unit,
   onToggleAudio: () -> Unit,
+  audioOnPlayer: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   val ringing = state?.state == CallState.INCOMING || state?.state == CallState.WAITING
@@ -53,6 +59,26 @@ fun IncomingCallScreen(
     else -> "שיחה"
   }
   val displayName = name ?: number
+
+  // Whether to say out loud that the voice did not come to the player.
+  //
+  // Answering from the player makes the phone try to move the call audio here;
+  // when that fails - most often because this player's Bluetooth stack has no
+  // hands-free profile at all - the conversation stays on the kosher phone.
+  // Without this line the user sees "בשיחה" on a silent screen and has no idea
+  // the phone is where the call actually is.
+  //
+  // Delayed a few seconds on purpose: the audio link legitimately takes a
+  // moment to come up, and flashing the warning at the start of every healthy
+  // call would train the user to ignore it.
+  var voiceStayedOnPhone by remember { mutableStateOf(false) }
+  LaunchedEffect(active, audioOnPlayer) {
+    voiceStayedOnPhone = false
+    if (active && !audioOnPlayer) {
+      kotlinx.coroutines.delay(4_000)
+      voiceStayedOnPhone = true
+    }
+  }
 
   Box(
     modifier = modifier
@@ -84,6 +110,15 @@ fun IncomingCallScreen(
           number,
           color = Color.White.copy(alpha = 0.7f),
           style = MaterialTheme.typography.titleMedium,
+        )
+      }
+      if (voiceStayedOnPhone) {
+        Spacer(Modifier.height(20.dp))
+        Text(
+          "הקול נשאר בטלפון הכשר - הרם אותו כדי לדבר",
+          color = Color(0xFFFFCC80),
+          style = MaterialTheme.typography.bodyMedium,
+          textAlign = TextAlign.Center,
         )
       }
       Spacer(Modifier.height(48.dp))

@@ -139,6 +139,12 @@ class CallAudioManager(private val context: Context) {
    *   is the only way to get call audio flowing.
    */
   fun ensureCallAudio(device: BluetoothDevice?, boostVolume: Boolean, forceVirtualSco: Boolean = false) {
+    // This runs MANY times per call, not once: the watchdog re-asserts the
+    // route about every two seconds for as long as the audio link is not up,
+    // and it also runs on SCO drop, on audio stolen, and on the audio toggle.
+    // Anything that must remember pre-call state has to do it on the first
+    // claim only - see the microphone below.
+    val firstClaimOfThisCall = !inCall
     inCall = true
     registerReceivers()
 
@@ -148,9 +154,17 @@ class CallAudioManager(private val context: Context) {
     // If the microphone was muted at the OS level (by the user, another app,
     // or a system state), un-mute it for the call so the far side can hear
     // us - and remember to restore it when the call ends.
+    //
+    // The capture is guarded to the FIRST claim of the call. Without that
+    // guard the second pass read back the mute state this method had just
+    // cleared, recorded micWasMuted = false, and releaseCallAudio() then
+    // never restored it - silently turning the user's microphone mute off for
+    // good. It bit hardest on players where the audio link never comes up at
+    // all, because there the watchdog re-enters this method for the whole
+    // call.
     runCatching {
-      micWasMuted = am.isMicrophoneMute
-      if (micWasMuted) {
+      if (firstClaimOfThisCall) micWasMuted = am.isMicrophoneMute
+      if (micWasMuted && am.isMicrophoneMute) {
         am.isMicrophoneMute = false
         Log.i(tag, "microphone was muted - unmuted for the call")
       }

@@ -489,6 +489,9 @@ class BridgeService : Service() {
       manager.audioState.collect { a -> BridgeHub.update { it.copy(audioState = a) } }
     }
     scope.launch {
+      manager.audio.scoConnected.collect { up -> BridgeHub.update { it.copy(scoActive = up) } }
+    }
+    scope.launch {
       manager.audio.routeLabel.collect { r ->
         BridgeHub.update {
           it.copy(

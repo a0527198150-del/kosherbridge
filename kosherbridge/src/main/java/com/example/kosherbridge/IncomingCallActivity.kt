@@ -77,6 +77,13 @@ class IncomingCallActivity : ComponentActivity() {
             onReject = { BridgeHub.service?.reject() },
             onHangup = { BridgeHub.service?.hangup() },
             onToggleAudio = { BridgeHub.service?.toggleAudio() },
+            // Did the voice actually reach the player? Either signal counts:
+            // the profile channels report audioState == 2, while the raw
+            // channel has no profile to report one at all and can only be
+            // judged by whether the stack really brought a SCO link up. When
+            // neither is true the call is on the kosher phone, and the call
+            // screen says so instead of sitting silent.
+            audioOnPlayer = state.audioState == 2 || state.scoActive,
           )
         }
       }

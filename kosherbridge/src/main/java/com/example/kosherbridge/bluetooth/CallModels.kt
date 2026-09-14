@@ -22,6 +22,11 @@ data class BridgeUiState(
   val deviceName: String? = null,
   val deviceAddress: String? = null,
   val audioState: Int = 0, // 0 disconnected, 1 connecting, 2 connected
+  // The Bluetooth stack reports a live SCO voice link. Tracked separately from
+  // [audioState] because the raw RFCOMM channel has no profile to report an
+  // audio state at all - there audioState stays 0 even when the voice did
+  // reach the player through forced/virtual SCO.
+  val scoActive: Boolean = false,
   val audioRoute: String? = null, // last routing attempt, for diagnostics
   val backendLabel: String? = null, // active bridge path, for diagnostics
   val call: CallInfo? = null,
