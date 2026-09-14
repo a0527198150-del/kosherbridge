@@ -186,14 +186,31 @@ catch.
 
 ### CI artifacts
 
-Each run produces three downloads — plus a fourth, `kosherbridge-test-report`,
+Each run produces four downloads — plus a fifth, `kosherbridge-test-report`,
 only when the tests fail:
 
 | Artifact | Contents | Audience |
 |---|---|---|
-| `KosherBridge-<version>-apk` | the signed release APK | **this is the one to install** |
-| `KosherBridge-<version>-magisk-module` | the same APK packaged as a Magisk module | rooted players only; needs a reboot |
+| `KosherBridge-<version>-apk` | the signed release APK, **standard** flavour | **this is the one to install.** No network permission in the manifest at all |
+| `KosherBridge-<version>-apk-plus` | the same app plus the in-app ADB channel | people who want a shell identity without installing Shizuku; adds `INTERNET` (see below) |
+| `KosherBridge-<version>-magisk-module` | the standard APK packaged as a Magisk module | rooted players only; needs a reboot |
 | `kosherbridge-lint` | static-analysis HTML report | developers; never gates the build |
+
+**Why two APKs.** The last no-root lever is a shell identity:
+`com.android.shell` holds BLUETOOTH_PRIVILEGED and WRITE_SECURE_SETTINGS, which
+is what the audio gate, the connection-policy repair and the profile-enable
+ladder need. Android 11+ lets an app get one by speaking ADB to 127.0.0.1 with
+the pairing code already on screen — no PC, no root, no second app. But Android
+gates every TCP socket behind `android.permission.INTERNET`, with nothing
+narrower and nothing loopback-only, and for an app whose users chose a kosher
+phone precisely to have no internet, that permission in the manifest is not a
+detail. So `standard` does not declare it and does not even ship the ADB
+library, and `plus` is a separate, deliberate download. Same applicationId and
+signing key, so either installs over the other without data loss.
+
+The app makes no outbound connection in either flavour: no analytics, no update
+check, no crash reporting, no remote server. The only IP socket it ever opens is
+to loopback; the only other socket is Bluetooth RFCOMM, which is not IP.
 
 Version is `1.0.<commit count>`, the same string the app reports in
 Diagnostics, so a downloaded file says which build it is.
