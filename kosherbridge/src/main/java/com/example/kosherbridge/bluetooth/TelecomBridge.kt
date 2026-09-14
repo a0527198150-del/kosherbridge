@@ -113,8 +113,12 @@ class TelecomBridge(
    * 24, but the constant is a compile-time string - referencing it below 26 is
    * harmless, and asking for a permission the platform does not know is simply
    * denied. The channel itself refuses to run below API 28 anyway.
+   *
+   * `@get:` is required: this property has no backing field, and SuppressLint
+   * cannot target one - it has to land on the getter, which is where the
+   * constant is actually read.
    */
-  @SuppressLint("InlinedApi")
+  @get:SuppressLint("InlinedApi")
   val canAnswer: Boolean get() = has(Manifest.permission.ANSWER_PHONE_CALLS)
 
   /** Placing calls through the phone. */
