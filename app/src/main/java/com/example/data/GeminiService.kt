@@ -61,7 +61,10 @@ data class ParsedTransaction(
 // --- Retrofit Service ---
 
 interface GeminiApiService {
-    @POST("v1beta/models/gemini-3.5-flash:generateContent")
+    // gemini-2.5-flash is a real, generally available v1beta model. The previous
+    // id (gemini-3.5-flash) does not exist, so every call came back 404 and
+    // parseExpense() swallowed it as a null result - the feature failed silently.
+    @POST("v1beta/models/gemini-2.5-flash:generateContent")
     suspend fun generateContent(
         @Query("key") apiKey: String,
         @Body request: GeminiRequest

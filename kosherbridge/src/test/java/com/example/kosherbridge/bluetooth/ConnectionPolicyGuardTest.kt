@@ -41,9 +41,34 @@ class ConnectionPolicyGuardTest {
   }
 
   @Test
+  fun telecom_channel_uses_the_system_profile() {
+    // The TELECOM channel works precisely BECAUSE the platform's own HFP-client
+    // profile owns the link and the SCO voice. If it is ever left out of this
+    // predicate, disableSystemProfiles() tears that profile down and the one
+    // channel that delivers audio without root stops working - silently, and
+    // looking like a Bluetooth fault rather than a missing string.
+    val guard = ConnectionPolicyGuard()
+    assertTrue(guard.usesSystemProfile("TELECOM"))
+    assertFalse(guard.shouldForbidHeadsetClient("TELECOM"))
+  }
+
+  @Test
+  fun only_the_socket_channels_may_disable_the_system_profile() {
+    val guard = ConnectionPolicyGuard()
+    for (mode in listOf("SHIZUKU", "ROOT", "DIRECT", "TELECOM")) {
+      assertTrue("$mode drives the system profile", guard.usesSystemProfile(mode))
+    }
+    // RAW owns its own RFCOMM socket, and AUTO resolves to it - these are the
+    // only channels the platform's profiles genuinely compete with.
+    for (mode in listOf("RAW", "AUTO")) {
+      assertFalse("$mode owns its own socket", guard.usesSystemProfile(mode))
+    }
+  }
+
+  @Test
   fun privileged_modes_forbid_nothing() {
     val guard = ConnectionPolicyGuard()
-    for (mode in listOf("SHIZUKU", "ROOT", "DIRECT", "AUTO")) {
+    for (mode in listOf("SHIZUKU", "ROOT", "DIRECT", "TELECOM", "AUTO")) {
       assertFalse("$mode must not forbid the HFP-client profile", guard.shouldForbidHeadsetClient(mode))
     }
   }

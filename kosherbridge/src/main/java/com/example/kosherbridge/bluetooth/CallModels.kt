@@ -22,6 +22,11 @@ data class BridgeUiState(
   val deviceName: String? = null,
   val deviceAddress: String? = null,
   val audioState: Int = 0, // 0 disconnected, 1 connecting, 2 connected
+  // The Bluetooth stack reports a live SCO voice link. Tracked separately from
+  // [audioState] because the raw RFCOMM channel has no profile to report an
+  // audio state at all - there audioState stays 0 even when the voice did
+  // reach the player through forced/virtual SCO.
+  val scoActive: Boolean = false,
   val audioRoute: String? = null, // last routing attempt, for diagnostics
   val backendLabel: String? = null, // active bridge path, for diagnostics
   val call: CallInfo? = null,
@@ -33,6 +38,9 @@ data class BridgeUiState(
   val shizukuAvailable: Boolean = false,
   val shizukuGranted: Boolean = false,
   val rootAvailable: Boolean = false, // a su binary exists on this device
+  // TELECOM channel: whether the platform published an HFP PhoneAccount, i.e.
+  // whether this player can carry call AUDIO with no root and no Shizuku.
+  val telecomStatus: String? = null,
 
   val scoSupport: String? = null, // does this player expose SCO at all?
   val scoTechnique: String? = null, // last SCO technique the stack was asked for

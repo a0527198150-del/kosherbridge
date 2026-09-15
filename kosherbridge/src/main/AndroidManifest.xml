@@ -5,6 +5,15 @@
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="true" />
+    <!-- CALL_PHONE below implies android.hardware.telephony, and an implied
+         feature is REQUIRED unless it is declared otherwise. This app runs on
+         the player, which by definition has no SIM and no telephony - the
+         phone is the other end of the Bluetooth link. Leaving the implication
+         in place would tell every store and MDM that the app is incompatible
+         with exactly the devices it was written for. -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
 
     <!-- Classic Bluetooth (legacy, API <= 30) -->
     <uses-permission
@@ -39,6 +48,23 @@
          hands-free device, and recording briefly for the mic diagnostic. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- TELECOM channel: the only path to call AUDIO without root, Shizuku or a
+         Magisk module. The player's own Bluetooth stack connects to the kosher
+         phone with the HFP-Client profile; AOSP's HfpClientConnectionService
+         publishes those calls into Telecom, and these four ordinary runtime
+         permissions are enough to see and drive them:
+           READ_PHONE_STATE   - observe ringing / in-call / idle
+           READ_CALL_LOG      - caller ID in that broadcast (Android 9+ gates
+                                the number behind this; without it calls still
+                                appear, just without a number)
+           ANSWER_PHONE_CALLS - accept a ringing call, reject / hang up
+           CALL_PHONE         - place a call through the phone's PhoneAccount
+         None of these is privileged; all are granted by the user in a dialog. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
 
     <!-- Privileged permission: allows full HFP control (dial/answer/AT commands).
          Ignored on stock devices; enables the full experience on system-signed

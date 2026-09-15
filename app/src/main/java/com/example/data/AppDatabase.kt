@@ -156,7 +156,14 @@ abstract class AppDatabase : RoomDatabase() {
                     "hebrew_budget_db"
                 )
                 .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
-                .fallbackToDestructiveMigration()
+                // Destructive fallback ONLY for schema version 1, whose migration
+                // was never written (the migrations start at 2 -> 3). A blanket
+                // fallbackToDestructiveMigration() also wiped every user's data
+                // silently whenever a NEW version was added without its migration;
+                // scoping it to v1 keeps the existing v1 behaviour and turns any
+                // future missing migration into a loud crash during development
+                // instead of silent data loss in production.
+                .fallbackToDestructiveMigrationFrom(1)
                 .build()
                 INSTANCE = instance
                 instance

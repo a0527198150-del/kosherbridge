@@ -60,11 +60,35 @@ class ConnectionPolicyGuard {
   private fun policyKey(address: String, profileId: Int) = "$address:$profileId"
 
   /**
+   * Whether a channel drives the platform's OWN Bluetooth profiles rather than
+   * a socket of its own — and therefore must never have those profiles
+   * disabled or restored underneath it.
+   *
+   * SHIZUKU and ROOT drive the system HFP-client profile from a privileged
+   * process; DIRECT drives it in-process; TELECOM lets the platform own the
+   * connection entirely and reads the result through Telecom. Forcing the
+   * profile off kills all four a moment after they connect. Only the raw
+   * RFCOMM channels (RAW, and AUTO which resolves to it) own a socket that the
+   * platform's profiles genuinely compete with.
+   *
+   * This is one predicate rather than a list repeated at each call site,
+   * because the list was already duplicated three times in [HfpClientManager]
+   * and a channel missing from one copy fails in a way that looks like a
+   * Bluetooth bug rather than a missing string.
+   */
+  fun usesSystemProfile(channelMode: String): Boolean =
+    channelMode == "SHIZUKU" ||
+      channelMode == "ROOT" ||
+      channelMode == "DIRECT" ||
+      channelMode == "TELECOM"
+
+  /**
    * Whether profile 16 (HFP-client) may be set to FORBIDDEN for a channel mode.
    * Only the explicit, sticky RAW choice may sacrifice it: FORBIDDEN is a
    * persistent per-device policy, and disabling the HFP-client profile breaks
-   * the Shizuku/root/DIRECT channels afterwards. AUTO (which today resolves to
-   * the raw path) and the privileged channels leave it untouched.
+   * the Shizuku/root/DIRECT/Telecom channels afterwards. AUTO (which today
+   * resolves to the raw path) and every [usesSystemProfile] channel leave it
+   * untouched.
    */
   fun shouldForbidHeadsetClient(channelMode: String): Boolean = channelMode == "RAW"
 

@@ -75,6 +75,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   private var shizuku: ShizukuBridge? = null
   private var root: RootBridge? = null
   private var raw: RawHfpClient? = null
+  private var telecom: TelecomBridge? = null
+  private var telecomCollectorsLaunched = false
   private var shizukuFallbackLaunched = false
   /** The sticky binder-received listener was registered exactly once, so a
    * capability report taken before the Shizuku binder arrived can be
@@ -196,12 +198,12 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
    * record. Called on deliberate disconnect, on unpair, and from the manual
    * repair action. Idempotent and safe when nothing was ever recorded.
    *
-   * Privileged channels (SHIZUKU/ROOT/DIRECT) never disable system profiles,
-   * so they never restore either — restoring would write policies the guard
-   * never touched.
+   * Channels that drive the platform's own profile (SHIZUKU/ROOT/DIRECT/
+   * TELECOM) never disable system profiles, so they never restore either —
+   * restoring would write policies the guard never touched.
    */
   fun restoreSystemProfiles(device: BluetoothDevice) {
-    if (channelMode in listOf("SHIZUKU", "ROOT", "DIRECT")) return
+    if (policyGuard.usesSystemProfile(channelMode)) return
     val address = device.address
     if (!policyGuard.hasRecorded(address)) {
       logConnection("שחזור מדיניות חיבור: אין מה לשחזר עבור ${device.name ?: address}", false)
@@ -302,7 +304,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // SHIZUKU/ROOT/DIRECT branches; the bond-time path in startBondWatch()
     // does not, so a re-pair silently broke those channels - and it now
     // disables HEADSET_CLIENT (16), the exact profile they rely on.
-    if (channelMode == "SHIZUKU" || channelMode == "ROOT" || channelMode == "DIRECT") {
+    if (policyGuard.usesSystemProfile(channelMode)) {
       logConnection("ערוץ $channelMode משתמש בפרופיל המערכת - מדלג על ניטרול", false)
       return
     }
@@ -552,6 +554,27 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   /** Raw RFCOMM mode, opted-in from Settings ("חיבור ישיר"). */
   private val rawActive: Boolean get() = raw?.isConnected?.value == true
 
+  /**
+   * The TELECOM channel: the platform's own HFP-client profile carries the
+   * link (and the voice), and this app reads and drives the resulting calls
+   * through public Telecom API.
+   *
+   * This is true whenever the user selected the channel, deliberately NOT only
+   * when the bridge object exists: every command below is `telecom?.x ?: false`,
+   * so a channel that has not started yet reports failure instead of silently
+   * falling through to the raw/Shizuku/hidden-API path the user did not choose.
+   */
+  private val useTelecom: Boolean get() = channelMode == "TELECOM"
+
+  /**
+   * Whether this player can run the TELECOM channel at all, for diagnostics.
+   * Unlike every other capability probe in this class this needs no reflection:
+   * the platform either published an HFP PhoneAccount or it did not.
+   */
+  fun telecomStatus(): String =
+    (telecom ?: TelecomBridge(context) { m, e -> logConnection(m, e) }.also { telecom = it })
+      .statusText()
+
   /** The raw client owns its own reconnect loop; the service must not launch a
    * second reconnect loop while that client is still active. */
   val rawOwnsConnectionLoop: Boolean get() = raw?.ownsConnectionLoop == true
@@ -647,6 +670,14 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       }
       // The root bridge is also bound lazily from connect(), never here.
       "ROOT" -> {
+        lastError.value = null
+        return
+      }
+      // TELECOM registers no profile of its own: the platform's HFP-client
+      // profile owns the link, and this app only observes and drives the
+      // resulting Telecom calls. Registering a second profile proxy here would
+      // add a competing HFP client for the phone's single hands-free slot.
+      "TELECOM" -> {
         lastError.value = null
         return
       }
@@ -1026,6 +1057,76 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   /**
+   * Starts the TELECOM channel against [target].
+   *
+   * There is deliberately no "connect" step: the platform's HFP-client profile
+   * owns the Bluetooth link, and this app only observes and drives the calls it
+   * produces. So this reports whether the platform actually published an HFP
+   * PhoneAccount for the phone — which is the honest, reflection-free answer to
+   * "does this player support hands-free at all" — and starts watching.
+   */
+  private fun connectTelecom(target: BluetoothDevice) {
+    val bridge = telecom ?: TelecomBridge(context) { m, e -> logConnection(m, e) }
+      .also { telecom = it }
+    backendLabel.value = "מערכת (Telecom)"
+    bridge.start(target.address)
+
+    if (!telecomCollectorsLaunched) {
+      telecomCollectorsLaunched = true
+      scope.launch {
+        bridge.call.collect { info ->
+          call.value = info
+          // No audio work on this channel: the platform's HFP-client owns the
+          // SCO link and routes the voice itself. Touching CallAudioManager
+          // here would fight the system for the same route.
+        }
+      }
+      scope.launch {
+        bridge.available.collect { usable ->
+          // The platform publishing an HFP PhoneAccount is proof the HFP-client
+          // profile exists, is enabled and is connected - the same fact
+          // profileReady carries for the other channels, established without
+          // any reflection.
+          profileReady.value = usable
+          connectionState.value =
+            if (usable) BluetoothProfile.STATE_CONNECTED else BluetoothProfile.STATE_DISCONNECTED
+        }
+      }
+      // The HFP PhoneAccount appears when the platform connects the phone and
+      // disappears when it drops - both happen long after this channel starts,
+      // typically while the user is still pairing. Without re-sampling, the
+      // channel would stay stuck on whatever was true at startup and never
+      // report itself connected. The read is a cheap local binder call and
+      // runs off the main thread.
+      scope.launch {
+        while (isActive) {
+          // Only while this channel is selected AND still watching: stop() (a
+          // deliberate user disconnect) clears the latter, and without that
+          // check the poll would re-publish the platform's still-live
+          // hands-free account and bounce the channel back to "connected".
+          if (channelMode == "TELECOM" && bridge.isWatching) {
+            withContext(Dispatchers.IO) { bridge.isUsable() }
+          }
+          delay(3_000)
+        }
+      }
+    }
+
+    if (bridge.isUsable()) {
+      lastError.value = null
+      onBackendWorked?.invoke("TELECOM")
+      logConnection("ערוץ המערכת מחובר - שיחות הטלפון מגיעות דרך Telecom", false)
+    } else if (!bridge.canReadState) {
+      lastError.value =
+        "ערוץ המערכת דורש הרשאת 'טלפון' - אשר אותה בהגדרות המערכת → אפליקציות → גשר כשר → הרשאות"
+    } else {
+      lastError.value =
+        "הנגן לא חיבר את הטלפון כדיבורית מערכת. זווג וחבר אותו בהגדרות הבלוטוס של הנגן, " +
+          "ואם הוא לא מתחבר כדיבורית - הנגן לא תומך בפרופיל HFP Client, ואז רק הערוץ הישיר (בלי קול) יעבוד."
+    }
+  }
+
+  /**
    * Connects the bridge to the kosher phone. Priority: active raw RFCOMM link,
    * then the privileged Shizuku path, then the in-process hidden API. When the
    * hands-free profile is unavailable on this player - or the stack-level
@@ -1160,6 +1261,18 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
         }
         return
       }
+      // TELECOM — the only channel that gets call AUDIO with no root, no
+      // Shizuku and no hidden API. The player's own stack connects to the
+      // phone with the HFP-client profile (ordinary pairing does this), AOSP's
+      // HfpClientConnectionService publishes those calls into Telecom, and this
+      // app drives them through public TelecomManager API. The system owns the
+      // SCO link, so the voice reaches the player's speaker without this app
+      // routing any audio. Nothing is connected here: the platform owns the
+      // link, and this only starts observing it.
+      "TELECOM" -> {
+        connectTelecom(target)
+        return
+      }
       // AUTO — raw RFCOMM is the primary (and most stable) path: it opens the
       // phone's headset gateway directly over a socket, bypassing the system
       // HFP profile entirely. No competition for the phone's single hands-free
@@ -1182,6 +1295,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     // attempts. Checking only rawActive left its reconnect loop running after a
     // user disconnect, which could reopen the socket moments later.
     raw?.disconnect()
+    // The TELECOM channel owns no link of its own - the platform does - so
+    // disconnecting only means this app stops observing. It deliberately does
+    // NOT tear down the platform's hands-free connection, which the user may
+    // well still want for the player's own Bluetooth audio.
+    telecom?.stop()
     // A deliberate disconnect hands the phone's hands-free slot back: restore
     // the connection policies this app changed so the phone can connect to the
     // player as an ordinary hands-free device again (outside this app).
@@ -1217,6 +1335,7 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       lastError.value = "לא מחובר לטלפון הכשר"
       return false
     }
+    if (useTelecom) return telecom?.dial(number) ?: false
     if (rawActive) return raw?.dial(number) ?: false
     if (useShizuku) return shizuku?.dial(number) ?: false
     if (useRoot) return root?.dial(number) ?: false
@@ -1230,7 +1349,11 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   fun redial(): Boolean =
-    if (rawActive) raw?.redial() ?: false
+    // Telecom exposes no "redial last number" verb; the app's own call log is
+    // the redial UI on this channel, so this reports unsupported rather than
+    // falling through to a path that is not the active one.
+    if (useTelecom) false
+    else if (rawActive) raw?.redial() ?: false
     else if (useShizuku) shizuku?.redial() ?: false
     else if (useRoot) root?.redial() ?: false
     else {
@@ -1240,7 +1363,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
 
   fun answer(): Boolean {
-    val ok = if (rawActive) raw?.answer() ?: false
+    val ok = if (useTelecom) telecom?.answer() ?: false
+    else if (rawActive) raw?.answer() ?: false
     else if (useShizuku) shizuku?.accept() ?: false
     else if (useRoot) root?.accept() ?: false
     else {
@@ -1248,7 +1372,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
       val d = if (c != null) directDevice() else null
       c != null && d != null && HiddenHfp.accept(c, d)
     }
-    if (ok) {
+    // On TELECOM the platform's HFP-client brings the SCO link up itself;
+    // asking CallAudioManager to route audio too would fight it for the route.
+    if (ok && !useTelecom) {
       // Give the AG a moment to move the call to ACTIVE before requesting SCO.
       scope.launch {
         delay(350)
@@ -1259,7 +1385,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   fun reject(): Boolean =
-    if (rawActive) raw?.reject() ?: false
+    if (useTelecom) telecom?.endCall() ?: false
+    else if (rawActive) raw?.reject() ?: false
     else if (useShizuku) shizuku?.reject() ?: false
     else if (useRoot) root?.reject() ?: false
     else {
@@ -1269,7 +1396,8 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
 
   fun hangup(): Boolean =
-    if (rawActive) raw?.hangup() ?: false
+    if (useTelecom) telecom?.endCall() ?: false
+    else if (rawActive) raw?.hangup() ?: false
     else if (useShizuku) shizuku?.hangup() ?: false
     else if (useRoot) root?.hangup() ?: false
     else {
@@ -1279,6 +1407,10 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     }
 
   fun connectAudio() {
+    // TELECOM needs no audio work at all: the system's HFP-client profile owns
+    // the SCO voice link and routes it to the player's speaker and microphone.
+    // This is precisely why that channel delivers voice without root.
+    if (useTelecom) return
     if (rawActive) {
       // Raw RFCOMM has no profile-level SCO, so also force the stack to open
       // the SCO voice channel directly - harmless if the stack refuses.
@@ -1292,6 +1424,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
   }
 
   fun toggleAudio(): Boolean {
+    // The system owns the route on TELECOM, so there is nothing to toggle and
+    // reporting success would claim an effect this app did not have.
+    if (useTelecom) return false
     if (rawActive) {
       audio.ensureCallAudio(device.value, volumeBoost)
       return true
@@ -1329,6 +1464,9 @@ class HfpClientManager(private val context: Context, private val scope: Coroutin
     raw?.disconnect()
     raw = null
     rawCollectorsLaunched = false
+    telecom?.stop()
+    telecom = null
+    telecomCollectorsLaunched = false
     rawDropInfo.value = null
     rawConnectionDiagnostics.value = null
     bondReceiver?.let { r -> runCatching { context.unregisterReceiver(r) } }

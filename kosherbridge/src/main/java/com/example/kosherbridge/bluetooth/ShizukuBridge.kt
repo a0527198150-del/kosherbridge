@@ -81,6 +81,15 @@ class ShizukuBridge(private val context: Context) {
     remoteDied = callback
   }
 
+  /**
+   * A bind was requested and has not yet aged out, so another one must not be
+   * started. A bind older than [BIND_RETRY_AFTER_MS] without a connection means
+   * the user-service process died before delivering its binder, and the next
+   * caller is allowed to re-bind instead of waiting forever.
+   */
+  private fun bindInFlight(): Boolean =
+    bindRequested && System.currentTimeMillis() - bindRequestedAt < BIND_RETRY_AFTER_MS
+
   /** True when the Shizuku server (started via adb / root) is reachable. */
   val isAvailable: Boolean
     get() = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
@@ -96,15 +105,14 @@ class ShizukuBridge(private val context: Context) {
    * The connection arrives asynchronously via [ServiceConnection] (main thread).
    */
   fun bind(): Boolean {
-    val inFlight = bindRequested &&
-      System.currentTimeMillis() - bindRequestedAt < BIND_RETRY_AFTER_MS
-    if (remote != null || (bindRequested && inFlight)) return true
+    // A bind is "in flight" while it was requested and has not yet aged out;
+    // `bindRequested` is already part of that, so it is not re-tested here.
+    if (remote != null || bindInFlight()) return true
     synchronized(this) {
       // Binding is asynchronous. A second caller can arrive before
-      // onServiceConnected and otherwise create a second remote process.
-      if (remote != null ||
-        (bindRequested && System.currentTimeMillis() - bindRequestedAt < BIND_RETRY_AFTER_MS)
-      ) return true
+      // onServiceConnected and otherwise create a second remote process, so the
+      // same check is repeated under the lock.
+      if (remote != null || bindInFlight()) return true
       if (!isAvailable) return false
       if (!permissionGranted) {
         Log.w(tag, "Shizuku permission not granted for this app")
