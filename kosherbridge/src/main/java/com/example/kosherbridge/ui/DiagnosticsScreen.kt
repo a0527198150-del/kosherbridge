@@ -8,7 +8,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import com.example.kosherbridge.BridgeHub
 import com.example.kosherbridge.bluetooth.BridgeUiState
 import com.example.kosherbridge.bluetooth.TelecomBridge
@@ -201,7 +201,7 @@ fun DiagnosticsScreen(
           ) {
             // Android 14+: the dedicated full-screen-intent settings page.
             val fsIntent = Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT)
-              .setData(Uri.parse("package:${context.packageName}"))
+              .setData("package:${context.packageName}".toUri())
             val opened = runCatching {
               context.startActivity(fsIntent)
               true
@@ -237,13 +237,13 @@ fun DiagnosticsScreen(
           "מונע מהמערכת להשהות את הבלוטוס כשהמסך כבוי - מומלץ בנגנים שמתנתקים",
         ) {
           val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-            .setData(Uri.parse("package:${context.packageName}"))
+            .setData("package:${context.packageName}".toUri())
           val opened = runCatching { context.startActivity(intent); true }.getOrDefault(false)
           if (!opened) {
             // Some players ship without that dialog; the app-details page is the
             // fallback the user can still reach the setting from.
             val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-              .setData(Uri.parse("package:${context.packageName}"))
+              .setData("package:${context.packageName}".toUri())
             if (runCatching { context.startActivity(fallback); true }.getOrDefault(false)) {
               onSnackbar("פתח: סוללה ← ללא הגבלה")
             } else {

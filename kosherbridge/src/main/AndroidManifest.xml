@@ -5,6 +5,15 @@
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="true" />
+    <!-- CALL_PHONE below implies android.hardware.telephony, and an implied
+         feature is REQUIRED unless it is declared otherwise. This app runs on
+         the player, which by definition has no SIM and no telephony - the
+         phone is the other end of the Bluetooth link. Leaving the implication
+         in place would tell every store and MDM that the app is incompatible
+         with exactly the devices it was written for. -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
 
     <!-- Classic Bluetooth (legacy, API <= 30) -->
     <uses-permission
